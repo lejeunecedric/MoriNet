@@ -2,7 +2,7 @@
 name = "morinet"
 version = "0.1.0"
 edition = "2021"
-description = "Serveur mdbook pour second brain Obsidian avec auth, WebDAV et MCP"
+description = "mdBook server that exposes an Obsidian second brain with auth, WebDAV and MCP"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lejeunecedric/MoriNet"
 readme = "README.md"

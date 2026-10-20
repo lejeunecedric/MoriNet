@@ -1,57 +1,57 @@
-# MoriNet — Planification (entry point humain)
+# MoriNet — Planning (human entry point)
 
-> Planification GSD pour MoriNet — un serveur Rust qui sert un second brain Obsidian en mdbook avec auth multi-utilisateurs, admin UI, vault management (local + GitHub), WebDAV, et MCP.
+> GSD planning for MoriNet — a Rust server that exposes an Obsidian second brain via mdbook with multi-user auth, admin UI, vault management (local + GitHub), WebDAV, and MCP.
 
 ## TL;DR
 
-- **Stack** : tout Rust (`cargo install morinet` produit un binaire statique)
-- **8 phases** : bootstrap → core-serve → multi-vault → vault-sources → admin-ui → email → webdav → mcp → polish
-- **Repo** : github.com/`lejeunecedric`/morinet *(à confirmer)*
+- **Stack**: 100% Rust (`cargo install morinet` produces a static binary)
+- **8 phases**: bootstrap → core-serve → multi-vault → vault-sources → admin-ui → email → webdav → mcp → polish
+- **Repo**: github.com/`lejeunecedric`/MoriNet
 
-## Quoi lire dans quel ordre
+## What to read, in order
 
-1. **`../.planning/ROADMAP.md`** — vue d'ensemble des 8 phases, critères de succès, scope
-2. **`../.planning/REQUIREMENTS.md`** — 48 REQ-IDs catalog avec commandes de vérification
-3. **`../.planning/STATE.md`** — décisions architecturales (AD-1 à AD-10) + stats live
-4. **`../.planning/phases/00-bootstrap/01-bootstrap-PLAN.md`** — premier bite à exécuter : bootstrap le repo + le crate + la CI
+1. **`../.planning/ROADMAP.md`** — overview of the 8 phases, success criteria, scope
+2. **`../.planning/REQUIREMENTS.md`** — 48 REQ-IDs catalog with verification commands
+3. **`../.planning/STATE.md`** — architectural decisions (AD-1 to AD-10) + live stats
+4. **`../.planning/phases/00-bootstrap/01-bootstrap-PLAN.md`** — first bite to execute: bootstrap the repo + the crate + the CI
 
-## Décisions verrouillées
+## Locked decisions
 
-| # | Décision | Tracée dans |
-|---|----------|--------------|
-| Stack 100% Rust | PRD-1 | STATE.md |
-| Repo github.com/`lejeunecedric`/morinet | PRD-2 | STATE.md |
-| Multi-vault = sub-paths `/vaultA/` | PRD-3 | STATE.md |
-| SMTP = adapter lettre générique | PRD-4 | STATE.md |
-| Cargo workspace mono-crate | AD-1 | STATE.md |
-| mdbook upstream + thème custom injecté | AD-2 | STATE.md |
-| SQLite par défaut | AD-3 | STATE.md |
-| Cookies HttpOnly signés + bcrypt | AD-4 | STATE.md |
-| WebDAV handlers axum custom | AD-5 | STATE.md |
-| MCP via crate `rmcp` | AD-6 | STATE.md |
-| SMTP via crate `lettre` | AD-7 | STATE.md |
-| Vault source = trait, impl Local + Github | AD-8 | STATE.md |
-| Templates HTML via Askama | AD-9 | STATE.md |
-| mdbook rebuild après sync, pas par requête | AD-10 | STATE.md |
+| #    | Decision                                       | Tracked in   |
+|------|------------------------------------------------|--------------|
+| PRD-1 | Stack 100% Rust                                | STATE.md     |
+| PRD-2 | Repo github.com/`lejeunecedric`/MoriNet        | STATE.md     |
+| PRD-3 | Multi-vault = sub-paths `/vaultA/`, `/vaultB/` | STATE.md     |
+| PRD-4 | SMTP = generic `lettre` adapter                | STATE.md     |
+| AD-1  | Cargo workspace mono-crate                     | STATE.md     |
+| AD-2  | mdbook upstream + custom theme injected        | STATE.md     |
+| AD-3  | SQLite by default                              | STATE.md     |
+| AD-4  | HttpOnly signed cookies + bcrypt               | STATE.md     |
+| AD-5  | Custom axum handlers for WebDAV                | STATE.md     |
+| AD-6  | MCP via `rmcp` crate                           | STATE.md     |
+| AD-7  | SMTP via `lettre` crate                        | STATE.md     |
+| AD-8  | Vault source = trait, Local + Github impls     | STATE.md     |
+| AD-9  | HTML templates via Askama                      | STATE.md     |
+| AD-10 | mdbook rebuild after sync, not per request     | STATE.md     |
 
-## Phase 0 — bootstrap (à exécuter)
+## Phase 0 — bootstrap (to execute)
 
-**Goal** : repo GitHub + Cargo init + CI + premier release.
+**Goal**: GitHub repo + Cargo init + CI + first release.
 
-**Bites** :
-- T0.1 → confirmer username GitHub (placeholder `lejeunecedric` à remplacer)
-- T0.2 → `cargo install morinet` build un binaire trivial + `cargo test` vert
-- T0.3 → CI GitHub Actions (lint + test + build)
-- T0.4 → cargo-dist pour release multi-platform
-- T0.5 → README minimal (What / Install / Quick start / Status / License)
-- T0.6 → premier commit + push + tag `v0.1.0`
+**Bites**:
+- T0.1 → confirm GitHub username (placeholder `lejeunecedric` to substitute)
+- T0.2 → `cargo install morinet` builds a trivial binary + `cargo test` green
+- T0.3 → GitHub Actions CI (lint + test + build)
+- T0.4 → cargo-dist for multi-platform release
+- T0.5 → minimal README (What / Install / Quick start / Status / License)
+- T0.6 → first commit + push + tag `v0.1.0`
 
-Voir `projets/.planning/phases/00-bootstrap/01-bootstrap-PLAN.md` pour le détail bite-sized.
+See `.planning/phases/00-bootstrap/01-bootstrap-PLAN.md` for bite-sized detail.
 
-## Prochaine étape
+## Next step
 
-Une fois le username GitHub confirmé, je lance la Phase 0 avec subagent-driven-development (fresh delegate_task par bite + double review spec-compliance + code-quality).
+Once the username is confirmed, Phase 0 is launched via subagent-driven-development (fresh `delegate_task` per bite + double review: spec compliance + code quality).
 
-## Hors-scope v1
+## Out of scope v1
 
-Édition collaborative temps réel, mobile apps, SSO OAuth, webhooks, chiffrement at-rest (s'appuie sur le FS).
+Real-time collaborative editing, native mobile apps, OAuth SSO, webhooks, encryption at rest (relies on the FS).
