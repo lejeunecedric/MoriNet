@@ -30,9 +30,9 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <head><meta charset="utf-8"><title>MoriNet — Sign in</title></head>
 <body>
   <h1>MoriNet</h1>
-  <!-- novalidate: non-email admin usernames like "demo" are valid (v1) -->
+  <!-- novalidate: the login field accepts usernames, not just emails (v1) -->
   <form method="post" action="/login" novalidate>
-    <label>Email <input type="text" name="email" required></label>
+    <label>Login <input type="text" name="email" required></label>
     <label>Password <input type="password" name="password" required></label>
     <button type="submit">Sign in</button>
   </form>
