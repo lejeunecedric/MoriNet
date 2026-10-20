@@ -606,7 +606,8 @@ mod tests {
             cookie_name: "morinet_session".to_string(),
             admin_email: "admin@example.com".to_string(),
             admin_password: "[REDACTED-DEV-PASSWORD]".to_string(),
-            vault_book_dir: None, // Phase 2: book dirs live in the vaults table
+            smtp: Default::default(), // Phase 5: no SMTP in tests unless asked
+            vault_book_dir: None,     // Phase 2: book dirs live in the vaults table
         }
     }
 
