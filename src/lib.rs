@@ -71,9 +71,7 @@ mod tests {
     #[test]
     fn default_config_parses_as_valid_toml() {
         let cfg = default_config();
-        let parsed: toml::Table = cfg
-            .parse()
-            .expect("default_config() must be valid TOML");
+        let parsed: toml::Table = cfg.parse().expect("default_config() must be valid TOML");
         assert!(parsed.contains_key("server"));
         assert!(parsed.contains_key("smtp"));
         assert!(parsed.contains_key("storage"));

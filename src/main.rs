@@ -54,10 +54,7 @@ fn main() -> anyhow::Result<()> {
             println!("Wrote example config to {}", out.display());
         }
         None => {
-            println!(
-                "morinet {} — run `morinet --help` for usage",
-                version()
-            );
+            println!("morinet {} — run `morinet --help` for usage", version());
         }
     }
 
