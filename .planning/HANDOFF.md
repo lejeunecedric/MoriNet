@@ -6,7 +6,7 @@
 
 A Rust server that exposes Obsidian second brains as mdBook sites with multi-user auth, WebDAV and MCP. Single static binary: `cargo install morinet`.
 
-**Live instance**: https://morinet.treklair.fr (holldemo, 51.255.206.62) — login `demo` / `demo` (bootstrap admin via `MORINET_ADMIN_EMAIL`/`MORINET_ADMIN_PASSWORD` env in the systemd unit).
+**Live instance**: https://morinet.treklair.fr — public demo. Credentials are NOT stored in this repo; they live in the systemd unit env (`MORINET_ADMIN_EMAIL` / `MORINET_ADMIN_PASSWORD`) on the server. Server IP intentionally omitted from this public repo.
 
 ## What works right now (shipped, deployed)
 
@@ -54,6 +54,6 @@ Ops open items: vops owns holldemo provisioning (systemd unit with env creds, ng
 
 ## Testing conventions
 
-- TDD strict, `cargo test` (44+ tests green at handoff), clippy `-D warnings`, fmt.
+- TDD strict, `cargo test` (54 tests green at handoff), clippy `-D warnings`, fmt.
 - sqlite fixtures: `Store::connect_memory()`, bcrypt cost default (tests take ~15-25s, that's normal).
 - e2e via `tower::ServiceExt::oneshot` on the Router — no network.
