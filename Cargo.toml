@@ -30,6 +30,8 @@ hmac = "0.12"
 sha2 = "0.10"
 subtle = "2.6"
 base64 = "0.22"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
+bcrypt = "0.15"
 
 [dev-dependencies]
 pretty_assertions = "1.4"
