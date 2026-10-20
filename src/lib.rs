@@ -61,7 +61,8 @@ mod tests {
 
     #[test]
     fn version_matches_cargo_pkg_version() {
-        assert_eq!(version(), "0.1.0");
+        // Explicit guard: bump this alongside Cargo.toml on every release.
+        assert_eq!(version(), "0.1.1");
     }
 
     #[test]
