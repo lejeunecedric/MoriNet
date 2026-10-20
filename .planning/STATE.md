@@ -40,8 +40,13 @@
   - Rationale: admin UI is minimalist; Askama = Jinja-like templates compiled in Rust, zero runtime overhead, type-safe. No React/Vue/Svelte = no frontend toolchain to maintain. JS only for the mdbook customs (zoom, fold).
 - **AD-10** *(2026-10-20)* — **mdbook build triggered after sync**, not per request.
   - Rationale: `mdbook build` takes ~1-3s for a 100-page vault. Rebuilding on every GET is wasteful. Sync rebuilds on change; hot-reload disabled in prod.
+- **AD-11** *(2026-10-20)* — **Deploy pipeline: each published GitHub release auto-deploys to holldemo** (`morinet.treklair.fr` → 51.255.206.62).
+  - Rationale: user wants a staging target to test every release. Implemented as a SEPARATE `.github/workflows/deploy.yml` (NOT in `release.yml` — cargo-dist drift check forbids hand-editing that file, see Notable errors). Trigger: `release: published` + `workflow_dispatch` for manual runs. Phase 0 scope: download release tarball, sha256-verify, scp the binary to `/opt/morinet/bin/`, smoke-check `morinet --version` over SSH. Phase 1+ adds systemd restart + `/health` check. Server-side provisioning (systemd unit, nginx vhost, TLS) is ops-side.
 
 ## Product Decisions (PRD)
+
+- **PRD-5** *(2026-10-20)* — Staging target = `morinet.treklair.fr` on holldemo (51.255.206.62), DNS A record set by user.
+  - User decided. Deploys happen on every GitHub release publication.
 
 - **PRD-1** *(2026-10-20)* — Stack 100% Rust.
   - User decided: `cargo install morinet` (static binary).

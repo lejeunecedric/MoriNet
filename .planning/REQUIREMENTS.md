@@ -93,6 +93,9 @@
 | REQ-OPS-003   | `morinet --version` returns `1.0.0` at tag v1.0.0                 | `morinet --version`           |
 | REQ-OPS-004   | Versioned SQLite migrations (`_migrations` table)                 | boot success + log            |
 | REQ-OPS-005   | Healthcheck `GET /health` → 200                                  | curl                          |
+| REQ-OPS-006   | Each published release auto-deploys to holldemo (morinet.treklair.fr) | Deploy workflow green + `morinet --version` over SSH |
+| REQ-OPS-007   | holldemo runs morinet as a systemd unit `morinet.service`         | `systemctl status morinet` on host |
+| REQ-OPS-008   | morinet.treklair.fr → reverse-proxied to the unit with TLS        | `curl https://morinet.treklair.fr/health` |
 
 ## OBS — Visual mods (custom mdbook)
 
