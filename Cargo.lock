@@ -1100,11 +1100,13 @@ name = "morinet"
 version = "0.1.6"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "bcrypt",
  "clap",
  "git2",
+ "hex",
  "hmac",
  "lettre",
  "pretty_assertions",
