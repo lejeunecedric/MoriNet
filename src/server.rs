@@ -15,13 +15,21 @@ use axum::{Extension, Json, Router};
 use serde::Deserialize;
 
 use crate::config::RuntimeConfig;
+use crate::email::{invitation_email, reset_email, EmailSender, InMemorySender, SmtpSender};
 use crate::session::{Claims, SessionCodec, DEFAULT_TTL_SECS};
 use crate::store::Store;
+
+/// Invitation links are valid 24h (REQ-EMAIL-005).
+const INVITE_TTL_SECS: u64 = 24 * 3600;
+/// Password-reset links are valid 1h (stricter — it is a live credential).
+const RESET_TTL_SECS: u64 = 3600;
 
 pub struct AppState {
     pub cfg: RuntimeConfig,
     pub codec: SessionCodec,
     pub store: Store,
+    /// Phase 5: outbound email. Injected so tests use `InMemorySender`.
+    pub email: Arc<dyn EmailSender>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -63,16 +71,45 @@ fn parse_cookies(header: &str) -> Option<HashMap<String, String>> {
 }
 
 pub fn build_router(cfg: RuntimeConfig, store: Store) -> Router {
+    // Production wiring: a real SMTP sender when [smtp] is usable, else a
+    // no-op recorder so the app still boots without email configured.
+    let email: Arc<dyn EmailSender> = if cfg.smtp.is_usable() {
+        match SmtpSender::from_config(&cfg.smtp) {
+            Ok(sender) => Arc::new(sender),
+            Err(e) => {
+                eprintln!("warning: [smtp] is invalid, email disabled: {e}");
+                Arc::new(InMemorySender::new())
+            }
+        }
+    } else {
+        Arc::new(InMemorySender::new())
+    };
+    build_router_with_email(cfg, store, email)
+}
+
+/// Same router, with an explicit sender (tests inject `InMemorySender`).
+pub fn build_router_with_email(
+    cfg: RuntimeConfig,
+    store: Store,
+    email: Arc<dyn EmailSender>,
+) -> Router {
     let state: SharedState = Arc::new(AppState {
         codec: SessionCodec::new(cfg.cookie_secret.clone()),
         cfg,
         store,
+        email,
     });
 
     // Public routes.
     let public = Router::new()
         .route("/health", get(health))
         .route("/login", get(login_form).post(login_submit))
+        .route("/reset", get(reset_request_form).post(reset_request_submit))
+        .route("/reset/{token}", get(reset_form).post(reset_submit))
+        .route(
+            "/invite/{token}",
+            get(invite_accept_form).post(invite_accept_submit),
+        )
         .route(
             "/assets/style.css",
             get(|| async {
@@ -408,8 +445,57 @@ fn default_invite_role() -> String {
     "reader".to_string()
 }
 
+/// sha256 hex of a plaintext token — what actually lands in the DB.
+fn token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// Fresh 256-bit plaintext token (the only copy that is emailed).
+fn new_token() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InviteParams>) -> Response {
-    // Temp password shown once to the admin (email delivery comes in Phase 5).
+    // Phase 5: when SMTP is configured, create an invitation token and email
+    // the link. The user does NOT exist yet — it is created when the invitee
+    // picks a password. Without SMTP we keep the legacy temp-password flow.
+    if state.cfg.smtp.is_usable() {
+        let token = new_token();
+        if let Err(e) = state
+            .store
+            .create_invitation(&token_hash(&token), &p.email, &p.role, INVITE_TTL_SECS)
+            .await
+        {
+            let body = format!(
+                "<p style=\"color:red\">Failed to create invitation: {}</p><p><a href=\"/admin/users\">Back</a></p>",
+                html_escape(&e.to_string())
+            );
+            return (StatusCode::BAD_REQUEST, Html(body)).into_response();
+        }
+        let url = format!("{}/invite/{}", state.cfg.base_url, token);
+        let mail = invitation_email(&p.email, &url, &p.role);
+        if let Err(e) = state.email.send(&mail).await {
+            // The token is already stored but undeliverable: tell the admin and
+            // show the link once so the invite is not silently lost.
+            let body = format!(
+                "<p style=\"color:red\">Invitation stored but email delivery failed: {}</p><p>Send this link manually:</p><p><code>{}</code></p><p><a href=\"/admin/users\">Back</a></p>",
+                html_escape(&e.to_string()),
+                html_escape(&url)
+            );
+            return (StatusCode::BAD_GATEWAY, Html(body)).into_response();
+        }
+        let body = format!(
+            "<p>Invitation email sent to <strong>{}</strong> with role <strong>{}</strong>.</p><p>The account is created when they set a password (link valid 24h).</p><p><a href=\"/admin/users\">Back to users</a></p>",
+            html_escape(&p.email),
+            html_escape(&p.role)
+        );
+        return admin_page("Invitation sent", body).await;
+    }
+
+    // No SMTP configured: legacy flow, temp password shown once to the admin.
     let temp_password = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
     match state
         .store
@@ -420,6 +506,7 @@ async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InvitePara
             let body = format!(
                 r#"<p>User <strong>{}</strong> created with role <strong>{}</strong>.</p>
 <p>Temporary password (shown once): <code>{}</code></p>
+<p style="color:#666">Configure the <code>[smtp]</code> section to send invitations by email instead.</p>
 <p><a href="/admin/users">Back to users</a></p>"#,
                 html_escape(&p.email),
                 html_escape(&p.role),
@@ -435,6 +522,211 @@ async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InvitePara
             (StatusCode::BAD_REQUEST, Html(body)).into_response()
         }
     }
+}
+
+// ---------- invitation acceptance (Phase 5) ----------
+
+const RESET_REQUEST_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>MoriNet — Reset password</title>
+<link rel="stylesheet" href="/assets/style.css"></head>
+<body>
+  <h1>Reset your password</h1>
+  <p>Enter your login and we'll email you a reset link.</p>
+  <form method="post" action="/reset" novalidate>
+    <label>Login <input type="text" name="email" required></label>
+    <button type="submit">Send the link</button>
+  </form>
+  <p><a href="/login">Back to sign in</a></p>
+</body>
+</html>"#;
+
+async fn reset_request_form() -> Html<&'static str> {
+    Html(RESET_REQUEST_HTML)
+}
+
+#[derive(Debug, Deserialize)]
+struct ResetRequestParams {
+    email: String,
+}
+
+async fn reset_request_submit(
+    State(state): State<SharedState>,
+    Form(p): Form<ResetRequestParams>,
+) -> Response {
+    let token = new_token();
+    // Silently no-op for an unknown login: never disclose whether an account
+    // exists (create_reset_token returns Ok without storing anything).
+    if let Err(e) = state
+        .store
+        .create_reset_token(&token_hash(&token), &p.email, RESET_TTL_SECS)
+        .await
+    {
+        let body = format!(
+            "<p style=\"color:red\">Reset request failed: {}</p>",
+            html_escape(&e.to_string())
+        );
+        return (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response();
+    }
+    let known = state
+        .store
+        .role_for(&p.email)
+        .await
+        .unwrap_or(None)
+        .is_some();
+    if known {
+        let url = format!("{}/reset/{}", state.cfg.base_url, token);
+        if let Err(e) = state.email.send(&reset_email(&p.email, &url)).await {
+            eprintln!("warning: reset email to {} failed: {e}", p.email);
+        }
+    }
+    // Identical answer either way — no account enumeration.
+    let body = r#"<p>If that account exists, a reset link is on its way.</p><p>Check your inbox (and spam folder).</p><p><a href="/login">Back to sign in</a></p>"#;
+    (StatusCode::OK, Html(body)).into_response()
+}
+
+async fn reset_form(State(state): State<SharedState>, Path(token): Path<String>) -> Response {
+    if state
+        .store
+        .validate_reset_token(&token_hash(&token))
+        .await
+        .unwrap_or(None)
+        .is_none()
+    {
+        return invalid_token_page().await;
+    }
+    let body = format!(
+        r#"<h1>Choose a new password</h1>
+<form method="post" action="/reset/{t}" novalidate>
+  <label>New password <input type="password" name="password" required></label>
+  <button type="submit">Save</button>
+</form>"#,
+        t = html_escape(&token)
+    );
+    (StatusCode::OK, Html(body)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct NewPasswordParams {
+    password: String,
+}
+
+async fn reset_submit(
+    State(state): State<SharedState>,
+    Path(token): Path<String>,
+    Form(p): Form<NewPasswordParams>,
+) -> Response {
+    if p.password.len() < 8 {
+        let body = format!(
+            r#"<p style="color:red">Password too short (8 characters minimum).</p>
+<form method="post" action="/reset/{t}" novalidate>
+  <label>New password <input type="password" name="password" required></label>
+  <button type="submit">Save</button>
+</form>"#,
+            t = html_escape(&token)
+        );
+        return (StatusCode::BAD_REQUEST, Html(body)).into_response();
+    }
+    match state
+        .store
+        .consume_reset_token(&token_hash(&token), &p.password)
+        .await
+    {
+        Ok(Some(_)) => {
+            let body = r#"<p>Password updated. <a href="/login">Sign in</a>.</p>"#;
+            (StatusCode::OK, Html(body)).into_response()
+        }
+        Ok(None) => invalid_token_page().await,
+        Err(e) => {
+            let body = format!(
+                "<p style=\"color:red\">Reset failed: {}</p>",
+                html_escape(&e.to_string())
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
+        }
+    }
+}
+
+async fn invite_accept_form(
+    State(state): State<SharedState>,
+    Path(token): Path<String>,
+) -> Response {
+    match state.store.validate_invitation(&token_hash(&token)).await {
+        Ok(Some((email, role))) => {
+            let body = format!(
+                r#"<h1>Accept your invitation</h1>
+<p>Set a password to activate your account.</p>
+<form method="post" action="/invite/{t}" novalidate>
+  <label>Login <input type="text" name="email" value="{e}" readonly></label>
+  <label>Password <input type="password" name="password" required></label>
+  <p>Role: <strong>{r}</strong></p>
+  <button type="submit">Create my account</button>
+</form>"#,
+                t = html_escape(&token),
+                e = html_escape(&email),
+                r = html_escape(&role)
+            );
+            (StatusCode::OK, Html(body)).into_response()
+        }
+        Ok(None) => invalid_token_page().await,
+        Err(e) => {
+            let body = format!(
+                "<p style=\"color:red\">Invitation check failed: {}</p>",
+                html_escape(&e.to_string())
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptInviteParams {
+    /// Accepted but deliberately IGNORED: the identity and role come from the
+    /// stored invitation, never from the form — a tampered field cannot
+    /// escalate the account. Parsed only so browsers that post it still work.
+    #[serde(default)]
+    #[allow(dead_code)]
+    email: String,
+    password: String,
+}
+
+async fn invite_accept_submit(
+    State(state): State<SharedState>,
+    Path(token): Path<String>,
+    Form(p): Form<AcceptInviteParams>,
+) -> Response {
+    if p.password.len() < 8 {
+        let body = r#"<p style="color:red">Password too short (8 characters minimum).</p>"#;
+        return (StatusCode::BAD_REQUEST, Html(body)).into_response();
+    }
+    match state
+        .store
+        .consume_invitation(&token_hash(&token), &p.password)
+        .await
+    {
+        Ok(Some(email)) => {
+            // The role comes from the stored invitation, never from the form:
+            // a tampered `email` field cannot escalate to admin.
+            let body = format!(
+                r#"<p>Welcome to MoriNet, <strong>{}</strong>.</p><p><a href="/login">Sign in</a>.</p>"#,
+                html_escape(&email)
+            );
+            (StatusCode::OK, Html(body)).into_response()
+        }
+        Ok(None) => invalid_token_page().await,
+        Err(e) => {
+            let body = format!(
+                "<p style=\"color:red\">Could not accept invitation: {}</p>",
+                html_escape(&e.to_string())
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
+        }
+    }
+}
+
+async fn invalid_token_page() -> Response {
+    let body = r#"<p style="color:red">This link is invalid, already used, or expired.</p><p><a href="/login">Back to sign in</a></p>"#;
+    (StatusCode::BAD_REQUEST, Html(body)).into_response()
 }
 
 async fn admin_vaults(State(state): State<SharedState>) -> Response {
@@ -598,6 +890,8 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use tower::ServiceExt; // oneshot
 
+    use crate::email::SmtpConfig;
+
     fn test_config() -> RuntimeConfig {
         RuntimeConfig {
             bind_addr: "127.0.0.1:0".to_string(),
@@ -636,12 +930,48 @@ mod tests {
     async fn test_router() -> (Router, SharedState) {
         let cfg = test_config();
         let store = fixture_store().await;
+        let email: Arc<dyn EmailSender> = Arc::new(InMemorySender::new());
         let state: SharedState = Arc::new(AppState {
             codec: SessionCodec::new(cfg.cookie_secret.clone()),
             cfg,
             store,
+            email,
         });
-        (build_router(state.cfg.clone(), state.store.clone()), state)
+        (
+            build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),
+            state,
+        )
+    }
+
+    /// Router with a usable [smtp] section + an inspectable sender, so the
+    /// email paths (invite / reset) can be exercised end to end.
+    fn smtp_cfg() -> SmtpConfig {
+        SmtpConfig {
+            host: Some("smtp.test".into()),
+            from: Some("bot@mori.test".into()),
+            port: Some(587),
+            starttls: Some(true),
+            user: None,
+            pass: None,
+        }
+    }
+
+    async fn test_router_with_email(
+        cfg: RuntimeConfig,
+    ) -> (Router, SharedState, Arc<InMemorySender>) {
+        let store = fixture_store().await;
+        let sender = Arc::new(InMemorySender::new());
+        let state: SharedState = Arc::new(AppState {
+            codec: SessionCodec::new(cfg.cookie_secret.clone()),
+            cfg,
+            store,
+            email: sender.clone(),
+        });
+        (
+            build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),
+            state,
+            sender,
+        )
     }
 
     async fn req(
@@ -998,6 +1328,357 @@ mod tests {
             .acl_allows("reader@example.com", "demo")
             .await
             .unwrap());
+    }
+
+    // ---------- Phase 5: invitation + reset over HTTP ----------
+
+    /// Extract the `/invite/{token}` token from a captured invitation email.
+    fn invite_token_from(mail: &crate::email::Email) -> String {
+        let marker = "/invite/";
+        let start = mail.body_html.find(marker).expect("invite link in body") + marker.len();
+        let end = mail.body_html[start..]
+            .find(['"', '<'])
+            .expect("token ends at quote/tag");
+        mail.body_html[start..start + end].to_string()
+    }
+
+    fn reset_token_from(mail: &crate::email::Email) -> String {
+        let marker = "/reset/";
+        let start = mail.body_html.find(marker).expect("reset link in body") + marker.len();
+        let end = mail.body_html[start..]
+            .find(['"', '<'])
+            .expect("token ends at quote/tag");
+        mail.body_html[start..start + end].to_string()
+    }
+
+    fn email_cfg() -> RuntimeConfig {
+        RuntimeConfig {
+            smtp: smtp_cfg(),
+            ..test_config()
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_invite_emails_a_link_instead_of_creating_the_user() {
+        let (app, state, sender) = test_router_with_email(email_cfg()).await;
+        let cookie = admin_cookie(&app).await;
+
+        let res = req(
+            app,
+            "POST",
+            "/admin/users/invite",
+            {
+                let mut h = login_headers();
+                h.insert(COOKIE, cookie.parse().unwrap());
+                h
+            },
+            Some(Body::from("email=newcomer@example.com&role=reader")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 8192).await.unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("Invitation email sent"), "page: {body}");
+        assert!(
+            !body.contains("Temporary password"),
+            "no temp password when SMTP is on: {body}"
+        );
+
+        // Exactly one email, addressed correctly, carrying a link.
+        assert_eq!(sender.count(), 1);
+        let mail = sender.only();
+        assert_eq!(mail.to, "newcomer@example.com");
+        assert!(mail.body_html.contains("/invite/"));
+
+        // The user does NOT exist yet — only after they set a password.
+        assert!(
+            state
+                .store
+                .role_for("newcomer@example.com")
+                .await
+                .unwrap()
+                .is_none(),
+            "no account before acceptance"
+        );
+    }
+
+    #[tokio::test]
+    async fn invite_link_creates_the_account_on_submit() {
+        let (app, state, sender) = test_router_with_email(email_cfg()).await;
+        let cookie = admin_cookie(&app).await;
+        req(
+            app.clone(),
+            "POST",
+            "/admin/users/invite",
+            {
+                let mut h = login_headers();
+                h.insert(COOKIE, cookie.parse().unwrap());
+                h
+            },
+            Some(Body::from("email=newcomer@example.com&role=reader")),
+        )
+        .await;
+        let token = invite_token_from(&sender.only());
+
+        // GET the invite page: it shows the login + role.
+        let res = req(
+            app.clone(),
+            "GET",
+            &format!("/invite/{token}"),
+            HeaderMap::new(),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let page = to_bytes(res.into_body(), 8192).await.unwrap();
+        let page = String::from_utf8_lossy(&page);
+        assert!(page.contains("newcomer@example.com"), "invite page: {page}");
+        assert!(page.contains("reader"));
+
+        // POST the chosen password (tampered email field must be ignored).
+        let res = req(
+            app.clone(),
+            "POST",
+            &format!("/invite/{token}"),
+            login_headers(),
+            Some(Body::from("email=attacker%40evil.fr&password=Ch0osen!pw")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let page = to_bytes(res.into_body(), 8192).await.unwrap();
+        assert!(String::from_utf8_lossy(&page).contains("Welcome to MoriNet"));
+
+        // Account exists with the INVITED email and role (not the tampered one).
+        let users = state.store.list_users().await.unwrap();
+        assert!(
+            users
+                .iter()
+                .any(|u| u.email == "newcomer@example.com" && u.role == "reader"),
+            "invited identity created"
+        );
+        assert!(!users.iter().any(|u| u.email == "attacker@evil.fr"));
+        // Chosen password works.
+        assert!(state
+            .store
+            .verify_login("newcomer@example.com", "Ch0osen!pw")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn invite_link_is_single_use() {
+        let (app, state, sender) = test_router_with_email(email_cfg()).await;
+        let cookie = admin_cookie(&app).await;
+        req(
+            app.clone(),
+            "POST",
+            "/admin/users/invite",
+            {
+                let mut h = login_headers();
+                h.insert(COOKIE, cookie.parse().unwrap());
+                h
+            },
+            Some(Body::from("email=newcomer@example.com&role=reader")),
+        )
+        .await;
+        let token = invite_token_from(&sender.only());
+
+        let ok = req(
+            app.clone(),
+            "POST",
+            &format!("/invite/{token}"),
+            login_headers(),
+            Some(Body::from(
+                "email=newcomer%40example.com&password=First!pw1",
+            )),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        // Replay refused.
+        let replay = req(
+            app.clone(),
+            "POST",
+            &format!("/invite/{token}"),
+            login_headers(),
+            Some(Body::from(
+                "email=newcomer%40example.com&password=Other!pw2",
+            )),
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+        // First password stands.
+        assert!(state
+            .store
+            .verify_login("newcomer@example.com", "First!pw1")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn invalid_invite_link_shows_error_page() {
+        let (app, _state, _sender) = test_router_with_email(email_cfg()).await;
+        let res = req(
+            app,
+            "GET",
+            "/invite/not-a-real-token",
+            HeaderMap::new(),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let page = to_bytes(res.into_body(), 8192).await.unwrap();
+        assert!(String::from_utf8_lossy(&page).contains("invalid"));
+    }
+
+    #[tokio::test]
+    async fn password_reset_flow_emails_link_and_updates_password() {
+        let (app, state, sender) = test_router_with_email(email_cfg()).await;
+        // A reader account to reset.
+        state
+            .store
+            .create_user("reader@example.com", "Old!pw123", "reader")
+            .await
+            .unwrap();
+
+        // Request the reset.
+        let res = req(
+            app.clone(),
+            "POST",
+            "/reset",
+            login_headers(),
+            Some(Body::from("email=reader%40example.com")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(sender.count(), 1);
+        let mail = sender.only();
+        assert_eq!(mail.to, "reader@example.com");
+        assert!(mail.body_html.contains("/reset/"));
+        let token = reset_token_from(&mail);
+
+        // GET reset page, then submit a new password.
+        let res = req(
+            app.clone(),
+            "GET",
+            &format!("/reset/{token}"),
+            HeaderMap::new(),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = req(
+            app.clone(),
+            "POST",
+            &format!("/reset/{token}"),
+            login_headers(),
+            Some(Body::from("password=Fresh!pw456")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // New password works, old one is dead.
+        assert!(state
+            .store
+            .verify_login("reader@example.com", "Fresh!pw456")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(state
+            .store
+            .verify_login("reader@example.com", "Old!pw123")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn reset_for_unknown_login_is_silent_and_sends_nothing() {
+        let (app, _state, sender) = test_router_with_email(email_cfg()).await;
+        let res = req(
+            app,
+            "POST",
+            "/reset",
+            login_headers(),
+            Some(Body::from("email=ghost%40example.com")),
+        )
+        .await;
+        // Same answer as a valid login — no enumeration.
+        assert_eq!(res.status(), StatusCode::OK);
+        let page = to_bytes(res.into_body(), 8192).await.unwrap();
+        assert!(String::from_utf8_lossy(&page).contains("If that account exists"));
+        assert_eq!(sender.count(), 0, "no email for an unknown login");
+    }
+
+    #[tokio::test]
+    async fn reset_rejects_short_password() {
+        let (app, state, sender) = test_router_with_email(email_cfg()).await;
+        state
+            .store
+            .create_user("reader@example.com", "Old!pw123", "reader")
+            .await
+            .unwrap();
+        req(
+            app.clone(),
+            "POST",
+            "/reset",
+            login_headers(),
+            Some(Body::from("email=reader%40example.com")),
+        )
+        .await;
+        let token = reset_token_from(&sender.only());
+        let res = req(
+            app,
+            "POST",
+            &format!("/reset/{token}"),
+            login_headers(),
+            Some(Body::from("password=short")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // Token was NOT consumed by the rejected attempt.
+        assert!(state
+            .store
+            .validate_reset_token(&token_hash(&token))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn invite_accept_rejects_short_password() {
+        let (app, state, sender) = test_router_with_email(email_cfg()).await;
+        let cookie = admin_cookie(&app).await;
+        req(
+            app.clone(),
+            "POST",
+            "/admin/users/invite",
+            {
+                let mut h = login_headers();
+                h.insert(COOKIE, cookie.parse().unwrap());
+                h
+            },
+            Some(Body::from("email=newcomer@example.com&role=reader")),
+        )
+        .await;
+        let token = invite_token_from(&sender.only());
+        let res = req(
+            app,
+            "POST",
+            &format!("/invite/{token}"),
+            login_headers(),
+            Some(Body::from("email=newcomer%40example.com&password=short")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // No account created, token still live.
+        assert!(state
+            .store
+            .validate_invitation(&token_hash(&token))
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
