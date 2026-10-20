@@ -19,6 +19,8 @@ pub fn default_config() -> String {
 
 [server]
 bind_addr = "127.0.0.1:8080"
+# Must match the public origin behind TLS (e.g. https://morinet.treklair.fr),
+# otherwise redirects and the session cookie are built on the wrong origin.
 base_url = "http://localhost:8080"
 
 [storage]
@@ -39,7 +41,7 @@ cookie_name = "morinet_session"
 
 [admin]
 # Optional: bootstrap an admin on first boot if these are set in env
-# MORINET_BOOTSTRAP_ADMIN_EMAIL / MORINET_BOOTSTRAP_ADMIN_PASSWORD
+# MORINET_ADMIN_EMAIL / MORINET_ADMIN_PASSWORD
 
 [vaults]
 # [[vaults.entries]]
@@ -63,7 +65,7 @@ mod tests {
     #[test]
     fn version_matches_cargo_pkg_version() {
         // Explicit guard: bump this alongside Cargo.toml on every release.
-        assert_eq!(version(), "0.1.1");
+        assert_eq!(version(), "0.1.2");
     }
 
     #[test]
