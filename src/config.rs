@@ -32,17 +32,30 @@ pub struct StorageSection {
 pub struct VaultsSection {
     #[serde(default)]
     pub entries: Vec<VaultEntry>,
+    /// Background sync interval for `github` vaults, in seconds (default 300).
+    #[serde(default)]
+    pub sync_interval_secs: Option<u64>,
 }
 
-/// A vault registered in config (seeded into the DB at boot, Phase 2).
+/// A vault registered in config (seeded into the DB at boot).
 #[derive(Debug, Clone, Deserialize)]
 pub struct VaultEntry {
     pub slug: String,
     pub name: String,
     #[serde(default = "default_kind")]
     pub kind: String,
-    /// For `kind = "local"`: path to the compiled mdbook directory.
+    /// `local`: path to the compiled book dir. `github`: unused (see `url`).
+    #[serde(default)]
     pub path: String,
+    /// `github`: git URL to clone (https).
+    #[serde(default)]
+    pub url: String,
+    /// `github`: branch (unused in v1 — default branch is tracked).
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// `github`: optional access token for private repos (injected into the URL).
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

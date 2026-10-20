@@ -3,6 +3,7 @@
 pub mod config;
 pub mod server;
 pub mod session;
+pub mod sources;
 pub mod store;
 
 /// Current package version (compile-time from Cargo.toml).
