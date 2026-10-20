@@ -49,8 +49,30 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
     <label>Password <input type="password" name="password" required></label>
     <button type="submit">Sign in</button>
   </form>
+  <p><a href="/reset">Forgot your password?</a></p>
 </body>
 </html>"#;
+
+/// Render an app page with the embedded stylesheet + standard header/nav.
+/// Every handler-generated page MUST go through this — a raw `Html(body)`
+/// ships unstyled (verified in the browser: serif default, no card, no nav).
+fn app_page(title: &str, body: &str) -> Response {
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{t}</title>
+<link rel="stylesheet" href="/assets/style.css"></head>
+<body>
+  <h1>MoriNet</h1>
+  {b}
+</body>
+</html>"#,
+        t = html_escape(title),
+        b = body
+    );
+    Html(html).into_response()
+}
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -473,7 +495,11 @@ async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InvitePara
                 "<p style=\"color:red\">Failed to create invitation: {}</p><p><a href=\"/admin/users\">Back</a></p>",
                 html_escape(&e.to_string())
             );
-            return (StatusCode::BAD_REQUEST, Html(body)).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                app_page("Invitation failed", &body),
+            )
+                .into_response();
         }
         let url = format!("{}/invite/{}", state.cfg.base_url, token);
         let mail = invitation_email(&p.email, &url, &p.role);
@@ -485,7 +511,11 @@ async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InvitePara
                 html_escape(&e.to_string()),
                 html_escape(&url)
             );
-            return (StatusCode::BAD_GATEWAY, Html(body)).into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                app_page("Invitation sent (manual)", &body),
+            )
+                .into_response();
         }
         let body = format!(
             "<p>Invitation email sent to <strong>{}</strong> with role <strong>{}</strong>.</p><p>The account is created when they set a password (link valid 24h).</p><p><a href=\"/admin/users\">Back to users</a></p>",
@@ -519,7 +549,7 @@ async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InvitePara
                 "<p style=\"color:red\">Failed to create user: {}</p><p><a href=\"/admin/users\">Back</a></p>",
                 html_escape(&e.to_string())
             );
-            (StatusCode::BAD_REQUEST, Html(body)).into_response()
+            (StatusCode::BAD_REQUEST, app_page("Invalid link", &body)).into_response()
         }
     }
 }
@@ -566,7 +596,11 @@ async fn reset_request_submit(
             "<p style=\"color:red\">Reset request failed: {}</p>",
             html_escape(&e.to_string())
         );
-        return (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            app_page("Something went wrong", &body),
+        )
+            .into_response();
     }
     let known = state
         .store
@@ -582,7 +616,7 @@ async fn reset_request_submit(
     }
     // Identical answer either way — no account enumeration.
     let body = r#"<p>If that account exists, a reset link is on its way.</p><p>Check your inbox (and spam folder).</p><p><a href="/login">Back to sign in</a></p>"#;
-    (StatusCode::OK, Html(body)).into_response()
+    app_page("Reset your password", body)
 }
 
 async fn reset_form(State(state): State<SharedState>, Path(token): Path<String>) -> Response {
@@ -596,14 +630,14 @@ async fn reset_form(State(state): State<SharedState>, Path(token): Path<String>)
         return invalid_token_page().await;
     }
     let body = format!(
-        r#"<h1>Choose a new password</h1>
+        r#"<h2>Choose a new password</h2>
 <form method="post" action="/reset/{t}" novalidate>
   <label>New password <input type="password" name="password" required></label>
   <button type="submit">Save</button>
 </form>"#,
         t = html_escape(&token)
     );
-    (StatusCode::OK, Html(body)).into_response()
+    app_page("Reset your password", &body)
 }
 
 #[derive(Debug, Deserialize)]
@@ -625,7 +659,11 @@ async fn reset_submit(
 </form>"#,
             t = html_escape(&token)
         );
-        return (StatusCode::BAD_REQUEST, Html(body)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            app_page("Reset your password", &body),
+        )
+            .into_response();
     }
     match state
         .store
@@ -634,7 +672,7 @@ async fn reset_submit(
     {
         Ok(Some(_)) => {
             let body = r#"<p>Password updated. <a href="/login">Sign in</a>.</p>"#;
-            (StatusCode::OK, Html(body)).into_response()
+            app_page("Password updated", body)
         }
         Ok(None) => invalid_token_page().await,
         Err(e) => {
@@ -642,7 +680,11 @@ async fn reset_submit(
                 "<p style=\"color:red\">Reset failed: {}</p>",
                 html_escape(&e.to_string())
             );
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                app_page("Something went wrong", &body),
+            )
+                .into_response()
         }
     }
 }
@@ -654,7 +696,7 @@ async fn invite_accept_form(
     match state.store.validate_invitation(&token_hash(&token)).await {
         Ok(Some((email, role))) => {
             let body = format!(
-                r#"<h1>Accept your invitation</h1>
+                r#"<h2>Accept your invitation</h2>
 <p>Set a password to activate your account.</p>
 <form method="post" action="/invite/{t}" novalidate>
   <label>Login <input type="text" name="email" value="{e}" readonly></label>
@@ -666,7 +708,7 @@ async fn invite_accept_form(
                 e = html_escape(&email),
                 r = html_escape(&role)
             );
-            (StatusCode::OK, Html(body)).into_response()
+            app_page("Accept your invitation", &body)
         }
         Ok(None) => invalid_token_page().await,
         Err(e) => {
@@ -674,7 +716,11 @@ async fn invite_accept_form(
                 "<p style=\"color:red\">Invitation check failed: {}</p>",
                 html_escape(&e.to_string())
             );
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                app_page("Something went wrong", &body),
+            )
+                .into_response()
         }
     }
 }
@@ -697,7 +743,11 @@ async fn invite_accept_submit(
 ) -> Response {
     if p.password.len() < 8 {
         let body = r#"<p style="color:red">Password too short (8 characters minimum).</p>"#;
-        return (StatusCode::BAD_REQUEST, Html(body)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            app_page("Accept your invitation", body),
+        )
+            .into_response();
     }
     match state
         .store
@@ -711,7 +761,7 @@ async fn invite_accept_submit(
                 r#"<p>Welcome to MoriNet, <strong>{}</strong>.</p><p><a href="/login">Sign in</a>.</p>"#,
                 html_escape(&email)
             );
-            (StatusCode::OK, Html(body)).into_response()
+            app_page("Welcome!", &body)
         }
         Ok(None) => invalid_token_page().await,
         Err(e) => {
@@ -719,14 +769,18 @@ async fn invite_accept_submit(
                 "<p style=\"color:red\">Could not accept invitation: {}</p>",
                 html_escape(&e.to_string())
             );
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                app_page("Something went wrong", &body),
+            )
+                .into_response()
         }
     }
 }
 
 async fn invalid_token_page() -> Response {
     let body = r#"<p style="color:red">This link is invalid, already used, or expired.</p><p><a href="/login">Back to sign in</a></p>"#;
-    (StatusCode::BAD_REQUEST, Html(body)).into_response()
+    (StatusCode::BAD_REQUEST, app_page("Link expired", body)).into_response()
 }
 
 async fn admin_vaults(State(state): State<SharedState>) -> Response {
