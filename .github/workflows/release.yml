@@ -42,10 +42,7 @@ on:
   pull_request:
   push:
     tags:
-      # Match SemVer-style tags like `v0.1.0`, `v1.2.3-prerelease.1`
-      # cargo-dist's default `'**[0-9]+.[0-9]+.[0-9]+*'` is broken in GitHub tag
-      # patterns because `+` is treated as a literal, not a quantifier.
-      - 'v[0-9]*.[0-9]*.[0-9]*'
+      - '**[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
 
 jobs:
