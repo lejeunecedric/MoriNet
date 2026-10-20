@@ -1,27 +1,28 @@
 # MoriNet
 
-> Serveur [mdBook](https://rust-lang.github.io/mdBook/) qui expose un second brain Obsidian avec auth multi-utilisateurs, WebDAV et MCP.
+> Server [mdBook](https://rust-lang.github.io/mdBook/) that exposes an Obsidian second brain with multi-user auth, WebDAV, and MCP.
 
 [![CI](https://github.com/lejeunecedric/MoriNet/actions/workflows/ci.yml/badge.svg)](https://github.com/lejeunecedric/MoriNet/actions/workflows/ci.yml)
+[![Release](https://github.com/lejeunecedric/MoriNet/actions/workflows/release.yml/badge.svg)](https://github.com/lejeunecedric/MoriNet/releases)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 
-> 🚧 **Phase 0 — bootstrap**. Voir [`.planning/ROADMAP.md`](.planning/ROADMAP.md) pour la roadmap complète (8 phases).
+> 🚧 **Phase 0 — bootstrap**. See [`.planning/ROADMAP.md`](.planning/ROADMAP.md) for the full 8-phase roadmap.
 
 ## What
 
-- 📚 Sert un ou plusieurs vaults Obsidian (compilés en mdbook) sur HTTP
-- 🔐 Auth par email + mot de passe (cookies HttpOnly signés)
-- 👤 Rôles `admin` / `reader`
-- 📂 Sources = dossier local OU repo GitHub (clone + sync périodique)
-- 📡 Vaults accessibles en **WebDAV** (mêmes creds mdbook)
-- 🤖 Vaults accessibles en **MCP** (Model Context Protocol) — intégration agents IA
-- 📨 Invitations et reset mdp par email
-- 🎨 Mods visuelles mdbook custom : zoom images, sections repliables, liens externes (réplique oscbrain)
-- 🚀 Distribution : un seul binaire statique Rust, `cargo install morinet`
+- 📚 Serves one or more Obsidian vaults (compiled to mdbook) over HTTP
+- 🔐 Email + password auth (HttpOnly signed cookies)
+- 👤 `admin` / `reader` roles
+- 📂 Sources = local folder OR GitHub repo (clone + periodic sync)
+- 📡 Vaults accessible via **WebDAV** (same creds as mdbook)
+- 🤖 Vaults accessible via **MCP** (Model Context Protocol) — for AI agents
+- 📨 Invitations and password reset by email
+- 🎨 Custom mdbook visual mods: image zoom, collapsible sections, external links (inspired by oscbrain)
+- 🚀 Distribution: a single static Rust binary, `cargo install morinet`
 
 ## Install
 
-> Phase 0 : depuis ce repo. Phase 8+ : depuis `crates.io`.
+> Phase 0: from this repo. Phase 8+: from `crates.io`.
 
 ```bash
 cargo install --git https://github.com/lejeunecedric/MoriNet morinet
@@ -30,13 +31,13 @@ cargo install --git https://github.com/lejeunecedric/MoriNet morinet
 ## Quick start
 
 ```bash
-# 1. Génère un config.toml d'exemple
+# 1. Generate an example config.toml
 morinet init --out ./config.toml
 
-# 2. Édite-le (cookie_secret obligatoire : `openssl rand -hex 32`)
+# 2. Edit it (cookie_secret is required: `openssl rand -hex 32`)
 $EDITOR ./config.toml
 
-# 3. Lance le serveur (Phase 1+)
+# 3. Start the server (Phase 1+)
 morinet serve --config ./config.toml
 # → http://localhost:8080
 ```
@@ -46,32 +47,32 @@ morinet serve --config ./config.toml
 | Phase | Goal | Status |
 |-------|------|--------|
 | 00 bootstrap | repo + Cargo scaffold + CI | ✅ this phase |
-| 01 core-serve | un vault + login simple | ⬜ |
+| 01 core-serve | one vault + simple login | ⬜ |
 | 02 multi-vault | sub-paths /vaultA/, /vaultB/ | ⬜ |
-| 03 vault-sources | sources local + GitHub | ⬜ |
+| 03 vault-sources | local + GitHub sources | ⬜ |
 | 04 admin-ui | invite, perms, vault mgmt | ⬜ |
 | 05 email | SMTP + invitations + reset | ⬜ |
-| 06 webdav | exposition WebDAV | ⬜ |
+| 06 webdav | WebDAV exposure | ⬜ |
 | 07 mcp | MCP StreamableHttp | ⬜ |
 | 08 polish | installer + README + release v1.0 | ⬜ |
 
-Voir [`.planning/REQUIREMENTS.md`](.planning/REQUIREMENTS.md) pour les 48 REQ-IDs catalog.
+See [`.planning/REQUIREMENTS.md`](.planning/REQUIREMENTS.md) for the 48 REQ-IDs catalog.
 
 ## Architecture & decisions
 
-Toutes les décisions architecturales sont tracées dans [`.planning/STATE.md`](.planning/STATE.md) (AD-1 à AD-10) avec rationale. Points clés :
+All architectural decisions are tracked in [`.planning/STATE.md`](.planning/STATE.md) (AD-1 to AD-10) with rationale. Key points:
 
-- **Stack 100% Rust** (mono-crate `morinet`)
-- **mdbook upstream** + thème "mori" injecté via `additional-css` / `additional-js` (pas de fork)
-- **SQLite par défaut** (sqlx), fichier `data/morinet.db`
-- **Cookies HttpOnly signés** (HMAC) + bcrypt pour mdp
-- **WebDAV** = 3 handlers axum custom (~200 lignes, full contrôle)
-- **MCP** via crate `rmcp`, StreamableHttp
+- **Stack 100% Rust** (single-crate `morinet`)
+- **mdbook upstream** + a "mori" theme injected via `additional-css` / `additional-js` (no fork)
+- **SQLite by default** (sqlx), file at `data/morinet.db`
+- **HttpOnly signed cookies** (HMAC) + bcrypt for passwords
+- **WebDAV** = 3 custom axum handlers (~200 lines, full control)
+- **MCP** via the `rmcp` crate, StreamableHttp
 
 ## License
 
-MIT OR Apache-2.0 — voir [LICENSE](LICENSE).
+MIT OR Apache-2.0 — see [LICENSE](LICENSE).
 
-## Crédits
+## Credits
 
-Inspiré visuellement par [oscbrain.hollitech.fr](https://oscbrain.hollitech.fr/) (mods CSS/JS zoom + fold).
+Visually inspired by [oscbrain.hollitech.fr](https://oscbrain.hollitech.fr/) (zoom + fold CSS/JS mods).
