@@ -1,0 +1,23 @@
+# Build artifacts
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Local-only runtime data
+/data
+/config.toml
+/config.local.toml
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
