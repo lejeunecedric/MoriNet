@@ -13,7 +13,8 @@
 - **Commits locaux** : 4 (chore planning → feat scaffold → docs readme → ci workflow)
 - **Push** : pas encore fait — pas de credential helper, ni SSH, ni `gh auth`
   → commande one-liner `gh auth login && git push -u origin main && git push origin v0.1.0` à lancer par user
-- **Prochaine action** : attendre cargo-dist install (background) → `cargo dist init` → commit → tag v0.1.0 → push
+- **Prochaine action** : ~~attendre cargo-dist install~~ ✅ fait (cargo-dist v0.32.0), `dist init` scaffolé le release.yml
+- **Tag v0.1.0** : posé localement, sera poussé avec le main
 
 ## Décisions Architecturales (AD)
 
