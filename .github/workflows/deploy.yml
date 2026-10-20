@@ -97,15 +97,21 @@ jobs:
           target: "/opt/morinet/bin/"
           overwrite: true
 
-      - name: Smoke check over SSH
+      - name: Restart service + smoke check over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # Requires a sudoers entry on holldemo (vops):
+          #   <deploy-user> ALL=(root) NOPASSWD: /usr/bin/systemctl restart morinet
           script: |
             chmod +x /opt/morinet/bin/morinet
             /opt/morinet/bin/morinet --version
-            # Phase 1+ adds:
-            # sudo systemctl restart morinet
-            # curl -fsS http://localhost:8080/health
+            if sudo -n systemctl restart morinet 2>/dev/null; then
+              echo "service restarted"
+            else
+              echo "::warning::could not restart morinet (sudoers entry missing?); binary updated, service still on previous build"
+            fi
+            sleep 1
+            curl -fsS http://localhost:8080/health || echo "::warning::/health not reachable (service not running?)"
