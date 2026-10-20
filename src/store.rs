@@ -157,7 +157,7 @@ impl Store {
         }
     }
 
-    async fn list_all_vaults(&self) -> anyhow::Result<Vec<Vault>> {
+    pub async fn list_all_vaults(&self) -> anyhow::Result<Vec<Vault>> {
         let rows: Vec<(i64, String, String, String)> =
             sqlx::query_as("SELECT id, slug, name, book_path FROM vaults ORDER BY slug")
                 .fetch_all(&self.pool)
@@ -218,6 +218,20 @@ impl Store {
         Ok(())
     }
 
+    /// Revoke a user's access to a vault (idempotent).
+    pub async fn revoke_acl(&self, email: &str, slug: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "DELETE FROM vault_acl \
+             WHERE user_id = (SELECT id FROM users WHERE email = ?) \
+             AND vault_id = (SELECT id FROM vaults WHERE slug = ?)",
+        )
+        .bind(email)
+        .bind(slug)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Create a reader user directly (tests / future admin-ui).
     pub async fn create_user(&self, email: &str, password: &str, role: &str) -> anyhow::Result<()> {
         let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)?;
@@ -225,6 +239,36 @@ impl Store {
             .bind(email)
             .bind(hash)
             .bind(role)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// List all users (admin-ui table).
+    pub async fn list_users(&self) -> anyhow::Result<Vec<User>> {
+        let rows: Vec<(i64, String, String)> =
+            sqlx::query_as("SELECT id, email, role FROM users ORDER BY email")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, email, role)| User { id, email, role })
+            .collect())
+    }
+
+    /// Role of a user (None if unknown email) — used by the admin gate.
+    pub async fn role_for(&self, email: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT role FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(r,)| r))
+    }
+
+    /// Delete a vault and its ACL rows (FK ON DELETE CASCADE handles the ACL).
+    pub async fn delete_vault(&self, slug: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM vaults WHERE slug = ?")
+            .bind(slug)
             .execute(&self.pool)
             .await?;
         Ok(())

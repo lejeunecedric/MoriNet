@@ -2,6 +2,7 @@
 //! per-slug vault serving with ACL checks (Phase 2).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Form, Path, Request, State};
@@ -9,7 +10,7 @@ use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
 
@@ -80,9 +81,52 @@ pub fn build_router(cfg: RuntimeConfig, store: Store) -> Router {
             state.clone(),
             require_session,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
-    public.merge(protected)
+    // Admin routes: gate by role=admin (require_admin is self-contained — it
+    // verifies the cookie itself since require_session is not in this chain).
+    let admin = Router::new()
+        .route("/admin", get(admin_dashboard))
+        .route("/admin/users", get(admin_users))
+        .route("/admin/users/invite", post(admin_invite))
+        .route("/admin/vaults", get(admin_vaults))
+        .route("/admin/vaults/create", post(admin_create_vault))
+        .route("/admin/vaults/{slug}/perms", get(admin_perms))
+        .route("/admin/vaults/{slug}/acl", post(admin_update_acl))
+        .route("/admin/vaults/{slug}/delete", post(admin_delete_vault))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin))
+        .with_state(state.clone());
+
+    public.merge(protected).merge(admin)
+}
+
+/// Admin gate (REQ-ADMIN-001): valid cookie + role=admin, else 403.
+async fn require_admin(State(state): State<SharedState>, req: Request, next: Next) -> Response {
+    let claims = req
+        .headers()
+        .get(COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_cookies)
+        .and_then(|cookies| cookies.get(&state.cfg.cookie_name).cloned())
+        .and_then(|token| state.codec.verify(&token, unix_now()));
+
+    let is_admin = match claims {
+        Some(claims) => state
+            .store
+            .role_for(&claims.email)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r == "admin")
+            .unwrap_or(false),
+        None => false,
+    };
+
+    if is_admin {
+        next.run(req).await
+    } else {
+        StatusCode::FORBIDDEN.into_response()
+    }
 }
 
 // ---------- handlers ----------
@@ -275,6 +319,246 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+// ---------- admin handlers (Phase 4) ----------
+
+async fn admin_page(title: &str, body: String) -> Response {
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>MoriNet — {title}</title></head>
+<body>
+  <h1>MoriNet admin</h1>
+  <nav><a href="/">Vaults</a> | <a href="/admin/users">Users</a> | <a href="/admin/vaults">Vaults mgmt</a></nav>
+  <h2>{title}</h2>
+  {body}
+</body>
+</html>"#
+    ))
+    .into_response()
+}
+
+async fn admin_dashboard(State(state): State<SharedState>) -> Response {
+    let users = state.store.list_users().await.unwrap_or_default();
+    let vaults = state.store.list_all_vaults().await.unwrap_or_default();
+    let body = format!("<p>{} user(s), {} vault(s)</p>", users.len(), vaults.len());
+    admin_page("Dashboard", body).await
+}
+
+async fn admin_users(State(state): State<SharedState>) -> Response {
+    let users = state.store.list_users().await.unwrap_or_default();
+    let mut rows = String::new();
+    for u in &users {
+        rows.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td></tr>\n",
+            html_escape(&u.email),
+            html_escape(&u.role)
+        ));
+    }
+    let body = format!(
+        r#"<table border="1" cellpadding="4"><tr><th>Email</th><th>Role</th></tr>
+{rows}</table>
+<h3>Invite a user</h3>
+<form method="post" action="/admin/users/invite" novalidate>
+  <label>Login <input type="text" name="email" required></label>
+  <label>Role <select name="role"><option value="reader">reader</option><option value="admin">admin</option></select></label>
+  <button type="submit">Invite</button>
+</form>"#
+    );
+    admin_page("Users", body).await
+}
+
+#[derive(Debug, Deserialize)]
+struct InviteParams {
+    email: String,
+    #[serde(default = "default_invite_role")]
+    role: String,
+}
+
+fn default_invite_role() -> String {
+    "reader".to_string()
+}
+
+async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InviteParams>) -> Response {
+    // Temp password shown once to the admin (email delivery comes in Phase 5).
+    let temp_password = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    match state
+        .store
+        .create_user(&p.email, &temp_password, &p.role)
+        .await
+    {
+        Ok(()) => {
+            let body = format!(
+                r#"<p>User <strong>{}</strong> created with role <strong>{}</strong>.</p>
+<p>Temporary password (shown once): <code>{}</code></p>
+<p><a href="/admin/users">Back to users</a></p>"#,
+                html_escape(&p.email),
+                html_escape(&p.role),
+                temp_password
+            );
+            admin_page("User invited", body).await
+        }
+        Err(e) => {
+            let body = format!(
+                "<p style=\"color:red\">Failed to create user: {}</p><p><a href=\"/admin/users\">Back</a></p>",
+                html_escape(&e.to_string())
+            );
+            (StatusCode::BAD_REQUEST, Html(body)).into_response()
+        }
+    }
+}
+
+async fn admin_vaults(State(state): State<SharedState>) -> Response {
+    let vaults = state.store.list_all_vaults().await.unwrap_or_default();
+    let mut rows = String::new();
+    for v in &vaults {
+        rows.push_str(&format!(
+            r#"<tr><td><a href="/admin/vaults/{s}/perms">{s}</a></td><td>{n}</td><td><form method="post" action="/admin/vaults/{s}/delete" style="display:inline"><button type="submit">Delete</button></form></td></tr>
+"#,
+            s = html_escape(&v.slug),
+            n = html_escape(&v.name)
+        ));
+    }
+    let body = format!(
+        r#"<table border="1" cellpadding="4"><tr><th>Slug</th><th>Name</th><th></th></tr>
+{rows}</table>
+<h3>Add a vault</h3>
+<form method="post" action="/admin/vaults/create" novalidate>
+  <label>Slug <input type="text" name="slug" required></label>
+  <label>Name <input type="text" name="name" required></label>
+  <label>Kind <select name="kind" onchange="document.getElementById('gh-fields').style.display = this.value==='github'?'block':'none'; document.getElementById('lo-fields').style.display = this.value==='local'?'block':'none';"><option value="local">local</option><option value="github">github</option></select></label>
+  <span id="lo-fields"><label>Book dir path <input type="text" name="path"></label></span>
+  <span id="gh-fields" style="display:none"><label>Git URL <input type="text" name="url"></label><label>Token <input type="text" name="token"></label></span>
+  <button type="submit">Add</button>
+</form>
+<p><em>Note:</em> `local` expects a compiled book directory; `github` expects a repo with <code>book.toml</code> + <code>src/SUMMARY.md</code> (cloned + built on add, re-synced every 5 min).</p>"#
+    );
+    admin_page("Vaults", body).await
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateVaultParams {
+    slug: String,
+    name: String,
+    kind: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    token: String,
+}
+
+async fn admin_create_vault(
+    State(state): State<SharedState>,
+    Form(p): Form<CreateVaultParams>,
+) -> Response {
+    // Resolve + build now so failures surface immediately in the admin UI.
+    use crate::sources::{GitSource, LocalSource, VaultSource};
+    let data_dir = std::path::PathBuf::from("data");
+    let result = match p.kind.as_str() {
+        "local" => {
+            let src = LocalSource {
+                path: PathBuf::from(&p.path),
+            };
+            src.sync().and_then(|d| src.build(&d))
+        }
+        "github" => {
+            let src = GitSource::github(
+                p.url.clone(),
+                (!p.token.is_empty()).then(|| p.token.clone()),
+                data_dir.join("repos").join(&p.slug),
+            );
+            src.sync().and_then(|d| src.build(&d))
+        }
+        other => return error_page(&format!("unknown kind '{other}'")),
+    };
+
+    match result {
+        Ok(book_dir) => match state.store.seed_vault(&p.slug, &p.name, &book_dir).await {
+            Ok(()) => Redirect::to("/admin/vaults").into_response(),
+            Err(e) => error_page(&format!("seed failed: {e}")),
+        },
+        Err(e) => error_page(&format!("sync/build failed: {e}")),
+    }
+}
+
+fn error_page(msg: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Html(format!(
+            r#"<p style="color:red">{}</p><p><a href="/admin/vaults">Back to vaults</a></p>"#,
+            html_escape(msg)
+        )),
+    )
+        .into_response()
+}
+
+async fn admin_perms(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
+    let users = state.store.list_users().await.unwrap_or_default();
+    let mut rows = String::new();
+    for u in &users {
+        let allowed = state
+            .store
+            .acl_allows(&u.email, &slug)
+            .await
+            .unwrap_or(false);
+        let action = if allowed { "revoke" } else { "grant" };
+        rows.push_str(&format!(
+            r#"<tr><td>{}</td><td>{}</td><td><form method="post" action="/admin/vaults/{}/acl" style="display:inline">
+<input type="hidden" name="user_email" value="{}">
+<input type="hidden" name="action" value="{action}">
+<button type="submit">{action}</button></form></td></tr>
+"#,
+            html_escape(&u.email),
+            if allowed { "granted" } else { "denied" },
+            html_escape(&slug),
+            html_escape(&u.email)
+        ));
+    }
+    let body = format!(
+        r#"<p>Vault: <strong>{}</strong></p>
+<table border="1" cellpadding="4"><tr><th>User</th><th>Access</th><th>Action</th></tr>
+{rows}</table>
+<p><a href="/admin/vaults">Back to vaults</a></p>"#,
+        html_escape(&slug)
+    );
+    admin_page("Vault permissions", body).await
+}
+
+#[derive(Debug, Deserialize)]
+struct AclParams {
+    user_email: String,
+    action: String,
+}
+
+async fn admin_update_acl(
+    State(state): State<SharedState>,
+    Path(slug): Path<String>,
+    Form(p): Form<AclParams>,
+) -> Response {
+    let result = match p.action.as_str() {
+        "grant" => state.store.grant_acl(&p.user_email, &slug).await,
+        "revoke" => state.store.revoke_acl(&p.user_email, &slug).await,
+        _ => return error_page(&format!("unknown action '{}'", p.action)),
+    };
+    match result {
+        Ok(()) => {
+            Redirect::to(&format!("/admin/vaults/{}/perms", html_escape(&slug))).into_response()
+        }
+        Err(e) => error_page(&format!("ACL update failed: {e}")),
+    }
+}
+
+async fn admin_delete_vault(
+    State(state): State<SharedState>,
+    Path(slug): Path<String>,
+) -> Response {
+    match state.store.delete_vault(&slug).await {
+        Ok(()) => Redirect::to("/admin/vaults").into_response(),
+        Err(e) => error_page(&format!("delete failed: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,7 +735,7 @@ mod tests {
     async fn index_lists_accessible_vaults() {
         let (app, _) = test_router().await;
         let cookie = login_cookie(&app).await;
-        let headers = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
         let res = req(app, "GET", "/", headers, None).await;
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), 8192).await.unwrap();
@@ -464,7 +748,7 @@ mod tests {
     async fn admin_reads_vault_files() {
         let (app, _) = test_router().await;
         let cookie = login_cookie(&app).await;
-        let headers = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
         let res = req(app.clone(), "GET", "/vault/demo/", headers.clone(), None).await;
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), 8192).await.unwrap();
@@ -480,7 +764,7 @@ mod tests {
     async fn path_traversal_is_blocked() {
         let (app, _) = test_router().await;
         let cookie = login_cookie(&app).await;
-        let headers = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
         let res = req(app, "GET", "/vault/demo/../etc/passwd", headers, None).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
@@ -523,10 +807,181 @@ mod tests {
             .unwrap()
             .to_string();
         let cookie = set_cookie.split(';').next().unwrap().to_string();
-        let headers = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
 
         // But vault access is forbidden (REQ-VAULT-004).
         let res = req(app, "GET", "/vault/demo/", headers, None).await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ---------- Phase 4: admin-ui ----------
+
+    async fn admin_cookie(app: &Router) -> String {
+        login_cookie(app).await // fixture admin is role=admin
+    }
+
+    async fn reader_cookie(app: &Router, state: &SharedState) -> String {
+        state
+            .store
+            .create_user("plain@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let res = req(
+            app.clone(),
+            "POST",
+            "/login",
+            login_headers(),
+            Some(Body::from("email=plain%40example.com&password=pw")),
+        )
+        .await;
+        let set_cookie = res
+            .headers()
+            .get(SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        set_cookie.split(';').next().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn admin_pages_require_admin_role() {
+        let (app, state) = test_router().await;
+        let reader = reader_cookie(&app, &state).await;
+        let headers = HeaderMap::from_iter([(COOKIE, reader.parse().unwrap())]);
+        for uri in ["/admin", "/admin/users", "/admin/vaults"] {
+            let res = req(app.clone(), "GET", uri, headers.clone(), None).await;
+            assert_eq!(
+                res.status(),
+                StatusCode::FORBIDDEN,
+                "{uri} must be 403 for readers"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_sees_users_page_and_dashboard() {
+        let (app, _) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+
+        let res = req(app.clone(), "GET", "/admin", headers.clone(), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let res = req(app, "GET", "/admin/users", headers, None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 8192).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("admin@example.com"));
+    }
+
+    #[tokio::test]
+    async fn invite_creates_reader_with_temp_password() {
+        let (app, state) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+
+        let res = req(
+            app,
+            "POST",
+            "/admin/users/invite",
+            {
+                let mut h = login_headers();
+                h.insert(COOKIE, cookie.parse().unwrap());
+                h
+            },
+            Some(Body::from("email=newbie@example.com&role=reader")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 8192).await.unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("newbie@example.com"), "confirmation: {body}");
+        assert!(
+            body.contains("Temporary password"),
+            "temp password shown once"
+        );
+
+        // The user exists with role=reader and can log in with the temp password.
+        let user = state
+            .store
+            .verify_login("newbie@example.com", "pw")
+            .await
+            .unwrap();
+        assert!(user.is_none(), "placeholder pw must not work");
+
+        // Extract the temp password from the page and verify it works.
+        let start = body.find("<code>").unwrap() + 6;
+        let end = body[start..].find("</code>").unwrap() + start;
+        let temp_password = body[start..end].to_string();
+        let user = state
+            .store
+            .verify_login("newbie@example.com", &temp_password)
+            .await
+            .unwrap()
+            .expect("temp password verifies");
+        assert_eq!(user.role, "reader");
+    }
+
+    #[tokio::test]
+    async fn admin_can_grant_and_revoke_acl() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("reader@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let cookie = admin_cookie(&app).await;
+
+        // Grant via the admin endpoint.
+        let mut headers = login_headers();
+        headers.insert(COOKIE, cookie.parse().unwrap());
+        let res = req(
+            app.clone(),
+            "POST",
+            "/admin/vaults/demo/acl",
+            headers.clone(),
+            Some(Body::from("user_email=reader@example.com&action=grant")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(state
+            .store
+            .acl_allows("reader@example.com", "demo")
+            .await
+            .unwrap());
+
+        // Revoke.
+        let res = req(
+            app.clone(),
+            "POST",
+            "/admin/vaults/demo/acl",
+            headers,
+            Some(Body::from("user_email=reader@example.com&action=revoke")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(!state
+            .store
+            .acl_allows("reader@example.com", "demo")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn admin_can_delete_a_vault() {
+        let (app, state) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+
+        let res = req(
+            app,
+            "POST",
+            "/admin/vaults/demo/delete",
+            headers,
+            Some(Body::empty()),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let vaults = state.store.list_all_vaults().await.unwrap();
+        assert!(vaults.is_empty(), "demo vault deleted");
     }
 }
