@@ -4,19 +4,16 @@
 
 ---
 
-## Current position (2026-10-20, Phase 1 core-serve shipped)
+## Current position (2026-10-20, Phase 4 done — handoff to next agent)
 
-- **Active phase**: 01 core-serve — CODE DONE, smoke-tested live, pushed
-- **Phase 0**: ✅ done end-to-end (release v0.1.0 published, 16 assets, CI green)
-- **Phase 1 deliverables**:
-  - `src/config.rs` — config file + env resolution (secret precedence env > file, admin from env)
-  - `src/session.rs` — HMAC-SHA256 signed cookie codec (constant-time, TTL 24h, tamper/expiry rejection)
-  - `src/server.rs` — axum router: `/health` public, `/login` GET/POST, `require_session` middleware, `/vault/*` ServeDir gated; 7 e2e tests via `tower::oneshot`
-  - `morinet serve --config <path> --vault <book-dir>` wired in CLI
-  - **22/22 tests green, clippy `-D warnings` clean, fmt clean**
-  - **Live smoke test passed**: health "ok"; anonymous `/` and `/vault/` → 303 /login; bad creds → 401; good creds → 303 + HttpOnly SameSite=Lax cookie; authed `/vault/` serves vault content
-- **Deploy pipeline**: `.github/workflows/deploy.yml` ready (release:published + manual). Ops brief handed to vops (`/home/holli/extdisk/workspace/vops/morinet-deploy-brief.md`); target morinet.treklair.fr → 51.255.206.62. Awaiting secrets DEPLOY_HOST/DEPLOY_USER/DEPLOY_SSH_KEY + server provisioning; full serve deploy possible once v0.1.1 is tagged.
-- **Next**: ~~Phase 2~~ ✅ done. Phase 3 (vault-sources: local + GitHub clone/sync) ou tag v0.1.1 pour holldemo.
+- **Latest release**: v0.1.6 (embedded stylesheet + admin nav on index) — releasing at handoff time; if holldemo lags behind, re-dispatch Deploy with `inputs.tag=v0.1.6`
+- **Live instance**: https://morinet.treklair.fr — login `demo`/`demo`, admin-ui accessible via the **Admin** nav link on the index
+- **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui
+- **44/44 tests**, clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
+- **Auto-scaffold of raw wikis REVERTED** (`2b924f3`): vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The B3Wiki/ProgWiki import was a format-validation test, not a feature — see HANDOFF.md before re-attempting
+- **Deploy quirks**: staging + atomic `mv` (ETXTBSY), re-dispatch may be needed right after a release finishes (tag-push deploy races the release and falls back to "latest release")
+- **Next**: Phase 5 (email via lettre) → Phase 6 (WebDAV) → Phase 7 (MCP) → Phase 8 (polish v1.0)
+- **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
 ## Architectural Decisions (AD)
 
