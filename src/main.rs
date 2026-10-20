@@ -79,30 +79,83 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
     let rt = morinet::config::resolve(file_cfg.clone(), vault.clone())?;
     let bind_addr = rt.bind_addr.clone();
 
-    // Phase 2: SQLite store, bootstrap admin, seed vaults from config.
-    let db_path = std::path::PathBuf::from(&file_cfg.storage.data_dir).join("morinet.db");
-    let store = morinet::store::Store::connect(&db_path).await?;
+    // Phase 2: SQLite store, bootstrap admin.
+    let data_dir = std::path::PathBuf::from(&file_cfg.storage.data_dir);
+    let store = morinet::store::Store::connect(&data_dir.join("morinet.db")).await?;
     store
         .ensure_admin(&rt.admin_email, &rt.admin_password)
         .await?;
-    match &vault {
-        Some(book_dir) => {
-            store.seed_vault("demo", "Demo vault", book_dir).await?;
-        }
-        None => {
-            for entry in &file_cfg.vaults.entries {
-                if entry.kind == "local" {
+
+    // Phase 3: resolve vault sources (local | github), sync + build + seed.
+    use morinet::sources::{GitSource, LocalSource, VaultSource};
+    let mut github_sources: Vec<(String, Box<dyn VaultSource>, String)> = Vec::new();
+
+    if let Some(book_dir) = &vault {
+        let src = LocalSource {
+            path: book_dir.clone(),
+        };
+        let book = src.sync().and_then(|d| src.build(&d))?;
+        store.seed_vault("demo", "Demo vault", &book).await?;
+    } else {
+        for entry in &file_cfg.vaults.entries {
+            let result: anyhow::Result<PathBuf> = match entry.kind.as_str() {
+                "local" => {
+                    let src = LocalSource {
+                        path: PathBuf::from(&entry.path),
+                    };
+                    src.sync().and_then(|d| src.build(&d))
+                }
+                "github" => {
+                    let dest = data_dir.join("repos").join(&entry.slug);
+                    let src = GitSource::github(entry.url.clone(), entry.token.clone(), dest);
+                    src.sync().and_then(|d| src.build(&d))
+                }
+                other => anyhow::bail!("unknown vault kind '{other}' for '{}'", entry.slug),
+            };
+            match result {
+                Ok(book_dir) => {
                     store
-                        .seed_vault(&entry.slug, &entry.name, std::path::Path::new(&entry.path))
+                        .seed_vault(&entry.slug, &entry.name, &book_dir)
                         .await?;
-                } else {
-                    println!(
-                        "skipping vault '{}' (kind '{}' not supported before Phase 3)",
-                        entry.slug, entry.kind
-                    );
+                    if entry.kind == "github" {
+                        let dest = data_dir.join("repos").join(&entry.slug);
+                        github_sources.push((
+                            entry.slug.clone(),
+                            Box::new(GitSource::github(
+                                entry.url.clone(),
+                                entry.token.clone(),
+                                dest,
+                            )),
+                            entry.name.clone(),
+                        ));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("warning: vault '{}' failed to sync/build: {e}", entry.slug);
                 }
             }
         }
+    }
+
+    // Phase 3: background periodic sync for github sources (default 300s).
+    if !github_sources.is_empty() {
+        let interval = file_cfg.vaults.sync_interval_secs.unwrap_or(300).max(10);
+        let bg_store = store.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                for (slug, source, name) in &github_sources {
+                    match source.sync().and_then(|d| source.build(&d)) {
+                        Ok(book_dir) => {
+                            if let Err(e) = bg_store.seed_vault(slug, name, &book_dir).await {
+                                eprintln!("background sync: seed '{}' failed: {e}", slug);
+                            }
+                        }
+                        Err(e) => eprintln!("background sync '{}' failed: {e}", slug),
+                    }
+                }
+            }
+        });
     }
 
     let app = morinet::server::build_router(rt, store);
