@@ -27,13 +27,24 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
+      # `secrets` is not a valid named-value in a step-level `if:` (GitHub
+      # rejects the workflow at parse time with HTTP 422). Env vars are.
       # A published release must always land on the server: a missing secret
       # must fail loudly, never skip into a green no-op run.
       - name: Verify deploy secrets are configured
-        if: ${{ secrets.DEPLOY_HOST == '' || secrets.DEPLOY_USER == '' || secrets.DEPLOY_SSH_KEY == '' }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
-          echo "::error::Missing deploy secrets (DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY)."
-          exit 1
+          missing=""
+          [ -n "$DEPLOY_HOST" ] || missing="$missing DEPLOY_HOST"
+          [ -n "$DEPLOY_USER" ] || missing="$missing DEPLOY_USER"
+          [ -n "$DEPLOY_SSH_KEY" ] || missing="$missing DEPLOY_SSH_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing deploy secrets:$missing"
+            exit 1
+          fi
 
       # github.event.release.tag_name is null on workflow_dispatch, so fall
       # back to the dispatch input, then to the latest published release.
@@ -72,7 +83,6 @@ jobs:
           ./morinet --version
 
       - name: Install binary on holldemo
-        if: ${{ secrets.DEPLOY_HOST != '' }}
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -83,7 +93,6 @@ jobs:
           overwrite: true
 
       - name: Smoke check over SSH
-        if: ${{ secrets.DEPLOY_HOST != '' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
