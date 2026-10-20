@@ -56,7 +56,7 @@ morinet serve --config ./config.toml
 | 07 mcp | MCP StreamableHttp | ⬜ |
 | 08 polish | installer + README + release v1.0 | ⬜ |
 
-**Live**: https://morinet.treklair.fr (demo instance). **Handoff notes for agents**: [`.planning/HANDOFF.md`](.planning/HANDOFF.md).
+**Live**: https://morinet.treklair.fr — public demo instance (no real data; credentials not in this repo). **Handoff notes for agents**: [`.planning/HANDOFF.md`](.planning/HANDOFF.md).
 
 See [`.planning/REQUIREMENTS.md`](.planning/REQUIREMENTS.md) for the 48 REQ-IDs catalog.
 

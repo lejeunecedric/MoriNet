@@ -7,9 +7,9 @@
 ## Current position (2026-10-20, Phase 4 done — handoff to next agent)
 
 - **Latest release**: v0.1.6 (embedded stylesheet + admin nav on index) — releasing at handoff time; if holldemo lags behind, re-dispatch Deploy with `inputs.tag=v0.1.6`
-- **Live instance**: https://morinet.treklair.fr — login `demo`/`demo`, admin-ui accessible via the **Admin** nav link on the index
+- **Live instance**: https://morinet.treklair.fr — public demo instance, admin-ui accessible via the **Admin** nav link on the index. Credentials live on the server, not in this repo
 - **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui
-- **44/44 tests**, clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
+- **54/54 tests** (44 → 54 after the Phase 5 token-layer test pass), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
 - **Auto-scaffold of raw wikis REVERTED** (`2b924f3`): vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The B3Wiki/ProgWiki import was a format-validation test, not a feature — see HANDOFF.md before re-attempting
 - **Deploy quirks**: staging + atomic `mv` (ETXTBSY), re-dispatch may be needed right after a release finishes (tag-push deploy races the release and falls back to "latest release")
 - **Next**: Phase 5 (email via lettre) → Phase 6 (WebDAV) → Phase 7 (MCP) → Phase 8 (polish v1.0)
@@ -39,12 +39,12 @@
   - Rationale: admin UI is minimalist; Askama = Jinja-like templates compiled in Rust, zero runtime overhead, type-safe. No React/Vue/Svelte = no frontend toolchain to maintain. JS only for the mdbook customs (zoom, fold).
 - **AD-10** *(2026-10-20)* — **mdbook build triggered after sync**, not per request.
   - Rationale: `mdbook build` takes ~1-3s for a 100-page vault. Rebuilding on every GET is wasteful. Sync rebuilds on change; hot-reload disabled in prod.
-- **AD-11** *(2026-10-20)* — **Deploy pipeline: each published GitHub release auto-deploys to holldemo** (`morinet.treklair.fr` → 51.255.206.62).
+- **AD-11** *(2026-10-20)* — **Deploy pipeline: each published GitHub release auto-deploys to holldemo** (`morinet.treklair.fr`). Server host/IP intentionally not recorded here (public repo).
   - Rationale: user wants a staging target to test every release. Implemented as a SEPARATE `.github/workflows/deploy.yml` (NOT in `release.yml` — cargo-dist drift check forbids hand-editing that file, see Notable errors). Trigger: `release: published` + `workflow_dispatch` for manual runs. Phase 0 scope: download release tarball, sha256-verify, scp the binary to `/opt/morinet/bin/`, smoke-check `morinet --version` over SSH. Phase 1+ adds systemd restart + `/health` check. Server-side provisioning (systemd unit, nginx vhost, TLS) is ops-side.
 
 ## Product Decisions (PRD)
 
-- **PRD-5** *(2026-10-20)* — Staging target = `morinet.treklair.fr` on holldemo (51.255.206.62), DNS A record set by user.
+- **PRD-5** *(2026-10-20)* — Staging target = `morinet.treklair.fr` on holldemo, DNS A record set by user. Host/IP kept out of this public repo.
   - User decided. Deploys happen on every GitHub release publication.
 
 - **PRD-1** *(2026-10-20)* — Stack 100% Rust.
