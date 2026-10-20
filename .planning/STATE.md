@@ -4,17 +4,19 @@
 
 ---
 
-## Current position (2026-10-20, Phase 0 done, release triggered)
+## Current position (2026-10-20, Phase 1 core-serve shipped)
 
-- **Active phase**: 00 bootstrap — DONE locally + pushed to origin
-- **Planning status**: ✅ complete — ROADMAP / REQUIREMENTS / Phase 0 PLAN written, committed in repo
-- **Repo**: `github.com/lejeunecedric/MoriNet` (substituted `<TON-USER>` → `lejeunecedric` everywhere)
-- **Crate**: `morinet v0.1.0` built, 4 tests green, release binary in 25s
-- **Local commits**: 11 — chore planning → feat scaffold → docs README → ci workflow → style fmt → docs STATE → ci cargo-dist → docs README EN → ci release pattern fix → docs STATE
-- **Push**: ✅ done via PAT (`gho_…` in `~/.git-credentials`); `main` and tag `v0.1.0` live on origin
-- **CI**: ✅ green on `main` (lint + test + build)
-- **Release workflow**: not auto-triggered on tag (cargo-dist default tag pattern is broken — `+` is literal in GitHub tag globs); manually dispatched via `workflow_dispatch` API and now running
-- **Documentation**: README + .planning/* + .hermes/* in English
+- **Active phase**: 01 core-serve — CODE DONE, smoke-tested live, pushed
+- **Phase 0**: ✅ done end-to-end (release v0.1.0 published, 16 assets, CI green)
+- **Phase 1 deliverables**:
+  - `src/config.rs` — config file + env resolution (secret precedence env > file, admin from env)
+  - `src/session.rs` — HMAC-SHA256 signed cookie codec (constant-time, TTL 24h, tamper/expiry rejection)
+  - `src/server.rs` — axum router: `/health` public, `/login` GET/POST, `require_session` middleware, `/vault/*` ServeDir gated; 7 e2e tests via `tower::oneshot`
+  - `morinet serve --config <path> --vault <book-dir>` wired in CLI
+  - **22/22 tests green, clippy `-D warnings` clean, fmt clean**
+  - **Live smoke test passed**: health "ok"; anonymous `/` and `/vault/` → 303 /login; bad creds → 401; good creds → 303 + HttpOnly SameSite=Lax cookie; authed `/vault/` serves vault content
+- **Deploy pipeline**: `.github/workflows/deploy.yml` ready (release:published + manual). Ops brief handed to vops (`/home/holli/extdisk/workspace/vops/morinet-deploy-brief.md`); target morinet.treklair.fr → 51.255.206.62. Awaiting secrets DEPLOY_HOST/DEPLOY_USER/DEPLOY_SSH_KEY + server provisioning; full serve deploy possible once v0.1.1 is tagged.
+- **Next**: Phase 2 (multi-vault: SQLite, users table, ACL, vault switcher). Bump version to 0.1.1 when releasing Phase 1 to holldemo.
 
 ## Architectural Decisions (AD)
 
