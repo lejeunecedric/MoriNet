@@ -16,6 +16,7 @@ pub struct SessionCodec {
     secret: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Claims {
     pub email: String,
     pub expires_at: u64,
@@ -27,11 +28,14 @@ fn b64(data: &[u8]) -> String {
 
 impl SessionCodec {
     pub fn new(secret: impl Into<Vec<u8>>) -> Self {
-        Self { secret: secret.into() }
+        Self {
+            secret: secret.into(),
+        }
     }
 
     fn mac(&self, payload: &str) -> Vec<u8> {
-        let mut mac = HmacSha256::new_from_slice(&self.secret).expect("hmac accepts any key length");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.secret).expect("hmac accepts any key length");
         mac.update(payload.as_bytes());
         mac.finalize().into_bytes().to_vec()
     }
@@ -103,7 +107,10 @@ mod tests {
         let token = codec.sign("admin@treklair.fr", NOW, 60);
         // Flip the email part to another user; signature no longer matches.
         let evil = token.replacen(&b64(b"admin@treklair.fr"), &b64(b"evil@evil.fr"), 1);
-        assert!(codec.verify(&evil, NOW).is_none(), "tampered token rejected");
+        assert!(
+            codec.verify(&evil, NOW).is_none(),
+            "tampered token rejected"
+        );
     }
 
     #[test]
@@ -113,14 +120,20 @@ mod tests {
         let mut parts: Vec<String> = token.split('.').map(String::from).collect();
         parts[1] = (NOW + 999_999).to_string();
         let evil = parts.join(".");
-        assert!(codec.verify(&evil, NOW).is_none(), "extended expiry rejected");
+        assert!(
+            codec.verify(&evil, NOW).is_none(),
+            "extended expiry rejected"
+        );
     }
 
     #[test]
     fn expired_token_is_rejected() {
         let codec = SessionCodec::new(SECRET);
         let token = codec.sign("admin@treklair.fr", NOW, 60);
-        assert!(codec.verify(&token, NOW + 61).is_none(), "expired token rejected");
+        assert!(
+            codec.verify(&token, NOW + 61).is_none(),
+            "expired token rejected"
+        );
     }
 
     #[test]
