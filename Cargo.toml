@@ -33,6 +33,7 @@ base64 = "0.22"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
 bcrypt = "0.15"
 git2 = "0.19"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
