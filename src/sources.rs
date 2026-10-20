@@ -107,15 +107,14 @@ pub trait VaultSource: Send + Sync {
             } else {
                 "Home".to_string()
             };
-            let label = prettify_label(rel);
             groups.entry(group).or_default().push((rel_str, md.clone()));
         }
 
         let mut summary = String::from("# Summary\n\n");
-        let mut write_group = |name: &str,
-                               items: Vec<(String, std::path::PathBuf)>,
-                               summary: &mut String,
-                               content: &Path|
+        let write_group = |name: &str,
+                           items: Vec<(String, std::path::PathBuf)>,
+                           summary: &mut String,
+                           content: &Path|
          -> anyhow::Result<()> {
             if !summary.ends_with("\n\n") {
                 summary.push('\n');
@@ -221,18 +220,6 @@ fn count_markdown_files(dir: &Path) -> usize {
 
 fn prettify_dir(name: &str) -> String {
     name.replace(['-', '_'], " ")
-}
-
-fn prettify_label(rel: &Path) -> String {
-    let stem = rel
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "page".to_string());
-    let mut label = stem.replace(['-', '_'], " ");
-    if let Some(first) = label.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    label
 }
 
 fn label_of(rel_str: &str) -> String {
