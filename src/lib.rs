@@ -1,6 +1,7 @@
 //! MoriNet — library surface (small in Phase 0, will grow with each phase).
 
 pub mod config;
+pub mod email;
 pub mod server;
 pub mod session;
 pub mod sources;
