@@ -1,0 +1,73 @@
+/* MoriNet UI — served from the binary (include_str!), applies to app pages only. */
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 32px 18px 72px;
+  line-height: 1.55;
+  color: #1c1e21;
+  background: #f7f7f8;
+}
+h1 { font-size: 1.7rem; margin: 0 0 4px; }
+h2 { font-size: 1.25rem; margin: 1.6rem 0 8px; }
+h3 { font-size: 1.05rem; margin: 1.4rem 0 6px; }
+a { color: #0b57d0; text-decoration: none; }
+a:hover { text-decoration: underline; }
+nav { margin: 10px 0 18px; padding: 8px 0; border-bottom: 1px solid #e2e2e6; }
+nav a { margin-right: 14px; font-weight: 600; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0 20px;
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+}
+th, td { border: 1px solid #e2e2e6; padding: 8px 12px; text-align: left; }
+th { background: #eef0f3; font-size: 0.92rem; }
+form { margin: 10px 0 18px; padding: 12px 14px; background: #fff; border: 1px solid #e2e2e6; border-radius: 10px; }
+label { display: inline-block; margin: 6px 14px 6px 0; font-weight: 500; }
+input, select {
+  padding: 7px 10px;
+  border: 1px solid #c8c9cc;
+  border-radius: 7px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  margin-top: 2px;
+}
+button {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 7px;
+  background: #0b57d0;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+button:hover { background: #0847ab; }
+code {
+  background: #eef0f3;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 0.95em;
+  word-break: break-all;
+}
+p { margin: 10px 0; }
+em { color: #666; }
+
+@media (prefers-color-scheme: dark) {
+  body { color: #e4e6ea; background: #131619; }
+  a { color: #8ab4f8; }
+  table, form { background: #1b2026; border-color: #2c3138; }
+  th { background: #232930; }
+  th, td { border-color: #2c3138; }
+  nav { border-bottom-color: #2c3138; }
+  input, select { background: #1b2026; border-color: #3a4048; }
+  code { background: #232930; }
+  button { background: #0b57d0; }
+  button:hover { background: #3a7ae8; }
+}

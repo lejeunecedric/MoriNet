@@ -26,9 +26,13 @@ pub struct AppState {
 
 pub type SharedState = Arc<AppState>;
 
+/// Embedded stylesheet for all MoriNet app pages (login, index, admin).
+const STYLE_CSS: &str = include_str!("../assets/style.css");
+
 const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>MoriNet — Sign in</title></head>
+<head><meta charset="utf-8"><title>MoriNet — Sign in</title>
+<link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   <h1>MoriNet</h1>
   <!-- novalidate: the login field accepts usernames, not just emails (v1) -->
@@ -69,6 +73,15 @@ pub fn build_router(cfg: RuntimeConfig, store: Store) -> Router {
     let public = Router::new()
         .route("/health", get(health))
         .route("/login", get(login_form).post(login_submit))
+        .route(
+            "/assets/style.css",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+                    STYLE_CSS,
+                )
+            }),
+        )
         .with_state(state.clone());
 
     // Protected routes: vault index + per-slug vault serving.
@@ -231,7 +244,8 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     let html = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>MoriNet — Vaults</title></head>
+<head><meta charset="utf-8"><title>MoriNet — Vaults</title>
+<link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   <h1>MoriNet</h1>
   <p>Signed in as {}</p>
@@ -340,7 +354,8 @@ async fn admin_page(title: &str, body: String) -> Response {
     Html(format!(
         r#"<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>MoriNet — {title}</title></head>
+<head><meta charset="utf-8"><title>MoriNet — {title}</title>
+<link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   <h1>MoriNet admin</h1>
   <nav><a href="/">Vaults</a> | <a href="/admin/users">Users</a> | <a href="/admin/vaults">Vaults mgmt</a></nav>
@@ -501,7 +516,10 @@ fn error_page(msg: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Html(format!(
-            r#"<p style="color:red">{}</p><p><a href="/admin/vaults">Back to vaults</a></p>"#,
+            r#"<html lang="en"><head><meta charset="utf-8"><title>MoriNet — Error</title>
+<link rel="stylesheet" href="/assets/style.css"></head><body>
+<p style="color:red">{}</p><p><a href="/admin/vaults">Back to vaults</a></p>
+</body></html>"#,
             html_escape(msg)
         )),
     )
