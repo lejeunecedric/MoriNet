@@ -16,24 +16,166 @@ pub trait VaultSource: Send + Sync {
     fn sync(&self) -> anyhow::Result<PathBuf>;
 
     /// Run `mdbook build` on the synced directory when mdbook is available.
-    /// Returns the compiled book directory (`<src>/book`).
+    /// Returns the compiled book directory.
+    ///
+    /// - `book.toml` present → build directly (book dir = `<src>/book`)
+    /// - no `book.toml` but plain markdown wiki (index.md or ≥3 .md files) →
+    ///   auto-scaffold a book (`.morinet-book/`) then build it (B3Wiki/ProgWiki style)
+    /// - otherwise (no markdown at all) → serve the dir as static content
     fn build(&self, src_dir: &Path) -> anyhow::Result<PathBuf> {
         let book = src_dir.join("book");
-        let has_book_toml = src_dir.join("book.toml").is_file();
-        let already_compiled = book.join("index.html").is_file();
-        if !has_book_toml {
-            // Nothing to build (plain static dir) — accept it as-is.
-            return Ok(src_dir.to_path_buf());
+        if src_dir.join("book.toml").is_file() {
+            return self.run_mdbook_build(src_dir, &book);
         }
-        if already_compiled {
-            return Ok(book);
+
+        match count_markdown_files(src_dir) {
+            n if n >= 3 || (n > 0 && src_dir.join("index.md").is_file()) => {
+                let scaffold = self.scaffold_plain_wiki(src_dir)?;
+                let book = scaffold.join("book");
+                self.run_mdbook_build(&scaffold, &book)
+            }
+            _ => {
+                // No markdown worth a book — serve the dir as-is (static).
+                Ok(src_dir.to_path_buf())
+            }
+        }
+    }
+
+    /// Generate a throwaway mdbook scaffold (`.morinet-book/`) for a plain wiki:
+    /// SUMMARY.md grouped by top-level directory, content copied preserving
+    /// relative paths (assets included). Regenerated from scratch every sync.
+    fn scaffold_plain_wiki(&self, src: &Path) -> anyhow::Result<PathBuf> {
+        use std::collections::BTreeMap;
+
+        let scaffold = src.join(".morinet-book");
+        if scaffold.exists() {
+            std::fs::remove_dir_all(&scaffold)?;
+        }
+        let content = scaffold.join("src");
+        std::fs::create_dir_all(&content)?;
+
+        // Collect markdown files + other files (assets), skipping .git/scaffold.
+        fn walk(
+            dir: &Path,
+            mds: &mut Vec<std::path::PathBuf>,
+            others: &mut Vec<std::path::PathBuf>,
+        ) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name == ".git" || name == ".morinet-book" {
+                    continue;
+                }
+                if path.is_dir() {
+                    walk(&path, mds, others);
+                } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+                    mds.push(path);
+                } else {
+                    others.push(path);
+                }
+            }
+        }
+        let mut mds = Vec::new();
+        let mut others = Vec::new();
+        walk(src, &mut mds, &mut others);
+
+        // index.md first, then alphabetical.
+        mds.sort();
+        if let Some(pos) = mds
+            .iter()
+            .position(|p| p.file_name().map(|n| n == "index.md").unwrap_or(false))
+        {
+            let idx = mds.remove(pos);
+            mds.insert(0, idx);
+        }
+
+        // Group by top-level directory for a readable SUMMARY.
+        let mut groups: BTreeMap<String, Vec<(String, std::path::PathBuf)>> = BTreeMap::new();
+        for md in &mds {
+            let rel = md.strip_prefix(src)?;
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let in_subdir = md.parent().map(|p| p != src).unwrap_or(false);
+            let group = if in_subdir {
+                rel.components()
+                    .next()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Pages".to_string())
+            } else {
+                "Home".to_string()
+            };
+            let label = prettify_label(rel);
+            groups.entry(group).or_default().push((rel_str, md.clone()));
+        }
+
+        let mut summary = String::from("# Summary\n\n");
+        let mut write_group = |name: &str,
+                               items: Vec<(String, std::path::PathBuf)>,
+                               summary: &mut String,
+                               content: &Path|
+         -> anyhow::Result<()> {
+            if !summary.ends_with("\n\n") {
+                summary.push('\n');
+            }
+            summary.push_str(&format!("# {}\n\n", prettify_dir(name)));
+            for (rel_str, md) in items {
+                let dest = content.join(&rel_str);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(md, &dest)?;
+                summary.push_str(&format!(
+                    "- [{label}]({rel_str})\n",
+                    label = label_of(&rel_str)
+                ));
+            }
+            Ok(())
+        };
+
+        // "Home" group first, then the rest alphabetically.
+        if let Some(home) = groups.remove("Home") {
+            write_group("Home", home, &mut summary, &content)?;
+        }
+        for (name, items) in groups {
+            write_group(&name, items, &mut summary, &content)?;
+        }
+
+        // Copy non-markdown files (assets, images) preserving structure.
+        for f in &others {
+            let rel = f.strip_prefix(src)?;
+            let dest = content.join(rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(f, &dest)?;
+        }
+
+        let title = src
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Wiki".to_string());
+        std::fs::write(
+            scaffold.join("book.toml"),
+            format!("[book]\ntitle = \"{title}\"\nauthors = []\n[build]\nbuild-dir = \"book\"\n"),
+        )?;
+        std::fs::write(scaffold.join("src").join("SUMMARY.md"), summary)?;
+
+        Ok(scaffold)
+    }
+
+    fn run_mdbook_build(&self, src_dir: &Path, book: &Path) -> anyhow::Result<PathBuf> {
+        if book.join("index.html").is_file() {
+            return Ok(book.to_path_buf());
         }
         match std::process::Command::new("mdbook")
             .arg("build")
             .arg(src_dir)
             .output()
         {
-            Ok(out) if out.status.success() => Ok(book),
+            Ok(out) if out.status.success() => Ok(book.to_path_buf()),
             Ok(out) => anyhow::bail!(
                 "mdbook build failed ({}): {}",
                 out.status,
@@ -44,11 +186,66 @@ pub trait VaultSource: Send + Sync {
                     "warning: `mdbook` not found in PATH; serving last compiled book at {}",
                     book.display()
                 );
-                Ok(book)
+                Ok(book.to_path_buf())
             }
             Err(e) => anyhow::bail!("failed to run mdbook: {e}"),
         }
     }
+}
+
+/// Count `.md` files recursively (skipping `.git` and the scaffold dir).
+/// Free function (not a trait method) so `VaultSource` stays dyn-compatible.
+fn count_markdown_files(dir: &Path) -> usize {
+    fn walk(dir: &Path, count: &mut usize) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == ".git" || name == ".morinet-book" {
+                continue;
+            }
+            if path.is_dir() {
+                walk(&path, count);
+            } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+                *count += 1;
+            }
+        }
+    }
+    let mut count = 0;
+    walk(dir, &mut count);
+    count
+}
+
+fn prettify_dir(name: &str) -> String {
+    name.replace(['-', '_'], " ")
+}
+
+fn prettify_label(rel: &Path) -> String {
+    let stem = rel
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "page".to_string());
+    let mut label = stem.replace(['-', '_'], " ");
+    if let Some(first) = label.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    label
+}
+
+fn label_of(rel_str: &str) -> String {
+    let stem = rel_str
+        .rsplit('/')
+        .next()
+        .unwrap_or(rel_str)
+        .trim_end_matches(".md");
+    let mut label = stem.replace(['-', '_'], " ");
+    if let Some(first) = label.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    label
 }
 
 /// A local, already-present book directory (or mdbook source dir).
