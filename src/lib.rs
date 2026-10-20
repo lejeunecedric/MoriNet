@@ -1,5 +1,8 @@
 //! MoriNet — library surface (small in Phase 0, will grow with each phase).
 
+pub mod config;
+pub mod session;
+
 /// Current package version (compile-time from Cargo.toml).
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
