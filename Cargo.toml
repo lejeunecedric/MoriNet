@@ -1,6 +1,6 @@
 [package]
 name = "morinet"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "mdBook server that exposes an Obsidian second brain with auth, WebDAV and MCP"
 license = "MIT OR Apache-2.0"

@@ -214,6 +214,20 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
             html_escape(&v.name)
         ));
     }
+    // Admin nav (only for admins).
+    let is_admin = state
+        .store
+        .role_for(&claims.email)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r == "admin")
+        .unwrap_or(false);
+    let admin_nav = if is_admin {
+        r#"<p><a href="/admin"><strong>Admin</strong></a> — manage users, vaults and permissions</p>"#
+    } else {
+        ""
+    };
     let html = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -221,6 +235,7 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
 <body>
   <h1>MoriNet</h1>
   <p>Signed in as {}</p>
+  {admin_nav}
   <ul>{items}</ul>
 </body>
 </html>"#,
