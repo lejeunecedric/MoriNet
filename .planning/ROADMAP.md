@@ -12,28 +12,32 @@
 
 | #    | Phase             | Goal                                                                                     | Key REQ-IDs            | Status |
 |------|-------------------|------------------------------------------------------------------------------------------|------------------------|--------|
-| 00   | **bootstrap**     | GitHub repo + Cargo init + CI + first release                                            | REQ-INFRA-*            | ✅ done |
-| 01   | **core-serve**    | Serve ONE static vault via compiled mdbook, behind a simple login                        | REQ-AUTH-*, REQ-VAULT-001 | ⬜ |
-| 02   | **multi-vault**   | Sub-paths `/vaultA/`, `/vaultB/`, `/` index, per-vault perms                              | REQ-VAULT-002..006     | ⬜ |
-| 03   | **vault-sources** | Source plugin: local folder OR GitHub repo (clone + periodic sync)                       | REQ-VAULT-007..010     | ⬜ |
+| 00   | **bootstrap**     | GitHub repo + Cargo init + CI + first release                                            | REQ-INFRA-*            | ✅ done (v0.1.0) |
+| 01   | **core-serve**    | Serve ONE static vault via compiled mdbook, behind a simple login                        | REQ-AUTH-*, REQ-VAULT-001 | ✅ done (v0.1.1) |
+| 02   | **multi-vault**   | Sub-paths `/vaultA/`, `/vaultB/`, `/` index, per-vault perms                              | REQ-VAULT-002..006     | ✅ done (v0.1.1) |
+| 03   | **vault-sources** | Source plugin: local folder OR GitHub repo (clone + periodic sync)                       | REQ-VAULT-007..010     | 🔵 in progress |
 | 04   | **admin-ui**      | Admin page: invite users, reset passwords, manage vaults + perms                         | REQ-ADMIN-*            | ⬜ |
 | 05   | **email**         | SMTP adapter + email invitations + password reset                                        | REQ-EMAIL-*            | ⬜ |
 | 06   | **webdav**        | WebDAV endpoints on vaults (same creds), browse + read                                    | REQ-WEBDAV-*           | ⬜ |
 | 07   | **mcp**           | MCP StreamableHttp on `/mcp`, list/read/search tools                                      | REQ-MCP-*              | ⬜ |
 | +08  | **polish**        | Clean one-line installer, full README, badges, Release v1.0                              | REQ-OPS-*              | ⬜ |
 
+**Ops done alongside the roadmap** (REQ-OPS-006..008): CI → cargo-dist release → auto-deploy to holldemo (`morinet.treklair.fr`). v0.1.1 binary installed on holldemo; systemd/nginx/TLS provisioning owned by vops (brief: `/home/holli/extdisk/workspace/vops/morinet-deploy-brief.md`, demo instance creds `demo/demo`).
+
 ---
 
 ## Phase 0 — bootstrap
 
+**Status**: ✅ done — released as v0.1.0 (16 assets, CI green, cargo-dist pipeline).
+
 **Goal**: lay the foundations — the repo exists on GitHub, the crate compiles, CI is green, the binary installs via `cargo install`.
 
 **Success criteria**:
-- `gh repo view lejeunecedric/MoriNet` → public repo exists
-- `cargo install --path .` from a cloned checkout succeeds (binary `morinet` available)
-- `morinet --version` returns `0.1.0`
-- GitHub Actions CI is green on push (fmt + lint + test + build)
-- First GitHub release created via cargo-dist
+- `gh repo view lejeunecedric/MoriNet` → public repo exists ✅
+- `cargo install --path .` from a cloned checkout succeeds (binary `morinet` available) ✅
+- `morinet --version` returns `0.1.0` ✅
+- GitHub Actions CI is green on push (fmt + lint + test + build) ✅
+- First GitHub release created via cargo-dist ✅
 
 **Delivered**: `.planning/phases/00-bootstrap/01-bootstrap-PLAN.md`
 
