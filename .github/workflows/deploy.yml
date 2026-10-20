@@ -1,0 +1,56 @@
+name: Deploy
+
+# Deploys each published release to the holldemo test server (morinet.treklair.fr).
+# Phase 0: installs the binary and smoke-checks `morinet --version` over SSH.
+# Phase 1+: will also restart the `morinet` systemd service and hit /health.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-holldemo
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy to holldemo
+    runs-on: ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - name: Download and verify release binary
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          curl -fsSL -o morinet.tar.xz "${BASE}/morinet-${TARGET}.tar.xz"
+          curl -fsSL -o morinet.tar.xz.sha256 "${BASE}/morinet-${TARGET}.tar.xz.sha256"
+          sha256sum -c morinet.tar.xz.sha256
+          tar xJf morinet.tar.xz
+          ./morinet --version
+
+      - name: Install binary on holldemo
+        if: ${{ secrets.DEPLOY_HOST != '' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "morinet"
+          target: "/opt/morinet/bin/"
+          overwrite: true
+
+      - name: Smoke check over SSH
+        if: ${{ secrets.DEPLOY_HOST != '' }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            chmod +x /opt/morinet/bin/morinet
+            /opt/morinet/bin/morinet --version
+            # Phase 1+ adds:
+            # sudo systemctl restart morinet
+            # curl -fsS http://localhost:8080/health
