@@ -16,6 +16,33 @@ pub struct FileConfig {
     pub server: ServerSection,
     #[serde(default)]
     pub session: SessionSection,
+    #[serde(default)]
+    pub storage: StorageSection,
+    #[serde(default)]
+    pub vaults: VaultsSection,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StorageSection {
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct VaultsSection {
+    #[serde(default)]
+    pub entries: Vec<VaultEntry>,
+}
+
+/// A vault registered in config (seeded into the DB at boot, Phase 2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct VaultEntry {
+    pub slug: String,
+    pub name: String,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// For `kind = "local"`: path to the compiled mdbook directory.
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -34,6 +61,14 @@ pub struct SessionSection {
 
 fn default_bind_addr() -> String {
     "127.0.0.1:8080".to_string()
+}
+
+fn default_data_dir() -> String {
+    "./data".to_string()
+}
+
+fn default_kind() -> String {
+    "local".to_string()
 }
 
 fn default_base_url() -> String {

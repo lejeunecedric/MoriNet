@@ -62,12 +62,10 @@ fn main() -> anyhow::Result<()> {
             std::fs::write(&out, cfg)?;
             println!("Wrote example config to {}", out.display());
         }
-        Some(Command::Serve { config, vault }) => {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?
-                .block_on(serve(config, vault))?
-        }
+        Some(Command::Serve { config, vault }) => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(serve(config, vault))?,
         None => {
             println!("morinet {} — run `morinet --help` for usage", version());
         }
@@ -78,9 +76,36 @@ fn main() -> anyhow::Result<()> {
 
 async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<()> {
     let file_cfg = morinet::config::load_config(&config_path)?;
-    let rt = morinet::config::resolve(file_cfg, vault)?;
+    let rt = morinet::config::resolve(file_cfg.clone(), vault.clone())?;
     let bind_addr = rt.bind_addr.clone();
-    let app = morinet::server::build_router(rt);
+
+    // Phase 2: SQLite store, bootstrap admin, seed vaults from config.
+    let db_path = std::path::PathBuf::from(&file_cfg.storage.data_dir).join("morinet.db");
+    let store = morinet::store::Store::connect(&db_path).await?;
+    store
+        .ensure_admin(&rt.admin_email, &rt.admin_password)
+        .await?;
+    match &vault {
+        Some(book_dir) => {
+            store.seed_vault("demo", "Demo vault", book_dir).await?;
+        }
+        None => {
+            for entry in &file_cfg.vaults.entries {
+                if entry.kind == "local" {
+                    store
+                        .seed_vault(&entry.slug, &entry.name, std::path::Path::new(&entry.path))
+                        .await?;
+                } else {
+                    println!(
+                        "skipping vault '{}' (kind '{}' not supported before Phase 3)",
+                        entry.slug, entry.kind
+                    );
+                }
+            }
+        }
+    }
+
+    let app = morinet::server::build_router(rt, store);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     println!("morinet {} listening on http://{bind_addr}", version());
     axum::serve(listener, app).await?;
