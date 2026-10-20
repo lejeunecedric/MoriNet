@@ -1,78 +1,78 @@
 # Phase 0 — Bootstrap PLAN
 
-> **For Hermes** : Use subagent-driven-development to execute this plan bite-by-bite. Each bite = fresh delegate_task with full context + 2-stage review (spec compliance, then code quality).
+> **For Hermes**: Use the subagent-driven-development skill to execute this plan bite by bite. Each bite = a fresh `delegate_task` with full context + a 2-stage review (spec compliance, then code quality).
 
-**Goal** : poser les fondations — le repo existe sur GitHub, le crate `morinet` compile et passe ses tests, la CI GitHub Actions est verte sur push, et `cargo install morinet` produit un binaire qui répond `--version`.
+**Goal**: lay the foundations — the repo exists on GitHub, the `morinet` crate compiles and passes its tests, the GitHub Actions CI is green on push, and `cargo install morinet` produces a binary that answers `--version`.
 
-**Architecture** : crate Rust binaire unique (`src/main.rs`, `src/cli.rs`, `src/config.rs`). Dépendances minimales Phase 0 : `clap`, `tokio`, `anyhow`, `serde`, `serde_json`, `toml`. Pas de web/auth/db en Phase 0.
+**Architecture**: single Rust binary crate (`src/main.rs`, `src/lib.rs`). Minimal Phase 0 dependencies: `clap`, `tokio`, `anyhow`, `serde`, `toml`. No web/auth/db in Phase 0.
 
-**Tech Stack Phase 0** : Rust stable (≥ 1.75), clap, tokio, anyhow, serde, toml. CI = cargo + clippy + fmt. Release = cargo-dist.
+**Tech stack (Phase 0)**: Rust stable (≥ 1.75), clap, tokio, anyhow, serde, toml. CI = cargo + clippy + fmt. Release = cargo-dist.
 
 ---
 
-## Conventions pour cette phase
+## Conventions for this phase
 
-- **Commits bite-by-bite** — un commit par task, message conventional (`chore:`, `feat:`, `test:`, `ci:`, `docs:`, `build:`)
-- **TDD strictement** : test écrit d'abord, doit FAIL, puis code minimal pour passer, doit PASS
-- **Paths absolus** depuis la racine du repo (ex `src/main.rs`, pas `morinet/src/main.rs`)
-- **Pas de dépendances inutiles** en Phase 0 — on ajoute ce qu'on a besoin, quand on en a besoin (YAGNI)
+- **Bite-by-bite commits** — one commit per task, conventional-commit messages (`chore:`, `feat:`, `test:`, `ci:`, `docs:`, `build:`)
+- **Strict TDD**: write the test first, watch it FAIL, write the minimal code to pass, watch it PASS
+- **Absolute paths** from the repo root (e.g. `src/main.rs`, not `morinet/src/main.rs`)
+- **No unnecessary deps** in Phase 0 — we add what we need, when we need it (YAGNI)
 
-## Pré-requis avant T0.1
+## Prerequisites before T0.1
 
-- [ ] **Username GitHub confirmé** (placeholder `lejeunecedric` à remplacer globalement)
+- [ ] **GitHub username confirmed** (placeholder `lejeunecedric` substituted globally)
 - [ ] `gh` CLI authed (`gh auth status` → logged in)
-- [ ] Compte en mesure de créer un repo public sous ce username
-- [ ] Cargo installé localement (`cargo --version` ≥ 1.75)
+- [ ] Account able to create a public repo under that username
+- [ ] Cargo installed locally (`cargo --version` ≥ 1.75)
 
 ---
 
-## Task T0.1 — Init repo GitHub + clone local
+## Task T0.1 — Init GitHub repo + local clone
 
-**Files** :
-- Create : `projets/morinet/` (via `gh repo create` + clone)
+**Files**:
+- Create: `projets/MoriNet/` (via `gh repo create` + clone)
 
-**Step 1 : Créer le repo sur GitHub**
+**Step 1: Create the repo on GitHub**
 
 ```bash
 cd projets
-gh repo create lejeunecedric/morinet --public --description "Serveur mdbook pour second brain Obsidian, avec auth, WebDAV et MCP" --source .
+gh repo create lejeunecedric/MoriNet --public --description "mdBook server for an Obsidian second brain, with auth, WebDAV and MCP" --source .
 ```
 
-> Si `--source .` n'est pas possible (dir pas init), fallback : créer le repo vide via l'API, puis `git init` local + `git remote add` + push initial.
+> If `--source .` is not possible (directory not init), fallback: create the empty repo via the API, then `git init` locally + `git remote add` + initial push.
 
-**Step 2 : commit initial vide (README placeholder) puis push**
+**Step 2: Empty initial commit (README placeholder) then push**
 
 ```bash
-cd projets/morinet
-echo "# morinet" > README.md
+cd projets/MoriNet
+echo "# MoriNet" > README.md
 git add README.md
 git commit -m "chore: initial commit"
 git push -u origin main
 ```
 
-**Step 3 : vérifier**
+**Step 3: Verify**
 
 ```bash
-gh repo view lejeunecedric/morinet
+gh repo view lejeunecedric/MoriNet
 ```
 
-Expected : repo public, README affiché.
+Expected: public repo, README displayed.
 
-**Commit** : `chore: bootstrap repo morinet on github`
+**Commit**: `chore: bootstrap repo MoriNet on github`
 
 ---
 
-## Task T0.2 — Cargo init + premier main trivial
+## Task T0.2 — Cargo init + first trivial main
 
-**Files** :
-- Create : `projets/morinet/Cargo.toml`
-- Create : `projets/morinet/src/main.rs`
-- Create : `projets/morinet/src/lib.rs`
-- Create : `projets/morinet/.gitignore`
+**Files**:
+- Create: `projets/MoriNet/Cargo.toml`
+- Create: `projets/MoriNet/src/main.rs`
+- Create: `projets/MoriNet/src/lib.rs`
+- Create: `projets/MoriNet/.gitignore`
 
-**Step 1 : write the failing test d'abord (TDD)**
+**Step 1: Write the failing test first (TDD)**
 
-`src/lib.rs` :
+`src/lib.rs`:
 ```rust
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -89,25 +89,25 @@ mod tests {
 }
 ```
 
-**Step 2 : run test**
+**Step 2: Run the test**
 
 ```bash
-cd projets/morinet
+cd projets/MoriNet
 cargo test
 ```
 
-Expected : `test tests::version_is_not_empty ... ok`. Si `cargo test` plante parce que Cargo.toml n'existe pas encore → c'est NORMAL, c'est le test "fail" du TDD strict avant scaffold.
+Expected: `test tests::version_is_not_empty ... ok`. If `cargo test` fails because `Cargo.toml` doesn't exist yet — that's NORMAL, it's the strict TDD "fail" before scaffolding.
 
-**Step 3 : Cargo.toml minimal**
+**Step 3: Minimal Cargo.toml**
 
 ```toml
 [package]
 name = "morinet"
 version = "0.1.0"
 edition = "2021"
-description = "Serveur mdbook pour second brain Obsidian avec auth, WebDAV et MCP"
+description = "mdBook server that exposes an Obsidian second brain with auth, WebDAV and MCP"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lejeunecedric/morinet"
+repository = "https://github.com/lejeunecedric/MoriNet"
 readme = "README.md"
 
 [dependencies]
@@ -121,14 +121,14 @@ toml = "0.8"
 pretty_assertions = "1.4"
 ```
 
-**Step 4 : src/main.rs**
+**Step 4: src/main.rs**
 
 ```rust
 use clap::Parser;
 use morinet::version;
 
 #[derive(Parser, Debug)]
-#[command(name = "morinet", version, about = "Serveur mdbook pour second brain Obsidian")]
+#[command(name = "morinet", version, about = "mdBook server for an Obsidian second brain")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -136,7 +136,7 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
-    /// Affiche la version
+    /// Print the version
     Version,
 }
 
@@ -150,7 +150,7 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-**Step 5 : `.gitignore`**
+**Step 5: `.gitignore`**
 
 ```
 /target
@@ -162,38 +162,38 @@ config.toml
 .DS_Store
 ```
 
-> Note : on ne commit PAS `Cargo.lock` en Phase 0 (lib future-proofing). Plus tard quand on aura un binaire, on le commitera.
+> Note: we do NOT commit `Cargo.lock` in Phase 0 (lib future-proofing). Later, once we have a binary, we'll commit it.
 
-**Step 6 : `cargo test` → PASS**
+**Step 6: `cargo test` → PASS**
 
 ```bash
 cargo test --verbose
 ```
 
-Expected : `test result: ok. 1 passed; 0 failed`.
+Expected: `test result: ok. 1 passed; 0 failed`.
 
-**Step 7 : `cargo run -- --version` → output attendu**
+**Step 7: `cargo run -- --version` → expected output**
 
 ```bash
 cargo run -- --version
 ```
 
-Expected : `morinet 0.1.0`.
+Expected: `morinet 0.1.0`.
 
-**Commit** : `feat: initial cargo crate with version subcommand`
+**Commit**: `feat: initial cargo crate with version subcommand`
 
 ---
 
-## Task T0.3 — `morinet init` crée config.toml exemple
+## Task T0.3 — `morinet init` creates an example config.toml
 
-**Files** :
-- Modify : `src/main.rs` (ajouter subcommand `init`)
-- Modify : `src/lib.rs` (fonction `default_config`)
-- Create : `tests/init.rs`
+**Files**:
+- Modify: `src/main.rs` (add `init` subcommand)
+- Modify: `src/lib.rs` (add `default_config` function)
+- Create: `tests/init.rs`
 
-**Step 1 : write failing test**
+**Step 1: Write the failing test**
 
-`tests/init.rs` :
+`tests/init.rs`:
 ```rust
 use std::fs;
 use morinet::default_config;
@@ -217,19 +217,19 @@ fn init_writes_file_when_path_provided(tmp: std::path::PathBuf) {
 }
 ```
 
-(Note : le test e2e `init_writes_file_when_path_provided` pourra être raffiné plus tard — Phase 0 on accepte de juste tester `default_config()` côté lib + un test snapshot du contenu.)
+(Note: the e2e test `init_writes_file_when_path_provided` may be refined later — for Phase 0 we accept just testing `default_config()` on the lib side + a content snapshot test.)
 
-**Step 2 : run test → FAIL** (fonction pas définie)
+**Step 2: Run test → FAIL** (function not defined)
 
 ```bash
 cargo test --test init
 ```
 
-Expected : compile error `function default_config not found`.
+Expected: compile error `function default_config not found`.
 
-**Step 3 : implement**
+**Step 3: Implement**
 
-`src/lib.rs` :
+`src/lib.rs`:
 ```rust
 pub fn default_config() -> anyhow::Result<String> {
     let cfg = r#"# morinet — example config
@@ -271,7 +271,7 @@ cookie_name = "morinet_session"
 }
 ```
 
-`src/main.rs` — ajouter dans l'enum `Command` :
+`src/main.rs` — add to the `Command` enum:
 ```rust
     /// Generate an example config.toml
     Init {
@@ -280,7 +280,7 @@ cookie_name = "morinet_session"
     },
 ```
 
-Et dans `main()` :
+And in `main()`:
 ```rust
         Some(Command::Init { out }) => {
             let cfg = morinet::default_config()?;
@@ -289,7 +289,7 @@ Et dans `main()` :
         }
 ```
 
-**Step 4 : `cargo test` → PASS + `cargo run -- init --out /tmp/morinet-test.toml` → fichier créé**
+**Step 4: `cargo test` → PASS + `cargo run -- init --out /tmp/morinet-test.toml` → file created**
 
 ```bash
 cargo test
@@ -297,18 +297,18 @@ cargo run -- init --out /tmp/morinet-test.toml
 cat /tmp/morinet-test.toml
 ```
 
-Expected : fichier contient toutes les sections.
+Expected: file contains all sections.
 
-**Commit** : `feat: add `init` subcommand to generate example config`
+**Commit**: `feat: add `init` subcommand to generate example config`
 
 ---
 
-## Task T0.4 — CI GitHub Actions (lint + test + build)
+## Task T0.4 — GitHub Actions CI (lint + test + build)
 
-**Files** :
-- Create : `projets/morinet/.github/workflows/ci.yml`
+**Files**:
+- Create: `projets/MoriNet/.github/workflows/ci.yml`
 
-**Content** :
+**Content**:
 
 ```yaml
 name: CI
@@ -346,63 +346,63 @@ jobs:
         run: cargo build --release
 ```
 
-**Commit** : `ci: github actions for lint+test+build`
+**Commit**: `ci: github actions for lint+test+build`
 
-> Pas besoin de tester manuellement — le push sur main déclenche la CI.
+> No need to test manually — pushing to `main` triggers CI.
 
 ---
 
-## Task T0.5 — Cargo-dist pour release multi-platform
+## Task T0.5 — Cargo-dist for multi-platform release
 
-**Files** :
-- Modify : `projets/morinet/.github/workflows/ci.yml` (ajouter job `release` OU nouveau fichier dédié)
+**Files**:
+- Modify: `projets/MoriNet/.github/workflows/ci.yml` (add a `release` job OR a separate file)
 
-**Choix retenu** : nouveau fichier `.github/workflows/release.yml` pour séparer CI et release.
+**Chosen approach**: new file `.github/workflows/release.yml` to keep CI and release separate.
 
-**Step 1 : install cargo-dist locally pour scaffolder**
+**Step 1: install cargo-dist locally to scaffold**
 
 ```bash
 cargo install cargo-dist
 ```
 
-**Step 2 : init dans le repo**
+**Step 2: init in the repo**
 
 ```bash
-cd projets/morinet
+cd projets/MoriNet
 cargo dist init --ci=github --installers=shell,homebrew,powershell --targets=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-apple-darwin,aarch64-apple-darwin,x86_64-pc-windows-msvc
 ```
 
-Expected : modifie `Cargo.toml` (ajoute `[workspace.metadata.dist]`), crée `.github/workflows/release.yml`, crée `dist-workspace.toml`.
+Expected: modifies `Cargo.toml` (adds `[workspace.metadata.dist]`), creates `.github/workflows/release.yml`, creates `dist-workspace.toml`.
 
-**Step 3 : adjust the generated `release.yml`** pour utiliser notre naming convention `vX.Y.Z` au lieu de `release-plz`.
+**Step 3: adjust the generated `release.yml`** to use our `vX.Y.Z` naming convention instead of `release-plz`.
 
-**Step 4 : `cat .github/workflows/release.yml`** + review manuel.
+**Step 4: `cat .github/workflows/release.yml`** + manual review.
 
-**Commit** : `ci: add cargo-dist release workflow`
+**Commit**: `ci: add cargo-dist release workflow`
 
 ---
 
-## Task T0.6 — README minimal
+## Task T0.6 — Minimal README
 
-**Files** :
-- Modify : `projets/morinet/README.md` (remplacer le placeholder de T0.1)
+**Files**:
+- Modify: `projets/MoriNet/README.md` (replace the T0.1 placeholder)
 
-**Content** :
+**Content**:
 
 ```markdown
 # morinet
 
-> Serveur [mdBook](https://rust-lang.github.io/mdBook/) qui expose un second brain Obsidian avec auth multi-utilisateurs, WebDAV et MCP.
+> Server [mdBook](https://rust-lang.github.io/mdBook/) that exposes an Obsidian second brain with multi-user auth, WebDAV and MCP.
 
 ## What
 
-- 📚 Sert un ou plusieurs vaults Obsidian (compilés en mdbook) sur HTTP
-- 🔐 Auth par email + mot de passe (cookies HttpOnly)
-- 👤 Rôles `admin` / `reader`
-- 📂 Sources = dossier local OU repo GitHub
-- 📡 Vaults accessibles en WebDAV (mêmes creds)
-- 🤖 Vaults accessibles en MCP (Model Context Protocol)
-- 📨 Invitations et reset mdp par email
+- 📚 Serves one or more Obsidian vaults (compiled to mdbook) over HTTP
+- 🔐 Email + password auth (HttpOnly cookies)
+- 👤 `admin` / `reader` roles
+- 📂 Sources = local folder OR GitHub repo
+- 📡 Vaults accessible via WebDAV (same creds)
+- 🤖 Vaults accessible via MCP (Model Context Protocol)
+- 📨 Invitations and password reset via email
 
 ## Install
 
@@ -421,63 +421,63 @@ morinet serve --config ./config.toml
 
 ## Status
 
-🚧 **Phase 0 — bootstrap**. Voir `.planning/ROADMAP.md` pour la roadmap complète.
+🚧 **Phase 0 — bootstrap**. See `.planning/ROADMAP.md` for the full roadmap.
 
 ## License
 
 MIT OR Apache-2.0
 ```
 
-**Commit** : `docs: minimal readme (what/install/quick start/status/license)`
+**Commit**: `docs: minimal readme (what/install/quick start/status/license)`
 
 ---
 
-## Task T0.7 — Premier tag + release v0.1.0
+## Task T0.7 — First tag + release v0.1.0
 
-**Step 1 : commit final, push, puis tag**
+**Step 1: final commit, push, then tag**
 
 ```bash
-cd projets/morinet
+cd projets/MoriNet
 git log --oneline -10  # sanity check
 git push origin main
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-**Step 2 : déclencher le workflow release via le tag**
+**Step 2: trigger the release workflow via the tag**
 
-Le workflow `release.yml` se déclenche sur `v*` tags. Vérifier sur GitHub Actions.
+The `release.yml` workflow triggers on `v*` tags. Check on GitHub Actions.
 
-**Step 3 : check release**
+**Step 3: check release**
 
 ```bash
 gh release view v0.1.0
 ```
 
-Expected : release créée avec binaires x86_64/aarch64 pour Linux/macOS/Windows.
+Expected: release created with x86_64/aarch64 binaries for Linux/macOS/Windows.
 
-**Commit** : *(pas de commit séparé — le tag suffit)*
+**Commit**: *(no separate commit — the tag is enough)*
 
 ---
 
-## Critères de succès Phase 0 (vérification finale)
+## Phase 0 success criteria (final verification)
 
 ```bash
-cd projets/morinet
+cd projets/MoriNet
 cargo install --path .
 morinet --version        # → morinet 0.1.0
-morinet init --out /tmp/c.toml  # → écrit le fichier
-gh repo view lejeunecedric/morinet  # → public, README présent
-gh release list                  # → v0.1.0 listé
+morinet init --out /tmp/c.toml  # → writes the file
+gh repo view lejeunecedric/MoriNet  # → public, README present
+gh release list                  # → v0.1.0 listed
 ```
 
-Si tous ces checks passent → Phase 0 ✅, on peut attaquer Phase 1.
+If all these checks pass → Phase 0 ✅, we can attack Phase 1.
 
 ---
 
-## Notes bite-sized pour le subagent
+## Bite-sized notes for the subagent
 
-- Chaque task = un seul delegate_task avec ce PLAN en contexte
-- Review 2-stage : (1) spec compliance = tout ce qui est marqué "Step" est-il présent ? , (2) code quality = pas de warnings clippy, tests verts, conventions respectées
-- Si une task échoue la 2e review → retry une fois, puis escalate au user
-- Fréquence commits = bite-by-bite, jamais un méga-commit en fin de task
+- Each task = a single `delegate_task` with this PLAN in context
+- 2-stage review: (1) spec compliance = is everything marked "Step" present? , (2) code quality = no clippy warnings, tests green, conventions respected
+- If a task fails the 2nd review → retry once, then escalate to the user
+- Commit frequency = bite-by-bite, never a mega-commit at the end of a task

@@ -12,7 +12,7 @@ use morinet::{default_config, version};
 #[command(
     name = "morinet",
     version,
-    about = "Serveur mdbook pour second brain Obsidian avec auth, WebDAV et MCP",
+    about = "mdBook server that exposes an Obsidian second brain with auth, WebDAV and MCP",
     long_about = None,
 )]
 struct Cli {

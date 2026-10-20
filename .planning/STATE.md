@@ -1,72 +1,74 @@
 # MoriNet — STATE (live session state)
 
-> Mis à jour à chaque bite livré / décision prise / erreur notable.
+> Updated on every delivered bite / decision made / notable error.
 
 ---
 
-## Position actuelle (2026-10-20, Phase 0 quasi-complète)
+## Current position (2026-10-20, Phase 0 done, release triggered)
 
-- **Phase active** : 00 bootstrap, en cours d'exécution — 4/7 bites livrés localement
-- **Statut planification** : ✅ complète — ROADMAP / REQUIREMENTS / Phase 0 PLAN rédigés, importés dans le repo
-- **Repo** : `github.com/lejeunecedric/MoriNet` (substitué `<TON-USER>` → `lejeunecedric` partout)
-- **Crate** : `morinet v0.1.0` compilé, 4 tests verts, binaire release 25s
-- **Commits locaux** : 4 (chore planning → feat scaffold → docs readme → ci workflow)
-- **Push** : pas encore fait — pas de credential helper, ni SSH, ni `gh auth`
-  → commande one-liner `gh auth login && git push -u origin main && git push origin v0.1.0` à lancer par user
-- **Prochaine action** : ~~attendre cargo-dist install~~ ✅ fait (cargo-dist v0.32.0), `dist init` scaffolé le release.yml
-- **Tag v0.1.0** : posé localement, sera poussé avec le main
+- **Active phase**: 00 bootstrap — DONE locally + pushed to origin
+- **Planning status**: ✅ complete — ROADMAP / REQUIREMENTS / Phase 0 PLAN written, committed in repo
+- **Repo**: `github.com/lejeunecedric/MoriNet` (substituted `<TON-USER>` → `lejeunecedric` everywhere)
+- **Crate**: `morinet v0.1.0` built, 4 tests green, release binary in 25s
+- **Local commits**: 11 — chore planning → feat scaffold → docs README → ci workflow → style fmt → docs STATE → ci cargo-dist → docs README EN → ci release pattern fix → docs STATE
+- **Push**: ✅ done via PAT (`gho_…` in `~/.git-credentials`); `main` and tag `v0.1.0` live on origin
+- **CI**: ✅ green on `main` (lint + test + build)
+- **Release workflow**: not auto-triggered on tag (cargo-dist default tag pattern is broken — `+` is literal in GitHub tag globs); manually dispatched via `workflow_dispatch` API and now running
+- **Documentation**: README + .planning/* + .hermes/* in English
 
-## Décisions Architecturales (AD)
+## Architectural Decisions (AD)
 
-> Tracées ici pour qu'on puisse les reverser plus tard. Chaque AD = une décision + rationale + date.
+> Recorded here so we can revisit them later. Each AD = a decision + rationale + date.
 
-- **AD-1** *(2026-10-20)* — **Cargo workspace MONO-CRATE** (pas de multi-crates).
-  - Rationale : MoriNet est un seul binaire, pas besoin de découpage en crates. On évite la complexité workspace multi-crates pour un gain YAGNI. Si on split un jour, on le fait quand le code atteint ~3000 LOC.
-- **AD-2** *(2026-10-20)* — **mdbook UPSTREAM + thème custom "mori" injecté** (no fork).
-  - Rationale : mdbook est un outil stable, on n'a pas besoin de le modifier. On injecte nos assets CSS/JS (zoom.css, fold.css, etc.) via `additional-css` / `additional-js` dans le `book.toml` généré pour chaque vault. Si mdbook upstream casse une compat, on patche `additional-css` plutôt que le binaire.
-- **AD-3** *(2026-10-20)* — **SQLite par défaut**, Postgres = feature flag `db = "postgres"`.
-  - Rationale : SQLite portable, zero-setup pour un MoriNet mono-instance. Postgres supporté plus tard si besoin de multi-instances / HA. sqlx abstrait la couche.
-- **AD-4** *(2026-10-20)* — **Auth cookies HttpOnly signés** (clé HMAC dans config).
-  - Rationale : pas de JWT (XSS + revocation complexity). Cookie HttpOnly signé côté serveur → revocation trivial via blacklist Redis (out of scope v1) ou expiration courte. bcrypt pour mdp.
-- **AD-5** *(2026-10-20)* — **WebDAV = handlers axum custom** (pas de crate).
-  - Rationale : la spec WebDAV qu'on supporte est minimale (PROPFIND, GET, PUT optionnel). Un crate ajoute ~10 deps et un état en plus. On fait 3 handlers axum en ~200 lignes, full contrôle.
-- **AD-6** *(2026-10-20)* — **MCP = crate `rmcp`** (officiel Rust MCP).
-  - Rationale : rmcp est officiel, StreamableHttp supporté, schémas JSON auto-générés. Pas la peine de réinventer. Transport : StreamableHttp (le plus simple pour HTTP, déprécie SSE lentement). Outils Phase 1 : list_vaults, list_notes, read_note, search_notes.
-- **AD-7** *(2026-10-20)* — **SMTP = crate `lettre`**, config TOML.
-  - Rationale : lettre supporte SMTP + STARTTLS + SMTPS, API async propre, multi-TLS backends. Config TOML hôte/port/user/pass/from/tls. Test via un mock in-memory.
-- **AD-8** *(2026-10-20)* — **Vault source = trait `VaultSource`**, impl `Local` + `Github`.
-  - Rationale : le routing admin stocke `vaults(id, slug, source_kind, source_config_json, book_path)`. Le sync est périodique (background task), pas à chaque requête. Github utilise `git2` (binding libgit2) plutôt que shelling out — plus déterministe et auditable. Periodic sync default = 5 minutes, configurable.
-- **AD-9** *(2026-10-20)* — **Templates HTML côté serveur via `askama`** (pas de SPA, pas de JS framework).
-  - Rationale : admin UI minimaliste, Askama = templates Jinja-like compilés en Rust, zero runtime overhead, type-safe. Pas de React/Vue/Svelte = pas de toolchain frontend à maintenir. JS only pour les customs mdbook (zoom, fold).
-- **AD-10** *(2026-10-20)* — **mdbook compilé déclenché par sync**, pas à chaque requête.
-  - Rationale : `mdbook build` prend ~1-3s pour un vault de 100 pages. Rebuild à chaque GET est inutile. Sync rebuild après changement, hot-reload désactivé en prod.
+- **AD-1** *(2026-10-20)* — **Cargo workspace MONO-CRATE** (no multi-crates).
+  - Rationale: MoriNet is a single binary, no need to split into crates. We avoid multi-crate workspace complexity for a YAGNI win. If we ever split, we do it once the code reaches ~3000 LOC.
+- **AD-2** *(2026-10-20)* — **mdbook UPSTREAM + custom "mori" theme injected** (no fork).
+  - Rationale: mdbook is a stable tool, we don't need to modify it. We inject our CSS/JS assets (zoom.css, fold.css, etc.) via `additional-css` / `additional-js` in the `book.toml` generated for each vault. If upstream mdbook breaks a compat, we patch `additional-css` rather than the binary.
+- **AD-3** *(2026-10-20)* — **SQLite by default**, Postgres = feature flag `db = "postgres"`.
+  - Rationale: SQLite is portable, zero-setup for a single-instance MoriNet. Postgres supported later if we need multi-instance / HA. sqlx abstracts the layer.
+- **AD-4** *(2026-10-20)* — **Auth via HttpOnly signed cookies** (HMAC key in config).
+  - Rationale: no JWT (XSS + revocation complexity). Server-side signed HttpOnly cookie → trivial revocation via Redis blacklist (out of scope v1) or short expiry. bcrypt for passwords.
+- **AD-5** *(2026-10-20)* — **WebDAV = custom axum handlers** (no crate).
+  - Rationale: the WebDAV spec we support is minimal (PROPFIND, GET, optional PUT). A crate would add ~10 deps and extra state. We write 3 axum handlers in ~200 lines, full control.
+- **AD-6** *(2026-10-20)* — **MCP = `rmcp` crate** (official Rust MCP).
+  - Rationale: rmcp is the official crate, StreamableHttp is supported, JSON schemas auto-generated. No need to reinvent. Transport: StreamableHttp (simplest for HTTP, slowly deprecating SSE). Phase 1 tools: list_vaults, list_notes, read_note, search_notes.
+- **AD-7** *(2026-10-20)* — **SMTP = `lettre` crate**, TOML config.
+  - Rationale: lettre supports SMTP + STARTTLS + SMTPS, has a clean async API, multi-TLS backends. Config TOML for host/port/user/pass/from/tls. Tested via an in-memory mock.
+- **AD-8** *(2026-10-20)* — **Vault source = `VaultSource` trait**, with `Local` + `Github` impls.
+  - Rationale: the admin table stores `vaults(id, slug, source_kind, source_config_json, book_path)`. Sync is periodic (background task), not per-request. Github uses `git2` (libgit2 binding) rather than shelling out — more deterministic and auditable. Default periodic sync = 5 minutes, configurable.
+- **AD-9** *(2026-10-20)* — **Server-side HTML templates via `askama`** (no SPA, no JS framework).
+  - Rationale: admin UI is minimalist; Askama = Jinja-like templates compiled in Rust, zero runtime overhead, type-safe. No React/Vue/Svelte = no frontend toolchain to maintain. JS only for the mdbook customs (zoom, fold).
+- **AD-10** *(2026-10-20)* — **mdbook build triggered after sync**, not per request.
+  - Rationale: `mdbook build` takes ~1-3s for a 100-page vault. Rebuilding on every GET is wasteful. Sync rebuilds on change; hot-reload disabled in prod.
 
-## Décisions produit (PRD)
+## Product Decisions (PRD)
 
 - **PRD-1** *(2026-10-20)* — Stack 100% Rust.
-  - User a tranché : `cargo install morinet` (binaire statique).
-- **PRD-2** *(2026-10-20)* — Repo sur github.com/`lejeunecedric`/morinet (public).
-  - Username à confirmer — placeholder dans tous les artefacts.
-- **PRD-3** *(2026-10-20)* — Multi-vault = un mdbook par vault, sub-paths `/vaultA/`, `/vaultB/`.
-  - User a tranché. Pas de switcher dans la sidebar (plus tard possible).
-- **PRD-4** *(2026-10-20)* — SMTP = adapter générique configurable (pas de Brevo intégré).
-  - User a tranché. On code un adapter lettre générique host/port/user/pass.
+  - User decided: `cargo install morinet` (static binary).
+- **PRD-2** *(2026-10-20)* — Repo at github.com/`lejeunecedric`/MoriNet (public).
+  - Username confirmed.
+- **PRD-3** *(2026-10-20)* — Multi-vault = one mdbook per vault, sub-paths `/vaultA/`, `/vaultB/`.
+  - User decided. No sidebar switcher (possible later).
+- **PRD-4** *(2026-10-20)* — SMTP = generic configurable adapter (no Brevo integration).
+  - User decided. We code a generic `lettre` adapter with host/port/user/pass.
 
-## Erreurs notables & apprentissages
+## Notable errors & learnings
 
-*(vide pour l'instant)*
+- **2026-10-20**: cargo-dist's generated tag pattern `**[0-9]+.[0-9]+.[0-9]+*` doesn't match `v0.1.0` because GitHub tag patterns treat `+` as a literal character (fnmatch-style, no quantifier). The release workflow never auto-triggered on the tag push. Fix: changed pattern to `'v[0-9]*.[0-9]*.[0-9]*'` and added `workflow_dispatch:` so we can manually trigger via API. Lesson: when using tool generators, always sanity-check the trigger pattern with a real test push.
 
 ## Stats
 
-- Fichiers planification : 5 (ROADMAP, REQUIREMENTS, STATE, index, Phase 0 PLAN)
-- AD verrouillées : 10
-- REQ catalog : 48 (5 INFRA + 5 AUTH + 10 VAULT + 6 ADMIN + 5 EMAIL + 5 WEBDAV + 7 MCP + 5 OPS + 5 OBS approx)
-- Phases définies : 8
+- Planning files: 5 (ROADMAP, REQUIREMENTS, STATE, index, Phase 0 PLAN)
+- Locked ADs: 10
+- REQ catalog: 48 (5 INFRA + 5 AUTH + 10 VAULT + 6 ADMIN + 5 EMAIL + 5 WEBDAV + 7 MCP + 5 OPS + 5 OBS approx)
+- Phases defined: 8
+- Commits on origin main: 11
+- CI: green ✅
 
-## Liens utiles
+## Useful links
 
-- ROADMAP : `projets/.planning/ROADMAP.md`
-- REQUIREMENTS : `projets/.planning/REQUIREMENTS.md`
-- Phase 0 PLAN : `projets/.planning/phases/00-bootstrap/01-bootstrap-PLAN.md`
-- Index humain : `projets/.hermes/plans/00-index.md`
-- Référence oscbrain : `https://oscbrain.hollitech.fr/` (pour la phase 8 — assets zoom/fold)
+- ROADMAP: `.planning/ROADMAP.md`
+- REQUIREMENTS: `.planning/REQUIREMENTS.md`
+- Phase 0 PLAN: `.planning/phases/00-bootstrap/01-bootstrap-PLAN.md`
+- Human index: `.hermes/plans/00-index.md`
+- Reference: `https://oscbrain.hollitech.fr/` (for Phase 8 — zoom/fold assets to clone)
