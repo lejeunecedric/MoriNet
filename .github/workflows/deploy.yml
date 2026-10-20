@@ -7,6 +7,11 @@ name: Deploy
 on:
   release:
     types: [published]
+  # Fallback: the release:published event proved flaky on this repo (v0.1.1 was
+  # never auto-triggered), so also fire on version tag pushes.
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
