@@ -51,8 +51,8 @@ morinet serve --config ./config.toml
 | 02 multi-vault | sub-paths /vaultA/, /vaultB/ | ✅ |
 | 03 vault-sources | local + GitHub sources | ✅ |
 | 04 admin-ui | invite, perms, vault mgmt | ✅ |
-| 05 email | SMTP + invitations + reset | ⬜ next |
-| 06 webdav | WebDAV exposure | ⬜ |
+| 05 email | SMTP + invitations + reset | ✅ |
+| 06 webdav | WebDAV exposure | ⬜ next |
 | 07 mcp | MCP StreamableHttp | ⬜ |
 | 08 polish | installer + README + release v1.0 | ⬜ |
 
