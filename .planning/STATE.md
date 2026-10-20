@@ -16,7 +16,7 @@
   - **22/22 tests green, clippy `-D warnings` clean, fmt clean**
   - **Live smoke test passed**: health "ok"; anonymous `/` and `/vault/` → 303 /login; bad creds → 401; good creds → 303 + HttpOnly SameSite=Lax cookie; authed `/vault/` serves vault content
 - **Deploy pipeline**: `.github/workflows/deploy.yml` ready (release:published + manual). Ops brief handed to vops (`/home/holli/extdisk/workspace/vops/morinet-deploy-brief.md`); target morinet.treklair.fr → 51.255.206.62. Awaiting secrets DEPLOY_HOST/DEPLOY_USER/DEPLOY_SSH_KEY + server provisioning; full serve deploy possible once v0.1.1 is tagged.
-- **Next**: Phase 2 (multi-vault: SQLite, users table, ACL, vault switcher). Bump version to 0.1.1 when releasing Phase 1 to holldemo.
+- **Next**: ~~Phase 2~~ ✅ done. Phase 3 (vault-sources: local + GitHub clone/sync) ou tag v0.1.1 pour holldemo.
 
 ## Architectural Decisions (AD)
 
