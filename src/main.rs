@@ -1,7 +1,7 @@
 //! MoriNet — CLI entry point.
 //!
-//! Phase 0 supports `morinet --version` (default behavior) and `morinet init --out <path>`
-//! to write an example `config.toml`. Phase 1+ will add `morinet serve --config <path>`.
+//! Phase 1 supports `morinet serve --config <path> [--vault <book-dir>]` to run the
+//! HTTP server, plus `morinet init` and `morinet version`.
 
 use std::path::PathBuf;
 
@@ -33,6 +33,15 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Start the MoriNet HTTP server
+    Serve {
+        /// Path to the config.toml
+        #[arg(long, default_value = "./config.toml")]
+        config: PathBuf,
+        /// Directory of a compiled mdbook (`book/`) to serve at /vault/
+        #[arg(long)]
+        vault: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -53,10 +62,27 @@ fn main() -> anyhow::Result<()> {
             std::fs::write(&out, cfg)?;
             println!("Wrote example config to {}", out.display());
         }
+        Some(Command::Serve { config, vault }) => {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(serve(config, vault))?
+        }
         None => {
             println!("morinet {} — run `morinet --help` for usage", version());
         }
     }
 
+    Ok(())
+}
+
+async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<()> {
+    let file_cfg = morinet::config::load_config(&config_path)?;
+    let rt = morinet::config::resolve(file_cfg, vault)?;
+    let bind_addr = rt.bind_addr.clone();
+    let app = morinet::server::build_router(rt);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    println!("morinet {} listening on http://{bind_addr}", version());
+    axum::serve(listener, app).await?;
     Ok(())
 }

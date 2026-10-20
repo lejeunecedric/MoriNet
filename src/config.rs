@@ -98,6 +98,10 @@ pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Resu
 mod tests {
     use super::*;
 
+    /// Serialize tests that mutate process-global env vars (cargo runs tests in
+    /// parallel threads; env is shared, so these tests must not interleave).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn write_cfg(dir: &Path, content: &str) -> PathBuf {
         let p = dir.join("config.toml");
         std::fs::write(&p, content).unwrap();
@@ -131,6 +135,7 @@ mod tests {
 
     #[test]
     fn resolve_requires_cookie_secret() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Save + clear env to make the test deterministic.
         let saved = std::env::var(ENV_COOKIE_SECRET).ok();
         std::env::remove_var(ENV_COOKIE_SECRET);
@@ -144,6 +149,7 @@ mod tests {
 
     #[test]
     fn resolve_env_secret_overrides_file() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Save + set a deterministic env for the whole resolve (secret + admin creds).
         let saved: Vec<(&str, Option<String>)> = [
             (ENV_COOKIE_SECRET, std::env::var(ENV_COOKIE_SECRET).ok()),
@@ -170,6 +176,7 @@ mod tests {
 
     #[test]
     fn resolve_requires_admin_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let saved_secret = std::env::var(ENV_COOKIE_SECRET).ok();
         let saved_email = std::env::var(ENV_ADMIN_EMAIL).ok();
         let saved_pass = std::env::var(ENV_ADMIN_PASSWORD).ok();
