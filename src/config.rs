@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::email::SmtpConfig;
+
 pub const DEFAULT_COOKIE_NAME: &str = "morinet_session";
 pub const ENV_COOKIE_SECRET: &str = "MORINET_COOKIE_SECRET";
 pub const ENV_ADMIN_EMAIL: &str = "MORINET_ADMIN_EMAIL";
@@ -20,6 +22,10 @@ pub struct FileConfig {
     pub storage: StorageSection,
     #[serde(default)]
     pub vaults: VaultsSection,
+    /// Phase 5: outbound email. Absent/empty disables delivery — the app
+    /// stays usable and the admin falls back to the manual flow.
+    #[serde(default)]
+    pub smtp: SmtpConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -97,6 +103,8 @@ pub struct RuntimeConfig {
     pub cookie_name: String,
     pub admin_email: String,
     pub admin_password: String,
+    /// Phase 5: outbound email config (empty = delivery disabled).
+    pub smtp: SmtpConfig,
     /// Directory containing the compiled mdbook (`book/`) to serve at `/vault/demo/`.
     pub vault_book_dir: Option<PathBuf>,
 }
@@ -138,6 +146,7 @@ pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Resu
             .unwrap_or_else(|| DEFAULT_COOKIE_NAME.to_string()),
         admin_email,
         admin_password,
+        smtp: cfg.smtp,
         vault_book_dir,
     })
 }
@@ -214,6 +223,59 @@ mod tests {
         let rt = resolve(cfg, None).expect("resolve with env secret set");
         assert_eq!(rt.cookie_secret, b"envsecret".to_vec());
         assert_eq!(rt.admin_email, "test-admin@example.com");
+        for (k, v) in saved {
+            match v {
+                Some(s) => std::env::set_var(k, s),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_smtp_section_when_present() {
+        let cfg: FileConfig = toml::from_str(
+            r#"
+[smtp]
+host = "smtp.example.com"
+port = 587
+user = "bot@x.fr"
+pass = "s3cret"
+from = "bot@x.fr"
+starttls = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.smtp.host.as_deref(), Some("smtp.example.com"));
+        assert_eq!(cfg.smtp.port, Some(587));
+        assert_eq!(cfg.smtp.from.as_deref(), Some("bot@x.fr"));
+        assert!(cfg.smtp.is_usable(), "full section is usable");
+    }
+
+    #[test]
+    fn missing_smtp_section_is_empty_and_unusable() {
+        let cfg: FileConfig = toml::from_str("[server]\n").unwrap();
+        assert!(!cfg.smtp.is_usable(), "absent section disables delivery");
+        assert!(cfg.smtp.host.is_none());
+    }
+
+    #[test]
+    fn smtp_reaches_runtime_config() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> = [
+            (ENV_COOKIE_SECRET, std::env::var(ENV_COOKIE_SECRET).ok()),
+            (ENV_ADMIN_EMAIL, std::env::var(ENV_ADMIN_EMAIL).ok()),
+            (ENV_ADMIN_PASSWORD, std::env::var(ENV_ADMIN_PASSWORD).ok()),
+        ]
+        .into_iter()
+        .collect();
+        std::env::set_var(ENV_COOKIE_SECRET, "envsecret");
+        std::env::set_var(ENV_ADMIN_EMAIL, "a@x.fr");
+        std::env::set_var(ENV_ADMIN_PASSWORD, "pw");
+        let cfg: FileConfig =
+            toml::from_str("[smtp]\nhost = \"smtp.y\"\nfrom = \"bot@x.fr\"\n").unwrap();
+        let rt = resolve(cfg, None).expect("resolve");
+        assert!(rt.smtp.is_usable());
+        assert_eq!(rt.smtp.host.as_deref(), Some("smtp.y"));
         for (k, v) in saved {
             match v {
                 Some(s) => std::env::set_var(k, s),
