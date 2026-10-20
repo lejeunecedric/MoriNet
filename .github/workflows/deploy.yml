@@ -8,6 +8,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to deploy (default: latest published release)'
+        required: false
+        type: string
 
 concurrency:
   group: deploy-holldemo
@@ -19,15 +24,51 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TARGET: x86_64-unknown-linux-gnu
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
-      - name: Download and verify release binary
+      # A published release must always land on the server: a missing secret
+      # must fail loudly, never skip into a green no-op run.
+      - name: Verify deploy secrets are configured
+        if: ${{ secrets.DEPLOY_HOST == '' || secrets.DEPLOY_USER == '' || secrets.DEPLOY_SSH_KEY == '' }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
-          curl -fsSL -o morinet.tar.xz "${BASE}/morinet-${TARGET}.tar.xz"
-          curl -fsSL -o morinet.tar.xz.sha256 "${BASE}/morinet-${TARGET}.tar.xz.sha256"
-          sha256sum -c morinet.tar.xz.sha256
-          tar xJf morinet.tar.xz
+          echo "::error::Missing deploy secrets (DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY)."
+          exit 1
+
+      # github.event.release.tag_name is null on workflow_dispatch, so fall
+      # back to the dispatch input, then to the latest published release.
+      - name: Resolve release tag
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          fi
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$REPO" --json tagName -q .tagName)
+            echo "No tag supplied or released: falling back to latest release ${TAG}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not resolve a release tag to deploy."
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify release binary
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          echo "Deploying ${TAG} from ${BASE}"
+          # The .sha256 file references the original asset name, so download
+          # under that exact name -- renaming it makes `sha256sum -c` fail.
+          # cargo-dist tarballs wrap everything in a target-named directory,
+          # hence --strip-components=1 to land the binary at ./morinet.
+          ASSET="morinet-${TARGET}.tar.xz"
+          curl -fsSL -o "$ASSET" "${BASE}/${ASSET}"
+          curl -fsSL -o "${ASSET}.sha256" "${BASE}/${ASSET}.sha256"
+          sha256sum -c "${ASSET}.sha256"
+          tar xJf "$ASSET" --strip-components=1
           ./morinet --version
 
       - name: Install binary on holldemo
