@@ -4,11 +4,16 @@
 
 ---
 
-## Position actuelle (2026-10-20, post planification initiale)
+## Position actuelle (2026-10-20, Phase 0 quasi-complète)
 
-- **Phase active** : 00 bootstrap, pas démarrée
-- **Statut planification** : 🔵 complète — ROADMAP / REQUIREMENTS / Phase 0 PLAN rédigés
-- **Prochaine action** : confirmer username GitHub (`lejeunecedric`), puis lancer Phase 0 T0.1
+- **Phase active** : 00 bootstrap, en cours d'exécution — 4/7 bites livrés localement
+- **Statut planification** : ✅ complète — ROADMAP / REQUIREMENTS / Phase 0 PLAN rédigés, importés dans le repo
+- **Repo** : `github.com/lejeunecedric/MoriNet` (substitué `<TON-USER>` → `lejeunecedric` partout)
+- **Crate** : `morinet v0.1.0` compilé, 4 tests verts, binaire release 25s
+- **Commits locaux** : 4 (chore planning → feat scaffold → docs readme → ci workflow)
+- **Push** : pas encore fait — pas de credential helper, ni SSH, ni `gh auth`
+  → commande one-liner `gh auth login && git push -u origin main && git push origin v0.1.0` à lancer par user
+- **Prochaine action** : attendre cargo-dist install (background) → `cargo dist init` → commit → tag v0.1.0 → push
 
 ## Décisions Architecturales (AD)
 
