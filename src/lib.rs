@@ -1,6 +1,7 @@
 //! MoriNet — library surface (small in Phase 0, will grow with each phase).
 
 pub mod config;
+pub mod server;
 pub mod session;
 
 /// Current package version (compile-time from Cargo.toml).
