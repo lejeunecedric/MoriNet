@@ -15,9 +15,10 @@ A Rust server that exposes Obsidian second brains as mdBook sites with multi-use
 | Login (cookie HttpOnly + HMAC), users in SQLite (bcrypt) | `/login` |
 | Multi-vault: local dirs + GitHub repos (git2 clone/sync, mdbook build) | `/vault/<slug>/` |
 | ACL per vault (admin sees all, readers need grant) | enforced on every `/vault/<slug>/` |
-| Admin UI: invite users (temp password shown once), add/delete vaults (local+github), grant/revoke ACL | `/admin/*` (gate: role=admin) |
+| Admin UI: invite users, add/delete vaults (local+github), grant/revoke ACL | `/admin/*` (gate: role=admin) |
 | CI → Release (cargo-dist, 16 assets, 5 platforms) → Deploy → restart + healthcheck | every `git push origin v0.1.x` |
 | Styled UI (embedded CSS, dark mode) | `/assets/style.css` |
+| Email invitations (24h, single-use) + password reset (1h) — SMTP via `[smtp]`, degrades to temp-password flow when unset | `/invite/{token}`, `/reset`, `/reset/{token}` |
 
 **Deploy pipeline** (`.github/workflows/`): `ci.yml` (fmt+clippy+test+build), `release.yml` (cargo-dist — **NEVER hand-edit it**, drift check), `deploy.yml` (staging scp + atomic mv + `sudo systemctl restart morinet` + `/health`).
 
@@ -33,6 +34,16 @@ A vault is a **mdBook-native repo**: `book.toml` + `src/SUMMARY.md` at the root.
 
 An import of *raw* Obsidian wikis (B3Wiki/ProgWiki, 128 .md without book.toml) was validated and **deliberately reverted** (commit `2b924f3`) — it was a format-validation test, not a feature. If the user asks for raw-wiki import again, build it as a proper feature (decisions: `[[wikilinks]]` handling, frontmatter, scaffold regeneration on sync) — do not re-add the hack silently.
 
+## Phase 5 (email) — how it works
+
+- `src/email.rs` — `EmailSender` async trait. Prod impl `SmtpSender` (lettre), test impl `InMemorySender`.
+- `AppState.email: Arc<dyn EmailSender>` — injected via `build_router_with_email`; `build_router` picks SMTP from `[smtp]` and falls back to a no-op recorder.
+- Tokens are stored **sha256-hashed**; the plaintext exists only inside the emailed URL.
+- The invite form's `email` field is parsed but **ignored** — identity and role come from the stored invitation, so a tampered field cannot escalate to admin.
+- `POST /reset` answers identically for known and unknown logins (no account enumeration) and sends nothing in the unknown case.
+- A rejected short password does **not** consume the token.
+- Every generated page goes through `app_page()` (AD-12) — a raw `Html(body)` ships unstyled.
+
 ## Known pitfalls (all hit, all documented)
 
 1. **cargo-dist drift check**: NEVER hand-edit `.github/workflows/release.yml` — CI fails. Generate via `~/.cargo/bin/dist` (installed as `dist`, not a cargo subcommand). Put custom logic in separate workflows.
@@ -42,6 +53,9 @@ An import of *raw* Obsidian wikis (B3Wiki/ProgWiki, 128 .md without book.toml) w
 5. **Env races in tests**: config tests mutate process env — they hold a static `ENV_LOCK` mutex. Keep that pattern when adding env-dependent tests.
 6. **git2 needs openssl**: build host requires `libssl-dev` + `pkg-config` (or use `vendored-openssl` feature).
 7. **axum 0.8**: path syntax is `/{param}` and `{*wildcard}`; `HeaderMap::from_iter` needs `HeaderValue` (`.parse().unwrap()`); handlers extracting `Extension<Claims>` need `Claims: Clone`.
+8. **The patch tool's linter has no Cargo edition** → dozens of fake `E0670 async fn is not permitted in Rust 2015`. Ignore them; `cargo clippy` is the source of truth.
+9. **lettre 0.11**: HTML bodies use `SinglePart::html(..).singlepart(..)`. `MessagePart` no longer exists, and `.multipart(..)` is wrong for a single HTML part.
+10. **Green tests do not mean a styled UI.** A full browser pass is required for server-rendered HTML (see AD-12).
 
 ## What's left (ROADMAP)
 
@@ -54,6 +68,7 @@ Ops open items: vops owns holldemo provisioning (systemd unit with env creds, ng
 
 ## Testing conventions
 
-- TDD strict, `cargo test` (54 tests green at handoff), clippy `-D warnings`, fmt.
+- TDD strict, `cargo test` (72 tests green at handoff), clippy `-D warnings`, fmt.
 - sqlite fixtures: `Store::connect_memory()`, bcrypt cost default (tests take ~15-25s, that's normal).
 - e2e via `tower::ServiceExt::oneshot` on the Router — no network.
+- UI verification: run `morinet serve` on :8099 with a throwaway config, then drive Chromium — click the real buttons, follow the real links, screenshot each page. Two unstyled-page bugs were only findable this way.
