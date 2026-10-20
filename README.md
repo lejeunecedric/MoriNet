@@ -17,7 +17,7 @@
 - 📡 Vaults accessible via **WebDAV** (same creds as mdbook)
 - 🤖 Vaults accessible via **MCP** (Model Context Protocol) — for AI agents
 - 📨 Invitations and password reset by email
-- 🎨 Custom mdbook visual mods: image zoom, collapsible sections, external links (inspired by oscbrain)
+- 🎨 Custom mdbook visual mods: image zoom, collapsible sections, external links
 - 🚀 Distribution: a single static Rust binary, `cargo install morinet`
 
 ## Install
@@ -74,5 +74,6 @@ All architectural decisions are tracked in [`.planning/STATE.md`](.planning/STAT
 MIT OR Apache-2.0 — see [LICENSE](LICENSE).
 
 ## Credits
-
-Visually inspired by [oscbrain.hollitech.fr](https://oscbrain.hollitech.fr/) (zoom + fold CSS/JS mods).
+Inspired by the works of Andrej Karpathy on LLM-Wiki
+Early phase development during the FRAMES IBC Accelerator project
+Inputs from the Reseau Intelligence de la Complexité AI workrgoup
