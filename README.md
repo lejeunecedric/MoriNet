@@ -46,15 +46,17 @@ morinet serve --config ./config.toml
 
 | Phase | Goal | Status |
 |-------|------|--------|
-| 00 bootstrap | repo + Cargo scaffold + CI | ✅ this phase |
-| 01 core-serve | one vault + simple login | ⬜ |
-| 02 multi-vault | sub-paths /vaultA/, /vaultB/ | ⬜ |
-| 03 vault-sources | local + GitHub sources | ⬜ |
-| 04 admin-ui | invite, perms, vault mgmt | ⬜ |
-| 05 email | SMTP + invitations + reset | ⬜ |
+| 00 bootstrap | repo + Cargo scaffold + CI | ✅ |
+| 01 core-serve | one vault + simple login | ✅ |
+| 02 multi-vault | sub-paths /vaultA/, /vaultB/ | ✅ |
+| 03 vault-sources | local + GitHub sources | ✅ |
+| 04 admin-ui | invite, perms, vault mgmt | ✅ |
+| 05 email | SMTP + invitations + reset | ⬜ next |
 | 06 webdav | WebDAV exposure | ⬜ |
 | 07 mcp | MCP StreamableHttp | ⬜ |
 | 08 polish | installer + README + release v1.0 | ⬜ |
+
+**Live**: https://morinet.treklair.fr (demo instance). **Handoff notes for agents**: [`.planning/HANDOFF.md`](.planning/HANDOFF.md).
 
 See [`.planning/REQUIREMENTS.md`](.planning/REQUIREMENTS.md) for the 48 REQ-IDs catalog.
 
