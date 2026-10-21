@@ -31,9 +31,30 @@ A Rust server that exposes Obsidian second brains as mdBook sites with multi-use
 
 ## Vault contract (IMPORTANT)
 
-A vault is a **mdBook-native repo**: `book.toml` + `src/SUMMARY.md` at the root. `build()` runs `mdbook build` and serves `<src>/book`.
+A vault is an **llm-wiki / Obsidian directory**: markdown pages with bare
+`[[wikilinks]]` (with `|alias` and `#section`), YAML frontmatter, and a
+Karpathy-ish layout (`entities/`, `concepts/`, `comparisons/`, `queries/`,
+`raw/`, `index.md`). No `book.toml` needed.
 
-An import of *raw* Obsidian wikis (B3Wiki/ProgWiki, 128 .md without book.toml) was validated and **deliberately reverted** (commit `2b924f3`) — it was a format-validation test, not a feature. If the user asks for raw-wiki import again, build it as a proper feature (decisions: `[[wikilinks]]` handling, frontmatter, scaffold regeneration on sync) — do not re-add the hack silently.
+MoriNet **converts it in-pipeline** (AD-14): `sync` → mirror into
+`<source>/.morinet-build/` (frontmatter consumed, wikilinks resolved to
+relative md links, `SUMMARY.md` + `book.toml` generated, folder landing
+pages added) → `mdbook build` on that generated tree → the compiled book is
+served at `/vault/<slug>/`. **The source vault is never modified.**
+
+mdBook-native repos (`book.toml` + `src/SUMMARY.md`) still work untouched —
+they are detected as `Native` and built directly. A directory matching
+neither format is flagged in admin: `LLM-Wiki not detected: this vault might
+not work as expected` (PRD-6).
+
+The old raw-wiki auto-scaffold stays reverted (`2b924f3`): the conversion is
+the feature, not a scaffold hack.
+
+**Reusable oracles** (need `MORINET_CORPUS=<real wiki>` + `mdbook` in PATH):
+
+```bash
+MORINET_CORPUS=/path/to/wiki cargo test -- --ignored --nocapture
+```
 
 ## Phase 5 (email) — how it works
 
@@ -79,6 +100,8 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 16. **Parallel tests sharing a temp-dir name delete each other's fixtures.** Derive it from the test name, not `process::id()` alone; failures then look random.
 17. **`git add -A` will commit nested git repos** (e.g. a `.worktrees/` checkout). Check `git status` before committing; `.worktrees/` is in `.gitignore` now.
 18. **The remote moves while you work.** Fetch and diff before merging — do not force-push. Several PRs landed mid-session (README description, credits, phase table, a deleted docs file).
+19. **Your model of a tool's schema can be out of date — the tool is the oracle.** `mdbook` 0.5 REMOVED `multilingual` from `[book]` ("unknown field") and REJECTS a draft SUMMARY parent that has children ("link items for nested chapters must only contain a hyperlink"). Both bugs passed my unit tests because my fixtures encoded my (wrong) model of mdBook. Only running the real binary on a real corpus found them. Same class of bug as the WebDAV date formatter (pitfall #13) — the fix is the same: an `#[ignore]`d oracle against the real tool + a real corpus.
+20. **The demo fixture can be a legitimately-flagged vault.** The `demo` test vault is a bare compiled-HTML dir → it matches NEITHER format, so the PRD-6 warning applies to it too. Don't write a test that assumes "the demo vault is never flagged" — assert per-row instead.
 
 ## What's left (ROADMAP)
 

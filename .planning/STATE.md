@@ -4,22 +4,22 @@
 
 ---
 
-## Current position (2026-10-21 — session resumed; Phase 8b obsidian-format started)
+## Current position (2026-10-21 — Phase 8b obsidian-format SHIPPED, v0.1.8 releasing)
 
-- **Latest release**: v0.1.6 (embedded stylesheet + admin nav on index) — releasing at handoff time; if holldemo lags behind, re-dispatch Deploy with `inputs.tag=v0.1.6`
+- **Latest release**: **v0.1.8** (Phase 8b obsidian-format — llm-wiki/Obsidian vaults converted & served natively)
 - **Live instance**: https://morinet.treklair.fr — public demo instance, admin-ui accessible via the **Admin** nav link on the index. Credentials live on the server, not in this repo
-- **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui, 05 email, **06 webdav**
-- **135/135 tests** (44 → 54 tokens → 72 email+HTTP → 102 webdav → 121 browse → 135 access model), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
+- **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui, 05 email, 06 webdav, **08b obsidian-format** (08 access-model à 60 %)
+- **165/165 tests** (135 → 143 frontmatter+links → 157 tree → 161 convert → **165 wiring**), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
 - **Phase 6 (WebDAV) shipped**: PROPFIND (depth 0/1) + GET + admin PUT on `/webdav/<slug>/…`. Exposes the vault **source** (`book.toml` + `src/`), not the compiled `book/` — PUT markdown then `mdbook build`. HTTP Basic against the same bcrypt users + the same per-vault ACL
 - **Phase 5 (email) shipped**: `EmailSender` trait + lettre SMTP + `InMemorySender` mock, `[smtp]` in config, invitation links (24h, single-use, sha256-hashed) and password reset (1h), all UI pages styled. Admin invite falls back to the old temp-password flow when SMTP is absent/invalid
-- **Auto-scaffold of raw wikis REVERTED** (`2b924f3`): vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The B3Wiki/ProgWiki import was a format-validation test, not a feature — see HANDOFF.md before re-attempting
+- **Vault contract (superseded)**: mdBook-native (`book.toml` + `src/SUMMARY.md`) was the v1 contract. **Phase 8b (v0.1.8) replaced it**: MoriNet now loads **llm-wiki/Obsidian** vaults (bare `[[wikilinks]]` + YAML frontmatter, no `book.toml`) and converts them in-pipeline into a generated mdBook tree under `<src>/.morinet-build/` (AD-14). mdBook-native repos still work untouched. The old raw-wiki auto-scaffold stays reverted (`2b924f3`) — the conversion is the proper feature, not a scaffold hack.
 - **Deploy quirks**: staging + atomic `mv` (ETXTBSY), re-dispatch may be needed right after a release finishes (tag-push deploy races the release and falls back to "latest release")
 - **Planning refreshed (2026-10-21)**: a new **Phase 7 — vault-ux** was inserted BEFORE MCP (MCP → 08, polish → 09). User-driven: adding a local vault should not require typing a server path.
 - **Phase 8 — access-model** (user decision 2026-10-21): the merged-book idea is ABANDONED. Replaced by groups + personal vaults: `groups`/`group_members`, `vaults.scope` (global|personal) + `owner_id`, `vault_group_acl(vault, group, role)`. A personal vault is strictly solo (owner always has write). REQ-GRP-001..004, REQ-VLT-001..007.
 - **Phase 9 — ux-nav**: new shell — My vaults landing, account menu top-right (name/email/logout), discreet close button on mdbook pages, Admin menu only for role=admin.
 - **Email change requires confirmation** at the new address (`pending_emails`); unconfirmed changes never break the existing login.
-- **Obsidian format blocker RESOLVED by design (2026-10-21)**: in-pipeline converter (AD-14/PRD-6) — llm-wiki vault → generated mdBook tree in `.morinet-build/`, wikilinks à l'Obsidian, frontmatter consommé, SUMMARY régénéré à chaque sync. Corpus réel mesuré en local (ProgWiki) : 131 .md, 812 wikilinks, 542 aliases, 0 book.toml.
-- **Next**: Phase 8b bites 1→6 (`.planning/phases/08b-obsidian-format/01-obsidian-format-PLAN.md`) → Phase 8 personal-vault UI → Phase 7 bites 2..5 → Phase 9 ux-nav → Phase 10 (MCP) → Phase 11 (polish v1.0)
+- **Obsidian format blocker RESOLVED & SHIPPED (2026-10-21)**: in-pipeline converter (AD-14/PRD-6) — llm-wiki vault → generated mdBook tree in `.morinet-build/`, wikilinks à l'Obsidian, frontmatter consommé, SUMMARY régénéré à chaque sync. Corpus réel mesuré en local (ProgWiki) : 131 .md, 812 wikilinks, 542 aliases, 0 book.toml. **E2E vérifié en navigateur** : liens résolus, chips méta, sidebar avec folder notes, PUT WebDAV → note re-convertie et live sans redémarrage.
+- **Next**: Phase 8 (écran vault personnel) → Phase 7 bites 2..5 (picker modal, import) → Phase 9 ux-nav (+ `/logout`) → Phase 10 (MCP) → Phase 11 (polish v1.0)
 - **Not started**: `/logout` does not exist; no nav shell yet; no screen to create a personal vault (store method exists)
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
