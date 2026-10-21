@@ -96,6 +96,12 @@
 | REQ-UX-006    | Browse endpoint is **admin-only** and cannot escape a configured root          | curl unauth → 401; `..` → 400 |
 | REQ-UX-007    | Invalid selections give a readable message (not a raw 500)                     | browser: missing book.toml    |
 
+| REQ-UX-008    | A **Import** button opens a browser-side folder picker (`webkitdirectory`)     | browser: folder chosen             |
+| REQ-UX-009    | Imported files are uploaded to the **server-side** vault dir (never the path)  | files land under the vault source  |
+| REQ-UX-010    | Import **creates a new vault** from the chosen local folder (slug = folder name)    | vault exists after import          |
+| REQ-UX-011    | Import refuses an existing slug/folder rather than overwriting a live vault     | same folder twice → refused        |
+| REQ-UX-012    | Upload size limit + path sanitisation on every uploaded filename               | huge file → 413; `..` name → 400   |
+
 ## OPS — Operations / polish
 
 | REQ-ID        | Description                                                       | Verification                  |
