@@ -72,6 +72,19 @@
 | REQ-WEBDAV-004  | `PUT` allowed for admin only                                            | curl PUT as reader → 403              |
 | REQ-WEBDAV-005  | Vault ACL respected on WebDAV (user without ACL → 401)                 | curl non-ACL → 401                    |
 
+## FUSION — Per-user merged book
+
+| REQ-ID        | Description                                                                  | Verification                          |
+|---------------|------------------------------------------------------------------------------|---------------------------------------|
+| REQ-FUSE-001  | Each user sees ONE merged mdbook containing only the vaults they may access   | reader A vs reader B see different books |
+| REQ-FUSE-002  | Merged `SUMMARY.md` groups entries **by vault** (one top-level section each)   | generated SUMMARY snapshot           |
+| REQ-FUSE-003  | The sidebar groups chapters by vault with a visible group heading             | browser screenshot                    |
+| REQ-FUSE-004  | Revoking a vault ACL removes it from the merged book on next build           | grant → revoke → book changes        |
+| REQ-FUSE-005  | Merged books are cached on disk under `data/books/<user>/`, reused if fresh   | second request does not rebuild       |
+| REQ-FUSE-006  | Cache key includes the vault set + ACL state (no stale cross-user reads)     | different users → different dirs     |
+| REQ-FUSE-007  | Vaults stay independently managed (own dir, own git, own sync)               | editing one vault does not touch another |
+| REQ-FUSE-008  | A merged build never leaks a vault the user cannot read                       | reader without ACL → not in SUMMARY   |
+
 ## MCP — Model Context Protocol
 
 | REQ-ID        | Description                                                                | Verification                          |
