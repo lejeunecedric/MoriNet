@@ -74,20 +74,51 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 11. **WebDAV routes need `any(handler)`, not `get(handler)`** — otherwise PROPFIND/PUT get the router's 405 before the handler runs.
 12. **Decode the URL path before splitting it.** `%2f` hiding a separator let a `PUT ..%2fescaped.md` through (201 + literal file). Caught by curl, not by the 96 green unit tests.
 13. **A hand-rolled HTTP date formatter will be wrong** — the epoch was a Thursday, so `days % 7` misses by 4. Verified against a reference.
+14. **Rewiring a data model is not done until the read paths use it.** The group model was fully written and tested while `/vault/<slug>/` still called the old `acl_allows` — every member got a 403. Wiring `access_for()` / `accessible_vaults()` into the index, file serving and WebDAV is what made it real. Test the *route*, not just the store.
+15. **axum's `Query` extractor does NOT percent-decode values** (only the path). `?path=/my%20notes` arrives as a literal `%20`. Decode exactly once, before any traversal check — decoding twice makes the checked string differ from the path you build.
+16. **Parallel tests sharing a temp-dir name delete each other's fixtures.** Derive it from the test name, not `process::id()` alone; failures then look random.
+17. **`git add -A` will commit nested git repos** (e.g. a `.worktrees/` checkout). Check `git status` before committing; `.worktrees/` is in `.gitignore` now.
+18. **The remote moves while you work.** Fetch and diff before merging — do not force-push. Several PRs landed mid-session (README description, credits, phase table, a deleted docs file).
 
 ## What's left (ROADMAP)
 
-- **Phase 7** — vault-ux: Browse button + server-side directory picker for local vaults; URL field for GitHub. (inserted 2026-10-21)
-- **Phase 8** — access-model: groups + personal vaults (`group_members`, `vault_group_acl`, `scope`/`owner_id`). Replaces the flat per-user ACL.
-- **Phase 9** — ux-nav: new shell (My vaults, account menu, close button, admin-only menu).
-- **Phase 10** — MCP: StreamableHttp + `list_vaults`/`list_notes`/`read_note`/`search_notes` (crate `rmcp`).
-- **Phase 11** — polish: crates.io publish, README final, v1.0.0.
+**In flight now (Phase 8 — access-model, ~60% done)**
 
-Ops open items: vops owns holldemo provisioning (systemd unit with env creds, nginx, TLS, sudoers `/etc/sudoers.d/morinet-deploy` — verify it's installed, it gates the auto-restart).
+Done and committed:
+- `migrations/0004_groups.sql` — `groups`, `group_members`, `vault_group_acl(vault, group, role)`, `vaults.scope`/`owner_id`, `users.display_name`
+- Store layer: `access_for()`, `accessible_vaults()`, `create_personal_vault()`, group CRUD, `set/clear_vault_group_role()`
+- Admin UI: `/admin/groups` (members, rename, delete), `/admin/vaults/<slug>/perms` (per-group read/write/no-access)
+- **All read/write paths rewired** to `access_for()` / `accessible_vaults()` — the legacy `vault_acl` is no longer the source of truth
+
+Still to do:
+- UI to create a **personal** vault (the store method exists; no screen yet)
+- "My vaults" / "Shared with me" sections exist on the index but there is no **nav shell** yet (Phase 9)
+
+**Phase 9 — ux-nav** (not started):
+- Shared header on every page, account menu top-right (display name, email, logout)
+- `POST /logout` — **does not exist yet**
+- mdBook pages get a discreet close button (top-right) back to `/`
+- Admin menu as a dropdown, rendered only for role=admin
+
+**Phase 7 — vault-ux** (bites 2..5 not started):
+- The picker modal (list dirs, descend, up, breadcrumb) over the finished `/admin/browse`
+- Browser-side import that **creates a new vault** from a local folder (slug = folder name, scaffolds `book.toml` + `src/SUMMARY.md`)
+
+**Blocker to resolve first — Obsidian wikis are NOT mdBook**
+
+The vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The user states the real input is **always an Obsidian-format wiki**. `B3Wiki` was inspected and confirms it:
+
+- **0** `book.toml`, **0** `SUMMARY.md`, **147** `.md` in a Karpathy layout (`entities/`, `concepts/`, `comparisons/`, `raw/`, `queries/`)
+- **641** `[[wikilinks]]`, many with aliases: `[[jimmy-smith|Jimmy Smith]]`
+- YAML frontmatter on every page (`title`, `created`, `updated`, `type`, `tags`)
+
+A hand-written `SUMMARY.md` does build, but mdBook **does not resolve `[[…]]`**: the links render as literal text and stay broken. Converting is therefore not enough — it needs `[[wikilink]]` resolution, `|alias` support, and frontmatter handling.
+
+An earlier raw-wiki import was tried and **deliberately reverted** (`2b924f3`) because it was a format-validation test, not a feature. Do not re-add it as a silent hack — build it properly.
 
 ## Testing conventions
 
-- TDD strict, `cargo test` (102 tests green at handoff), clippy `-D warnings`, fmt.
+- TDD strict, `cargo test` (135 tests green at handoff), clippy `-D warnings`, fmt.
 - sqlite fixtures: `Store::connect_memory()`, bcrypt cost default (tests take ~15-25s, that's normal).
 - e2e via `tower::ServiceExt::oneshot` on the Router — no network.
 - UI verification: run `morinet serve` on :8099 with a throwaway config, then drive Chromium — click the real buttons, follow the real links, screenshot each page. Two unstyled-page bugs were only findable this way.
