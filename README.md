@@ -74,72 +74,57 @@ All architectural decisions are tracked in [`.planning/STATE.md`](.planning/STAT
 - **WebDAV** = 3 custom axum handlers (~200 lines, full control)
 - **MCP** via the `rmcp` crate, StreamableHttp
 
-### Vaults & services
+### How it works
 
-A vault is declared once (config file or admin form), resolved to a local book
-directory, then registered in SQLite. From there **three services** read the
-same vault — and they do not read the same thing.
+Obsidian vaults, hosted and shared by the MoriNet server.
 
 ```mermaid
-flowchart LR
-  subgraph declare["1 · Declare"]
-    CFG["config.toml<br/>[vaults.entries]"]
-    FORM["POST /admin/vaults/create"]
-  end
+flowchart TD
+  V1["<b>Obsidian vault</b><br/><small>Personal notes, projects, Markdown, links</small>"]
+  V2["<b>Team vault</b><br/><small>Shared documentation and wikis</small>"]
+  V3["<b>Archive vault</b><br/><small>Reference material, imports</small>"]
 
-  subgraph resolve["2 · Resolve — src/sources.rs"]
-    SRC["VaultSource::sync()"]
-    LOCAL["LocalSource<br/>path on disk"]
-    GH["GitSource<br/>clone/pull git2"]
-    BUILD["mdbook build<br/>→ book/"]
-    TICK["bg task every 300s<br/>github only"]
-  end
+  M["Read from a local folder<br/>or a GitHub repo"]
 
-  subgraph db["3 · Register — store.rs"]
-    V["vaults<br/>slug · name · book_path"]
-    ACL["vault_acl + users<br/>role admin | reader"]
-  end
+  S["<b>MoriNet server</b><br/><small>Hosting, authentication, permissions</small>"]
 
-  subgraph serve["4 · Serve — server.rs"]
-    GATE{{"acl_allows(email, slug)"}}
-    HTTP["HTTP reader<br/>/vault/{slug}/"]
-    DAV["WebDAV<br/>/webdav/{slug}/"]
-    MCP["MCP<br/>/mcp — phase 10"]
-  end
+  B["<b>Browser</b><br/><small>Wiki site</small>"]
+  D["<b>WebDAV</b><br/><small>File access</small>"]
+  P["<b>MCP</b><br/><small>AI agents</small>"]
 
-  CFG --> SRC
-  FORM --> SRC
-  SRC -->|local| LOCAL
-  SRC -->|github| GH
-  LOCAL --> BUILD
-  GH --> BUILD
-  BUILD -->|seed_vault| V
-  BUILD -.->|"PUT markdown → rebuild"| DAV
+  V1 --> M
+  V2 --> M
+  V3 --> M
+  M --> S
+  S --> B
+  S --> D
+  S --> P
 
-  V --> ACL
-  V --> GATE
-  ACL --> GATE
-  GATE -->|"serves book_path"| HTTP
-  GATE -->|"source = parent of book/"| DAV
-  GATE -.-> MCP
-  TICK -.-> GH
+  style V1 fill:#fff,stroke:#d4d4d8
+  style V2 fill:#fff,stroke:#d4d4d8
+  style V3 fill:#fff,stroke:#d4d4d8
+  style M fill:#fff,stroke:#d4d4d8,stroke-dasharray:4 3
+  style S fill:#eaf1fe,stroke:#8ab4f8,stroke-width:2px
+  style B fill:#fff,stroke:#d4d4d8
+  style D fill:#fff,stroke:#d4d4d8
+  style P fill:#fff,stroke:#d4d4d8,stroke-dasharray:4 3
+
+  linkStyle default stroke:#9ca3af
 ```
 
-Three points worth knowing:
+A vault is a plain mdBook repo (`book.toml` + `src/SUMMARY.md`). The server
+reads it from a local folder or a GitHub clone, compiles it with `mdbook build`,
+and serves the result. Dotted outline = not shipped yet: MCP lands in phase 10.
 
-- **Kind lives in config, not in SQLite.** `vaults` stores only `slug`, `name`
-  and `book_path` — `kind` (`local` | `github`) and the git URL are re-read from
-  `config.toml` on every boot. A vault created from the admin form is not
-  persisted as a source, only as a path.
-- **The two live services sit on opposite sides of the build.** HTTP serves the
-  compiled `book/`; WebDAV writes to the **source** (`source_dir_of` = parent of
-  `book/`) and rebuilds, which is the useful direction for a second brain: you
-  PUT markdown, mdBook renders it.
-- **Access is one rule, one gate.** `acl_allows(email, slug)` returns `true` for
-  any `admin` when the vault exists, otherwise requires a `vault_acl` row. It
-  sits between the registry and the services, so `/vault/*` and `/webdav/*` share
-  it (WebDAV additionally over HTTP Basic); MCP will be the third caller. PUT is
-  admin-only even with a granted ACL.
+Two details worth knowing:
+
+- **Vault sources live in `config.toml`, not in SQLite.** The `vaults` table
+  stores only `slug`, `name` and `book_path`; the kind (`local` | `github`) and
+  the git URL are re-read from the config on every boot.
+- **The two live services sit on opposite sides of the build.** The browser gets
+  the compiled `book/`; WebDAV writes to the **source** and rebuilds — the useful
+  direction for a second brain, where you PUT markdown and mdBook renders it.
+  PUT is admin-only even with a granted ACL.
 
 ## License
 
