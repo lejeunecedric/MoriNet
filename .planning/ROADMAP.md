@@ -110,9 +110,11 @@
 - `MKCOL` / `DELETE`: out of scope v1 (read-only-ish)
 - Tests: curl WebDAV + a `cadaver` walkthrough
 
-## Phase 7 — vault-ux
+## Phase 7 — vault-ux ✅ DONE (v0.1.15)
 
 **Goal**: adding a local vault must not require typing a path on the server. An admin clicks **Browse**, walks the server's directories, and picks one.
+
+**Status**: livré (v0.1.15). Le `<dialog>` natif liste les dossiers du serveur (`GET /admin/browse`), descend / remonte (breadcrumb + Up), **Select** remplit path/slug/name. L'import browser-side (`<input webkitdirectory>`) téléverse les fichiers dans le vault choisi — le chemin navigateur n'est jamais cru côté serveur. Pièges : les sélecteurs `[name="name"]` globaux croisent le champ de renommage du compte → scoped ; `root.join(path)` avec un chemin absolu **remplace** la racine → `trim_start_matches('/')`.
 
 **User decision (2026-10-21)**: the picker browses **the server's filesystem**, not the admin's machine. A vault is a path on the host running MoriNet; offering a browser-side folder picker would upload a path string that does not exist there.
 
@@ -130,7 +132,9 @@
 
 ---
 
-## Phase 8 — access-model
+## Phase 8 — access-model ✅ DONE (v0.1.9 → v0.1.13)
+
+**Status**: livré. Groups + personal vaults + quotas (v0.1.9), load GitHub vault en espace personnel (v0.1.10), delete owner-only + refresh (v0.1.11), autofill name (v0.1.12), `source_url` retrouvé depuis le remote git (v0.1.13).
 
 **Goal** (user decision, 2026-10-21): abandon the merged-book idea and replace the flat ACL with **groups + personal vaults**.
 
@@ -167,14 +171,16 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 
 ---
 
-## Phase 9 — ux-nav
+## Phase 9 — ux-nav ✅ DONE (v0.1.14 → v0.1.20)
 
 **Goal**: the new shell.
 
-**Status**: partiellement pull-forwardé (2026-10-21, feedback user) : `POST /logout`
-+ bouton logout, nav admin clarifiée (My vaults vs Vaults mgmt), bouton **About**
-(version + repo GitHub, REQ-ADMIN-007), **zoom mdBook** (barre −/100%+/↺, portée
-d'oscbrain) et **bouton "Close vault"** sur les pages mdBook (REQ-NAV-003).
+**Status**: livré. Nav shell (v0.1.14) → restyle (v0.1.16) → passes design
+Impeccable/Linear (v0.1.17-v0.1.20, voir « Phase 9b — design system »).
+Le header porte **un seul contrôle** (menu compte : identité → `/account`,
+entrée Admin, logout) ; la tab bar admin est la seule nav des sections ;
+les pages mdBook portent la barre zoom + « Close vault » en haut à droite
+(sous le bouton Print, href `/`).
 
 **Criteria**:
 - Shared header on every page: **My vaults** (landing) + account menu top-right
@@ -188,7 +194,35 @@ d'oscbrain) et **bouton "Close vault"** sur les pages mdBook (REQ-NAV-003).
 
 ---
 
-## Phase 9 — mcp
+## Phase 9b — design system ✅ DONE (v0.1.16 → v0.1.20)
+
+**Goal**: un UI sans slop, mesuré et vérifiable.
+
+Passes **Impeccable** (`/extract`, `/polish`, `/critique`) + vocabulaire
+**Linear** (skill `popular-web-designs`) + règles du skill `ui-design-passes` :
+
+- **v0.1.16** — tokens de thème light/dark, panels, formulaires, pill nav
+- **v0.1.17** — `/extract` : un seul menu, nav non dupliquée, CSS consolidé
+  (radius/spacing scales, `--on-accent`, flat forms), MENU_JS (un menu ouvert
+  à la fois, Échap/clic extérieur)
+- **v0.1.18** — chrome vault : Close vault fonctionnel (href `/`), barre
+  top-right unique sous le bouton Print (mesuré : pas de chevauchement)
+- **v0.1.19** — `/critique` mdBook : detector `npx impeccable detect` sur
+  snapshots CSS-inlinés → meta 13px sans fade, line-height 1.65, wikilinks
+  pleins, `--icons` dark 4:1, police système
+- **v0.1.20** — anti-clutter : 1 contrôle header (2 boutons admin = showstopper
+  signalé), titres jamais dupliqués, sections complètes (empty states inclus),
+  vaults en rangées, form de rename sur `/account` (pas de form dans un menu)
+
+**Règles design tenues** (détail dans le skill `ui-design-passes`) : pas de
+texte en opacity réduite, corps ≥ 13px / line-height 1.55-1.7, pas de carte
+dans une carte, liens de nav une seule fois, identité rendue une fois, overlays
+fixes jamais par-dessus un contrôle existant, un seul accent, close/back → la
+surface parente.
+
+---
+
+## Phase 10 — mcp
 
 **Goal**: MCP StreamableHttp on `/mcp`, Bearer auth (token derived from password), tools on accessible vaults.
 
@@ -201,7 +235,7 @@ d'oscbrain) et **bouton "Close vault"** sur les pages mdBook (REQ-NAV-003).
 
 ---
 
-## Phase +11 — polish
+## Phase 11 — polish (v1.0)
 
 **Goal**: ready to ship.
 

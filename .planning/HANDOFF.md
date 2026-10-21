@@ -20,15 +20,21 @@ A Rust server that exposes Obsidian second brains as mdBook sites with multi-use
 | Styled UI (embedded CSS, dark mode) | `/assets/style.css` |
 | Email invitations (24h, single-use) + password reset (1h) — SMTP via `[smtp]`, degrades to temp-password flow when unset | `/invite/{token}`, `/reset`, `/reset/{token}` |
 | WebDAV: PROPFIND (depth 0/1) + GET + admin PUT on the vault **source** (markdown in, `mdbook build` out) | `/webdav/<slug>/` (HTTP Basic + same ACL) |
+| Nav shell: one header control (account menu: identity → `/account`, Admin entry, logout), pill nav with active state | every page |
+| Personal vaults: load from GitHub (quota-capped), owner Refresh/Delete, name auto-filled from the repo | `/` (index) |
+| Group quotas (`free`=2, `admin`=∞), role switcher, per-group quota form | `/admin/groups`, `/admin/users` |
+| Server-side directory picker (`<dialog>` over `/admin/browse`) + browser-side import | `/admin/vaults` |
+| mdBook pages: zoom toolbar + "Close vault" (top right, below the print button), book formatting (1.65 line-height, full-contrast wikilinks) | `/vault/<slug>/` |
+| Account page (display-name editing — NOT inside the dropdown) | `/account` |
 
 **Deploy pipeline** (`.github/workflows/`): `ci.yml` (fmt+clippy+test+build), `release.yml` (cargo-dist — **NEVER hand-edit it**, drift check), `deploy.yml` (staging scp + atomic mv + `sudo systemctl restart morinet` + `/health`).
 
 ## Current state at handoff time
 
-- Latest release: **v0.1.8** (Phase 8b obsidian-format — llm-wiki/Obsidian vaults converted & served natively). Live: **https://morinet.treklair.fr**.
-- On `main`, **not yet released**: Phase 9 pull-forward (logout + About page + clarified admin nav) — commit `b307e18`. It's tested (167/167) and CI-green; needs a version bump + tag to ship.
-- The deploy auto-triggers on tag push AND on release published, but **re-dispatch may be needed right after a release finishes** (the tag-push deploy can race ahead of the release and fall back to "latest release"). Watch for that.
-- treklair has **no vaults configured yet** — add one via `/admin/vaults` (kind `github` needs a repo with `book.toml` + `src/SUMMARY.md`; or a local llm-wiki dir, which the v0.1.8 converter now serves natively).
+- Latest release: **v0.1.20** (anti-clutter UI; design system shipped v0.1.16→v0.1.20). Live: **https://morinet.treklair.fr**.
+- `main` is clean and every phase through 09 (ux-nav + design system) is **shipped and deployed**. What is genuinely left: **Phase 10 (MCP)** and **Phase 11 (polish v1.0)** — see ROADMAP.
+- Deploy is automatic and race-free since v0.1.16 (Linux-only cargo-dist; the deploy waits for the published release assets). If a deploy ever falls back to "latest release" again, re-dispatch `gh workflow run deploy.yml -f tag=<v>`.
+- treklair has B3Wiki loaded (demo's personal vault). **mdBook themes are written at build time** — after any change to `assets/zoom.*` or `MORINET_CSS`, existing vaults serve old assets until someone clicks **Refresh** (pitfall #24).
 
 ## Vault contract (IMPORTANT)
 
@@ -107,64 +113,41 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 22. **"The admin button shows for a non-admin" is usually a role-in-DB problem, not a nav bug.** `index` and `require_admin` both gate on `role_for(email) == "admin"` and are consistent. If a user sees Admin, they ARE admin in the DB — MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env, so on treklair the `demo` login is the admin. Check the role in the DB before touching the nav logic.
 
 23. **Shared temp dirs + parallel tests = flaky clone races.** Several route tests deriving the same vault slug (`b3wiki`) into ONE shared `data_dir` clobbered each other's git clones (pitfall #16 family). Give each test its own vault NAME (the slug derives from it) so the clone dirs differ.
+24. **mdBook themes are written at BUILD time, and asset constants are compile-time.** After editing `assets/zoom.*` / `MORINET_CSS` (now `include_str!`'d in `tree.rs`), a running server keeps serving the OLD assets — it holds the constants it was compiled with. Order of operations: rebuild → **restart the server** → **Refresh the vault** (only then does `<build>/theme/` regenerate). Fingerprinted URLs (`theme/zoom-<hash>.css`) mean the plain filename 404s — resolve the hash from the served HTML before fetching.
+25. **JS/CSS braces inside a Rust `format!` break the string.** A `<script>` block with `{ ... }` inlined in an HTML `format!` produces "invalid format string". Put brace-bearing content in a raw-string const or `include_str!`, never inline.
+26. **Fuzzy patch tools corrupt large HTML-template regions** (an eaten closing `"#,`, merged indentation) and the file stops compiling. For big template edits use exact scripted replacement (python, match the current text verbatim) and run `cargo check` immediately after. Also note `write_file` refuses stale content: re-read any file modified through `terminal` before overwriting it.
 
 ## What's left (ROADMAP)
 
-**Phase 8b (obsidian-format) — DONE, shipped in v0.1.8.** The vault contract
-changed: a vault is now an **llm-wiki/Obsidian directory** (see "Vault
-contract" above), converted in-pipeline. mdBook-native repos still work.
-The two real-mdBook-0.5 bugs are recorded as pitfall #19.
+Everything through Phase 9b (design system) is done — v0.1.20 is the current
+release. The roadmap body keeps the phase history; this section lists only
+what is genuinely open:
 
-**Still open in the access model (Phase 8, ~60 %)**
-- UI to create a **personal** vault (the store method exists; no screen yet)
-- "My vaults" / "Shared with me" sections exist on the index but there is no **nav shell** yet (Phase 9)
+**Phase 10 — MCP**: `/mcp` StreamableHttp, Bearer auth (token derived from the
+password), tools `list_vaults` / `list_notes` / `read_note` / `search_notes`
+scoped to the accessible vaults. Not started.
 
-**Phase 9 pull-forward (2026-10-21, feedback user sur la page admin)** — DONE:
-- `POST /logout` (REQ-ACC-003) + bouton Logout dans la nav admin et sur l'index
-- Nav admin clarifiée : "My vaults" (landing) vs "Vaults mgmt" (admin) — plus de lien "Vaults" ambigu (REQ-NAV-006)
-- Bouton **About** (REQ-ADMIN-007) : page `/admin/about` montrant `morinet <version>` (via `crate::version()`, donc auto à chaque release) + URL du repo GitHub
-- Reste de Phase 9 : nav shell complet, menu compte (display name/email), bouton close sur les pages mdBook, menu Admin en dropdown
+**Phase 11 — polish (v1.0)**: `cargo install morinet` end-to-end check, README
+5 sections, `morinet init`, Cargo.lock committed, `v1.0.0` tag, announcement.
 
-**Phase 9 — ux-nav** (partiellement pull-forwardé — voir ci-dessus) :
-- Shared header on every page, account menu top-right (display name, email, logout)
-- `POST /logout` — ✅ DONE (2026-10-21) + bouton Logout dans la nav admin et l'index
-- mdBook pages get a discreet close button (top-right) back to `/`
-- Admin menu as a dropdown, rendered only for role=admin
+**Design**: the UI is in its designed state (v0.1.16→v0.1.20). The rules that
+keep it consistent are in the `ui-design-passes` skill (no faded text, body
+≥ 13px / line-height 1.55–1.7, no card-in-card, nav links exactly once,
+identity strings rendered once, fixed overlays never cover incumbent controls,
+one accent, close/back → the parent surface). Run an Impeccable pass
+(`/extract`, `/critique`) when the user flags repetition or clutter; the
+detector recipe (CSS-inlined snapshots) is in the skill's
+`references/detector.md`.
 
-**Phase 7 — vault-ux** (bites 2..5 not started):
-- The picker modal (list dirs, descend, up, breadcrumb) over the finished `/admin/browse`
-- Browser-side import that **creates a new vault** from a local folder (slug = folder name, scaffolds `book.toml` + `src/SUMMARY.md`)
-
-**v0.1.12 UX (feedback 2026-10-21)** — the mdBook pages now carry the **zoom bar** (ported from oscbrain: `assets/zoom.js` + `assets/zoom.css`, injected into the generated `theme/` and wired through `additional-js`/`additional-css` in the generated `book.toml`) and a **"Close vault"** button (top-right, relative path computed from `location.pathname` so it works at any depth). The load form's **Name field auto-fills from the repository directory name** as the URL is pasted (a hand-typed name is never overwritten; the server also falls back to the repo name when the field is empty).
-
-**Next step to resume — group quota (Phase 8, user decision 2026-10-21)** — **SHIPPED in v0.1.9/v0.1.10** :
-
-- `groups.personal_vault_limit` (NULL = unlimited) — REQ-GRP-005 → `migrations/0005_group_quota.sql`
-- Builtin groups at bootstrap: `free` (limit **2**), `admin` (unlimited) — REQ-GRP-006 → `Store::ensure_builtin_groups()` (called at boot in `main.rs`)
-- **`demo` becomes a `reader` in `free`, NOT admin**; the bootstrap admin is in `admin` — REQ-GRP-007 → `Store::set_user_role()` (UI: role switcher on `/admin/users`), `create_user` auto-joins `free`/`admin`, and `Store::ensure_default_memberships()` sweeps groupless accounts at boot
-- The quota caps **personal vaults a member can CREATE** — shared/global vaults do NOT count, and visibility is NOT capped — REQ-VLT-008 → enforced inside `create_personal_vault`
-- Effective limit for a user = the most permissive across their groups (NULL beats any; otherwise max) — REQ-GRP-008 → `Store::effective_personal_vault_limit()`
-- Admin UI: quota form per group on `/admin/groups` (`POST /admin/groups/{id}/limit`, empty = unlimited), role switcher on `/admin/users`
-- Verified E2E in a real browser (AD-12): builtin groups seeded, quota form set/restore, role switch reader↔admin, demoted user lands in `free`. 177/177 tests.
-
-**Deploy-side leftover (vops, not code)**: `demo` has been demoted to `reader` on treklair (the user clicked the role switcher) and the Admin button is gone for it. The `admin`/`admin` fallback account appears at boot when no admin exists (v0.1.10) — use it, and longer term set `MORINET_ADMIN_EMAIL`/`MORINET_ADMIN_PASSWORD` to real admin credentials on the server.
-
-**v0.1.10 additions (2026-10-21, "demo cannot load B3Wiki")** — the two real causes were:
-1. **No reader-facing way to load a vault** → `POST /vaults/create` (session-gated) loads a GitHub vault into the user's PERSONAL space, quota-first (REQ-VLT-005/008), load form on the index. The real `github.com/lejeunecedric/B3Wiki` now loads and serves (verified E2E).
-2. **A mdBook-unsafe title crashed the generated SUMMARY**: pages whose H1 is itself a markdown link (`# [Rockasteria](http://…/)`) produced `- [[Rockasteria](url)](path)` → "Expected a start of a link". `tree::md_link_text()` now collapses `[text](url)` → `text` and escapes leftover `[`/`]`, applied everywhere a title becomes link text (summary + wikilink display).
-Also fixed: `mdbook` missing from PATH was a SILENT fallback (the vault "loaded" but 404'd later) — now a loud error; server handlers used a CWD-relative `data/` for clones — now `cfg.data_dir`; CI installs mdbook 0.5.4.
-
-**Why the Admin button showed for demo (NOT a code bug — do not re-diagnose):**
-`index` (`src/server.rs`) and `require_admin` both gate on `role_for(email) == "admin"`
-— they are correct and consistent. The button shows because **`demo` has role `admin`
-in the prod DB**: MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env,
-and on treklair that email is `demo`. The fix is the data/role change above (demo →
-reader in `free`), which makes the button disappear — not a change to the nav logic.
+**Deploy-side leftover (vops, not code)**: `demo` is a `reader` in `free`
+(quota 2) on treklair; the anti-lockout fallback `admin`/`admin` exists. Set
+real `MORINET_ADMIN_EMAIL`/`MORINET_ADMIN_PASSWORD` on the server long-term.
 
 ## Testing conventions
 
-- TDD strict, `cargo test` (135 tests green at handoff), clippy `-D warnings`, fmt.
+- TDD strict, `cargo test` (197 tests green at handoff), clippy `-D warnings`, fmt.
 - sqlite fixtures: `Store::connect_memory()`, bcrypt cost default (tests take ~15-25s, that's normal).
 - e2e via `tower::ServiceExt::oneshot` on the Router — no network.
-- UI verification: run `morinet serve` on :8099 with a throwaway config, then drive Chromium — click the real buttons, follow the real links, screenshot each page. Two unstyled-page bugs were only findable this way.
+- UI verification: run `morinet serve` on :8099 with a throwaway config, then drive Chromium — click the real buttons, follow the real links, screenshot each page. Two unstyled-page bugs were only findable this way. **Measure, don't impress**: compare `getBoundingClientRect()` of competing controls (this is how the Close-vault-over-Print overlap was proven) and read computed styles for typography claims.
+- Design checks: `npx impeccable detect <snapshot.html>` on snapshots with every `<link rel="stylesheet">` inlined (the detector does not fetch them). It is static — verify custom-property findings in the browser before "fixing" them (pitfall #24 family).
 - API verification: `curl -X PROPFIND` against the running server (the roadmap also suggests a `cadaver` walkthrough). This is how the percent-encoded traversal hole was found — unit tests were green.
