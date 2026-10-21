@@ -6,7 +6,7 @@
 [![Release](https://github.com/lejeunecedric/MoriNet/actions/workflows/release.yml/badge.svg)](https://github.com/lejeunecedric/MoriNet/releases)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 
-> 🚧 **Active development** — v0.1.19, phases 00→06 shipped, phase 08b *obsidian-format* landed (llm-wiki/Obsidian vaults are now converted and served natively), plus logout/About and per-group vault quotas (`free` 2 personal vaults / `admin` unlimited). Next up: phase 08 *personal vaults*, phase 07 *vault-ux*, phase 09 *ux-nav*. See [`.planning/ROADMAP.md`](.planning/ROADMAP.md).
+> 🚧 **Active development** — v0.1.20, phases 00→06 shipped, phase 08b *obsidian-format* landed (llm-wiki/Obsidian vaults are now converted and served natively), plus logout/About and per-group vault quotas (`free` 2 personal vaults / `admin` unlimited). Next up: phase 08 *personal vaults*, phase 07 *vault-ux*, phase 09 *ux-nav*. See [`.planning/ROADMAP.md`](.planning/ROADMAP.md).
 
 ## What
 
