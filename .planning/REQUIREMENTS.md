@@ -117,6 +117,8 @@
 | REQ-NAV-001    | Every app page carries the same header: account menu top-right             | browser screenshot                    |
 | REQ-NAV-002    | "My vaults" is the landing page after login (list of global + personal)   | click vault → mdbook                  |
 | REQ-NAV-003    | An mdBook page shows a discreet close button (top-right) → back to /       | browser click-through                 |
+| REQ-NAV-007    | A zoom bar (− / % / + / reset) on mdBook pages, content AND sidebar scaled in lockstep, persisted in localStorage | browser click-through |
+| REQ-NAV-008    | The vault-load form defaults the Name field to the repository directory name (live as the URL is typed), the user can still rename it | browser: type URL → name fills |
 | REQ-NAV-004    | The Admin menu is rendered ONLY when role=admin                            | reader sees no admin entry            |
 | REQ-NAV-005    | Admin menu items: groups, users, global vaults                            | each page reachable                   |
 | REQ-NAV-006    | Admin nav distinguishes "My vaults" (landing) from "Vaults mgmt" (admin) — no ambiguous "Vaults" link | browser click-through |

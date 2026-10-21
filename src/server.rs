@@ -409,12 +409,13 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     // "My vaults" is always rendered: the load form is how a user with no
     // vault yet (e.g. the demo account) loads one (REQ-VLT-005).
     let personal_section = format!(
-        "<h2>My vaults</h2>\n{list}\n<h3>Load a vault</h3>\n<form method=\"post\" action=\"/vaults/create\">\n  <label>Name <input type=\"text\" name=\"name\" required placeholder=\"B3Wiki\"></label>\n  <label>GitHub URL <input type=\"url\" name=\"url\" required placeholder=\"https://github.com/owner/repo\"></label>\n  <label>Token <input type=\"text\" name=\"token\" placeholder=\"optional, private repo\"></label>\n  <button type=\"submit\">Load vault</button>\n</form>\n",
+        "<h2>My vaults</h2>\n{list}\n<h3>Load a vault</h3>\n<form method=\"post\" action=\"/vaults/create\">\n  <label>Name <input type=\"text\" name=\"name\" required placeholder=\"B3Wiki\"></label>\n  <label>GitHub URL <input type=\"url\" name=\"url\" required placeholder=\"https://github.com/owner/repo\"></label>\n  <label>Token <input type=\"text\" name=\"token\" placeholder=\"optional, private repo\"></label>\n  <button type=\"submit\">Load vault</button>\n</form>\n{autofill}\n",
         list = if personal_items.is_empty() {
             "<p><em>No personal vault yet.</em></p>".to_string()
         } else {
             format!("<ul>{personal_items}</ul>")
-        }
+        },
+        autofill = AUTOFILL_NAME_JS,
     );
     let global_section = if global_items.is_empty() {
         "<p><em>No shared vault yet.</em></p>".to_string()
@@ -1329,6 +1330,45 @@ async fn admin_delete_group(State(state): State<SharedState>, Path(id): Path<i64
     Redirect::to("/admin/groups").into_response()
 }
 
+/// Inline script on the index: the "Name" field defaults to the repository
+/// directory name, live as the URL is typed or pasted. A name typed by hand is
+/// never overwritten (UX feedback, 2026-10-21).
+const AUTOFILL_NAME_JS: &str = r#"<script>
+// morinet-autofill-name: default the vault name to the repository directory.
+(function () {
+  var url = document.querySelector('input[name="url"]');
+  var name = document.querySelector('input[name="name"]');
+  if (!url || !name) return;
+  var touched = false;
+  name.addEventListener("input", function () { touched = true; });
+  function repoOf(u) {
+    var t = (u || "").trim().replace(/\/+$/, "");
+    if (!t || t.indexOf("://") === -1) return "";
+    var last = t.split("/").pop();
+    return last.replace(/\.git$/, "");
+  }
+  function sync() {
+    if (touched) return;
+    var r = repoOf(url.value);
+    if (r) name.value = r;
+  }
+  url.addEventListener("input", sync);
+  url.addEventListener("paste", function () { setTimeout(sync, 0); });
+  sync();
+})();
+</script>"#;
+
+/// The repository/directory name from a GitHub-style URL: the last path
+/// segment, without a `.git` suffix (UX: the vault name defaults to it).
+fn repo_name_from_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() || !trimmed.contains("://") {
+        return String::new();
+    }
+    let last = trimmed.rsplit('/').next().unwrap_or("");
+    last.strip_suffix(".git").unwrap_or(last).to_string()
+}
+
 /// `POST /vaults/{slug}/delete` — the owner removes their personal vault.
 /// Owner-only (the store enforces it); the quota slot is freed at once.
 async fn delete_my_vault(
@@ -1389,10 +1429,21 @@ async fn load_personal_vault(
     Extension(claims): Extension<Claims>,
     Form(p): Form<LoadVaultParams>,
 ) -> Response {
-    let name = p.name.trim();
     let url = p.url.trim();
-    if name.is_empty() || url.is_empty() {
-        return error_page("name and url are required");
+    if url.is_empty() {
+        return error_page("the GitHub URL is required");
+    }
+    // The name defaults to the repository directory name; the user may rename it.
+    let name = {
+        let typed = p.name.trim();
+        if typed.is_empty() {
+            repo_name_from_url(url)
+        } else {
+            typed.to_string()
+        }
+    };
+    if name.is_empty() {
+        return error_page("the name is required (it defaults to the repository name)");
     }
     // Quota first — no network on refusal (REQ-VLT-008).
     match state
@@ -1435,13 +1486,13 @@ async fn load_personal_vault(
         token,
         data_dir.join("repos").join(&slug),
     );
-    let book_dir = match src.sync().and_then(|d| src.build(&d, name)) {
+    let book_dir = match src.sync().and_then(|d| src.build(&d, &name)) {
         Ok(b) => b,
         Err(e) => return error_page(&format!("sync/build failed: {e}")),
     };
     match state
         .store
-        .create_personal_vault(&claims.email, &slug, name, &book_dir)
+        .create_personal_vault(&claims.email, &slug, &name, &book_dir)
         .await
     {
         Ok(()) => {
@@ -2341,6 +2392,48 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), 65536).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("Fresh"));
+    }
+
+    #[tokio::test]
+    async fn vault_name_is_derived_from_the_repo_url() {
+        // UX (2026-10-21): the "Name" field defaults to the repository
+        // directory name (the last path segment of the GitHub URL), and the
+        // user can still rename it before loading.
+        assert_eq!(
+            repo_name_from_url("https://github.com/lejeunecedric/B3Wiki"),
+            "B3Wiki"
+        );
+        assert_eq!(
+            repo_name_from_url("https://github.com/lejeunecedric/B3Wiki/"),
+            "B3Wiki"
+        );
+        assert_eq!(
+            repo_name_from_url("https://github.com/lejeunecedric/B3Wiki.git"),
+            "B3Wiki"
+        );
+        assert_eq!(
+            repo_name_from_url("https://gitlab.com/grp/sub/proj"),
+            "proj"
+        );
+        assert_eq!(repo_name_from_url(""), "");
+        assert_eq!(repo_name_from_url("not a url"), "");
+    }
+
+    #[tokio::test]
+    async fn the_load_form_prefills_the_name_from_the_url() {
+        // The index ships a tiny inline script: typing/pasting a URL fills the
+        // name field (unless the user already typed one).
+        let (app, _) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app, "GET", "/", headers, None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("morinet-autofill-name"),
+            "autofill script present"
+        );
+        assert!(text.contains("input[name=\"url\"]"), "url field present");
     }
 
     #[tokio::test]

@@ -124,6 +124,9 @@ pub fn convert(source: &Path, vault_name: &str) -> Result<ConversionReport> {
     let theme = build.join("theme");
     fs::create_dir_all(&theme)?;
     fs::write(theme.join("morinet.css"), tree::MORINET_CSS)?;
+    // Zoom bar (ported from oscbrain) + the "close vault" button (REQ-NAV-003).
+    fs::write(theme.join("zoom.css"), tree::ZOOM_CSS)?;
+    fs::write(theme.join("morinet.js"), tree::MORINET_JS)?;
 
     Ok(ConversionReport {
         build_dir: build,
