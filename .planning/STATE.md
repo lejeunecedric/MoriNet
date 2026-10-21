@@ -9,7 +9,7 @@
 - **Latest release**: v0.1.6 (embedded stylesheet + admin nav on index) — releasing at handoff time; if holldemo lags behind, re-dispatch Deploy with `inputs.tag=v0.1.6`
 - **Live instance**: https://morinet.treklair.fr — public demo instance, admin-ui accessible via the **Admin** nav link on the index. Credentials live on the server, not in this repo
 - **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui, 05 email, **06 webdav**
-- **102/102 tests** (44 → 54 tokens → 72 email+HTTP → 102 webdav), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
+- **135/135 tests** (44 → 54 tokens → 72 email+HTTP → 102 webdav → 121 browse → 135 access model), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
 - **Phase 6 (WebDAV) shipped**: PROPFIND (depth 0/1) + GET + admin PUT on `/webdav/<slug>/…`. Exposes the vault **source** (`book.toml` + `src/`), not the compiled `book/` — PUT markdown then `mdbook build`. HTTP Basic against the same bcrypt users + the same per-vault ACL
 - **Phase 5 (email) shipped**: `EmailSender` trait + lettre SMTP + `InMemorySender` mock, `[smtp]` in config, invitation links (24h, single-use, sha256-hashed) and password reset (1h), all UI pages styled. Admin invite falls back to the old temp-password flow when SMTP is absent/invalid
 - **Auto-scaffold of raw wikis REVERTED** (`2b924f3`): vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The B3Wiki/ProgWiki import was a format-validation test, not a feature — see HANDOFF.md before re-attempting
@@ -18,7 +18,9 @@
 - **Phase 8 — access-model** (user decision 2026-10-21): the merged-book idea is ABANDONED. Replaced by groups + personal vaults: `groups`/`group_members`, `vaults.scope` (global|personal) + `owner_id`, `vault_group_acl(vault, group, role)`. A personal vault is strictly solo (owner always has write). REQ-GRP-001..004, REQ-VLT-001..007.
 - **Phase 9 — ux-nav**: new shell — My vaults landing, account menu top-right (name/email/logout), discreet close button on mdbook pages, Admin menu only for role=admin.
 - **Email change requires confirmation** at the new address (`pending_emails`); unconfirmed changes never break the existing login.
-- **Next**: Phase 7 (vault-ux: browse + import) → Phase 8 (access-model) → Phase 9 (ux-nav) → Phase 10 (MCP) → Phase 11 (polish v1.0)
+- **Blocker**: the real vault input is an **Obsidian wiki**, not an mdBook. B3Wiki has 0 `book.toml`, 641 `[[wikilinks]]` (with `|alias`), and frontmatter on every page. mdBook renders `[[…]]` literally. Needs wikilink resolution + frontmatter support as a proper feature — the earlier raw-wiki import was reverted on purpose (`2b924f3`).
+- **Next**: resolve the Obsidian format blocker → Phase 7 bites 2..5 (picker modal, import) → Phase 8 personal-vault UI → Phase 9 ux-nav → Phase 10 (MCP) → Phase 11 (polish v1.0)
+- **Not started**: `/logout` does not exist; no nav shell yet; no screen to create a personal vault (store method exists)
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
 ## Architectural Decisions (AD)
