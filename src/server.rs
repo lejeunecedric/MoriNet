@@ -40,6 +40,9 @@ pub type SharedState = Arc<AppState>;
 /// Embedded stylesheet for all MoriNet app pages (login, index, admin).
 const STYLE_CSS: &str = include_str!("../assets/style.css");
 
+/// Public source repository, shown on the admin About page (REQ-ADMIN-007).
+const REPO_URL: &str = "https://github.com/lejeunecedric/MoriNet";
+
 const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>MoriNet — Sign in</title>
@@ -149,6 +152,7 @@ pub fn build_router_with_email(
     // Protected routes: vault index + per-slug vault serving.
     let protected = Router::new()
         .route("/", get(index))
+        .route("/logout", post(logout))
         .route("/vault", get(vault_root_redirect))
         .route("/vault/{slug}/", get(vault_index))
         .route("/vault/{slug}/{*rest}", get(vault_file))
@@ -162,6 +166,7 @@ pub fn build_router_with_email(
     // verifies the cookie itself since require_session is not in this chain).
     let admin = Router::new()
         .route("/admin", get(admin_dashboard))
+        .route("/admin/about", get(admin_about))
         .route("/admin/users", get(admin_users))
         .route("/admin/users/invite", post(admin_invite))
         .route("/admin/vaults", get(admin_vaults))
@@ -335,6 +340,17 @@ async fn vault_root_redirect() -> Redirect {
     Redirect::to("/")
 }
 
+/// `POST /logout` — clear the session cookie and return to /login.
+/// The cookie is expired (Max-Age=0) so the browser drops it immediately.
+async fn logout(State(state): State<SharedState>) -> Response {
+    let cookie = format!(
+        "{}={{}}; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
+        state.cfg.cookie_name
+    );
+    let headers: HeaderMap = HeaderMap::from_iter([(SET_COOKIE, cookie.parse().unwrap())]);
+    (headers, Redirect::to("/login")).into_response()
+}
+
 async fn index(State(state): State<SharedState>, Extension(claims): Extension<Claims>) -> Response {
     // Phase 8: the listing uses the group model, so a user sees their own
     // personal vaults plus the global ones their groups are granted.
@@ -394,7 +410,7 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
 <link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   <h1>MoriNet</h1>
-  <p>Signed in as {}</p>
+  <p>Signed in as {} <form method="post" action="/logout" style="display:inline"><button type="submit">Logout</button></form></p>
   {admin_nav}
   {personal_section}
   {global_section}
@@ -691,13 +707,26 @@ async fn admin_page(title: &str, body: String) -> Response {
 <link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   <h1>MoriNet admin</h1>
-  <nav><a href="/">Vaults</a> | <a href="/admin/users">Users</a> | <a href="/admin/groups">Groups</a> | <a href="/admin/vaults">Vaults mgmt</a></nav>
+  <nav><a href="/">My vaults</a> | <a href="/admin/users">Users</a> | <a href="/admin/groups">Groups</a> | <a href="/admin/vaults">Vaults mgmt</a> | <a href="/admin/about">About</a> | <form method="post" action="/logout" style="display:inline"><button type="submit">Logout</button></form></nav>
   <h2>{title}</h2>
   {body}
 </body>
 </html>"#
     ))
     .into_response()
+}
+
+/// `GET /admin/about` — installed version + source repo (REQ-ADMIN-007).
+/// The version comes from `crate::version()` (compile-time `CARGO_PKG_VERSION`),
+/// so it tracks every release automatically — nothing to hardcode.
+async fn admin_about() -> Response {
+    let body = format!(
+        r#"<p><strong>morinet {version}</strong></p>
+<p>Source: <a href="{repo}">{repo}</a></p>"#,
+        version = crate::version(),
+        repo = REPO_URL
+    );
+    admin_page("About", body).await
 }
 
 async fn admin_dashboard(State(state): State<SharedState>) -> Response {
@@ -1797,6 +1826,43 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), 8192).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("admin@example.com"));
+    }
+
+    #[tokio::test]
+    async fn logout_clears_the_cookie_and_redirects_to_login() {
+        // REQ-ACC-003: POST /logout expires the session cookie and returns to /login.
+        let (app, _) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app, "POST", "/logout", headers, None).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(res.headers().get("location").unwrap(), "/login");
+        let set_cookie = res.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(
+            set_cookie.contains("Max-Age=0"),
+            "cookie must be expired: {set_cookie}"
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_about_shows_version_and_repo() {
+        // REQ-ADMIN-007: the About page shows the installed version (from
+        // crate::version(), so it tracks every release) + the GitHub repo URL.
+        let (app, _) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app, "GET", "/admin/about", headers, None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 8192).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains(&format!("morinet {}", crate::version())),
+            "version shown: {text}"
+        );
+        assert!(
+            text.contains("https://github.com/lejeunecedric/MoriNet"),
+            "repo shown: {text}"
+        );
     }
 
     #[tokio::test]

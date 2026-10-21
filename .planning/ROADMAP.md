@@ -162,12 +162,18 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 
 **Goal**: the new shell.
 
+**Status**: partiellement pull-forwardé (2026-10-21, feedback user sur la page
+admin) : `POST /logout` + bouton logout, nav admin clarifiée (My vaults vs
+Vaults mgmt), bouton **About** (version installée + repo GitHub, REQ-ADMIN-007).
+
 **Criteria**:
 - Shared header on every page: **My vaults** (landing) + account menu top-right
 - Account menu: display name (editable), email, logout
 - Logout clears the cookie and returns to `/login`
 - The mdBook pages get a discreet close button (top-right) back to `/`
 - The Admin menu appears only for role=admin (dropdown), linking to groups, users, global vaults
+- Admin nav is NOT ambiguous: "My vaults" (landing) vs "Vaults mgmt" (admin) — no bare "Vaults" link
+- Admin users page carries an **About** button showing the installed version (`morinet <version>`) and the GitHub repo URL — version updates with every release, no hardcoding
 
 ---
 
