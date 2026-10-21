@@ -252,11 +252,36 @@ pub fn file_propfind_response(base: &str, rel: &str, size: u64, modified: System
     propfind_response(multistatus(base, &entries))
 }
 
-/// Extract the relative path from a `/webdav/<slug>/...` URI.
+/// Percent-decode a URI path segment chain into a plain filesystem-relative
+/// path. Decoding BEFORE splitting on `/` is what makes `%2e%2e%2f` and `%2f`
+/// visible to the traversal check in [`safe_join`] instead of hiding a
+/// separator inside a "single" segment.
+pub fn decode_path(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    // A non-UTF8 path is not something we want to serve; fall back to the raw.
+    String::from_utf8(out).unwrap_or_else(|_| raw.to_string())
+}
+
+/// Extract the relative path from a `/webdav/<slug>/...` URI, percent-decoded.
 pub fn rel_from_uri(uri: &Uri, slug: &str) -> String {
     let prefix = format!("/webdav/{slug}");
     let p = uri.path().strip_prefix(&prefix).unwrap_or("");
-    p.trim_start_matches('/').to_string()
+    decode_path(p).trim_start_matches('/').to_string()
 }
 
 /// Decide if a WebDAV request is one we handle (vs OPTIONS/HEAD noise).
@@ -488,5 +513,60 @@ mod auth_tests {
         let (name, value) = www_authenticate_basic();
         assert_eq!(name, header::WWW_AUTHENTICATE);
         assert!(value.starts_with("Basic realm="));
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    #[test]
+    fn percent_encoding_is_decoded() {
+        assert_eq!(decode_path("/src/a%20b.md"), "/src/a b.md");
+        assert_eq!(decode_path("/src/caf%C3%A9.md"), "/src/café.md");
+        assert_eq!(decode_path("/src/plain.md"), "/src/plain.md");
+    }
+
+    #[test]
+    fn malformed_percent_sequences_are_left_alone() {
+        assert_eq!(decode_path("/a%zz"), "/a%zz");
+        assert_eq!(decode_path("/a%2"), "/a%2");
+        assert_eq!(decode_path("/100%"), "/100%");
+    }
+
+    #[test]
+    fn encoded_traversal_is_revealed_then_refused() {
+        let root = Path::new("/vault");
+        // %2e%2e is "..", %2f is "/" — decoding first must expose them.
+        for attack in [
+            "..%2f..%2fetc%2fpasswd",
+            "%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+            "src/..%2f..%2fetc%2fpasswd",
+        ] {
+            let decoded = decode_path(attack);
+            assert!(
+                safe_join(root, &decoded).is_none(),
+                "encoded traversal {attack:?} must be refused (decoded: {decoded:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn encoded_separator_cannot_smuggle_a_subpath() {
+        // Before the fix this produced a literal file named "..%2fescaped.md".
+        let uri: Uri = "/webdav/demo/..%2fescaped.md".parse().unwrap();
+        let rel = rel_from_uri(&uri, "demo");
+        assert!(rel.contains('/'), "decoded into real segments: {rel}");
+        assert!(safe_join(Path::new("/vault"), &rel).is_none(), "refused");
+    }
+
+    #[test]
+    fn benign_encoded_names_still_resolve() {
+        let uri: Uri = "/webdav/demo/src/my%20note.md".parse().unwrap();
+        let rel = rel_from_uri(&uri, "demo");
+        assert_eq!(
+            safe_join(Path::new("/vault"), &rel),
+            Some(PathBuf::from("/vault/src/my note.md"))
+        );
     }
 }

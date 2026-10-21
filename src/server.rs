@@ -2190,6 +2190,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_put_percent_encoded_traversal_is_refused() {
+        // Found by a real curl pass: `PUT ..%2fescaped.md` returned 201 and
+        // created a literal file named "..%2fescaped.md" in the vault root.
+        // The path is now percent-decoded before the traversal check.
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault(&state).await;
+        for uri in [
+            "/webdav/dav/..%2fescaped.md",
+            "/webdav/dav/%2e%2e%2fescaped2.md",
+            "/webdav/dav/src/..%2f..%2fescaped3.md",
+        ] {
+            let res = dav_request(
+                app.clone(),
+                "PUT",
+                uri,
+                basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+                Some("pwned"),
+            )
+            .await;
+            assert_ne!(
+                res.status(),
+                StatusCode::CREATED,
+                "encoded traversal {uri} refused"
+            );
+        }
+        // Nothing landed anywhere.
+        assert!(!root.join("escaped.md").exists());
+        assert!(!root.join("escaped2.md").exists());
+        assert!(!root.parent().unwrap().join("escaped3.md").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
     async fn admin_put_traversal_is_refused() {
         let (app, state) = test_router().await;
         let root = seed_dav_vault(&state).await;
