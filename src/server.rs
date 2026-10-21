@@ -153,6 +153,7 @@ pub fn build_router_with_email(
     let protected = Router::new()
         .route("/", get(index))
         .route("/logout", post(logout))
+        .route("/vaults/create", post(load_personal_vault))
         .route("/vault", get(vault_root_redirect))
         .route("/vault/{slug}/", get(vault_index))
         .route("/vault/{slug}/{*rest}", get(vault_file))
@@ -394,11 +395,16 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     } else {
         ""
     };
-    let personal_section = if personal_items.is_empty() {
-        String::new()
-    } else {
-        format!("<h2>My vaults</h2>\n<ul>{personal_items}</ul>")
-    };
+    // "My vaults" is always rendered: the load form is how a user with no
+    // vault yet (e.g. the demo account) loads one (REQ-VLT-005).
+    let personal_section = format!(
+        "<h2>My vaults</h2>\n{list}\n<h3>Load a vault</h3>\n<form method=\"post\" action=\"/vaults/create\">\n  <label>Name <input type=\"text\" name=\"name\" required placeholder=\"B3Wiki\"></label>\n  <label>GitHub URL <input type=\"url\" name=\"url\" required placeholder=\"https://github.com/owner/repo\"></label>\n  <label>Token <input type=\"text\" name=\"token\" placeholder=\"optional, private repo\"></label>\n  <button type=\"submit\">Load vault</button>\n</form>\n",
+        list = if personal_items.is_empty() {
+            "<p><em>No personal vault yet.</em></p>".to_string()
+        } else {
+            format!("<ul>{personal_items}</ul>")
+        }
+    );
     let global_section = if global_items.is_empty() {
         "<p><em>No shared vault yet.</em></p>".to_string()
     } else {
@@ -1186,6 +1192,17 @@ struct GroupLimitParams {
     limit: String,
 }
 
+/// `POST /vaults/create` — personal vault load input (REQ-VLT-005).
+#[derive(Debug, Deserialize)]
+struct LoadVaultParams {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    token: String,
+}
+
 /// `POST /admin/users/role` — role-switch input (REQ-GRP-007).
 #[derive(Debug, Deserialize)]
 struct UserRoleParams {
@@ -1299,6 +1316,78 @@ async fn admin_delete_group(State(state): State<SharedState>, Path(id): Path<i64
     // Members and vault assignments cascade (migration FKs).
     let _ = state.store.delete_group(id).await;
     Redirect::to("/admin/groups").into_response()
+}
+
+/// `POST /vaults/create` — a signed-in user loads a GitHub vault into their
+/// PERSONAL space (REQ-VLT-005/008). The quota is checked first so the common
+/// "limit reached" answer never clones anything; the slug is derived from the
+/// name, and the build runs the llm-wiki converter when needed (AD-14).
+async fn load_personal_vault(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Form(p): Form<LoadVaultParams>,
+) -> Response {
+    let name = p.name.trim();
+    let url = p.url.trim();
+    if name.is_empty() || url.is_empty() {
+        return error_page("name and url are required");
+    }
+    // Quota first — no network on refusal (REQ-VLT-008).
+    match state
+        .store
+        .effective_personal_vault_limit(&claims.email)
+        .await
+    {
+        Ok(Some(limit)) => {
+            let used = state
+                .store
+                .count_personal_vaults(&claims.email)
+                .await
+                .unwrap_or(0);
+            if used >= limit {
+                return error_page(&format!(
+                    "personal vault limit reached: {used}/{limit} — ask an admin for a larger group"
+                ));
+            }
+        }
+        Ok(None) => {}
+        Err(e) => return error_page(&format!("quota check failed: {e}")),
+    }
+    // Slug from the name: lowercase, [a-z0-9-] only (safe in /vault/<slug>/).
+    let slug: String = name
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if slug.is_empty() {
+        return error_page("the name must contain letters or digits");
+    }
+    // Clone + build (the shared dispatch converts llm-wiki vaults, AD-14).
+    use crate::sources::VaultSource as _;
+    let data_dir = state.cfg.data_dir.clone();
+    let token = (!p.token.trim().is_empty()).then(|| p.token.trim().to_string());
+    let src = crate::sources::GitSource::github(
+        url.to_string(),
+        token,
+        data_dir.join("repos").join(&slug),
+    );
+    let book_dir = match src.sync().and_then(|d| src.build(&d, name)) {
+        Ok(b) => b,
+        Err(e) => return error_page(&format!("sync/build failed: {e}")),
+    };
+    match state
+        .store
+        .create_personal_vault(&claims.email, &slug, name, &book_dir)
+        .await
+    {
+        Ok(()) => Redirect::to(&format!("/vault/{slug}/")).into_response(),
+        Err(e) if e.to_string().contains("UNIQUE") => error_page(&format!(
+            "the slug '{slug}' is already taken — rename the vault"
+        )),
+        Err(e) => error_page(&format!("could not register the vault: {e}")),
+    }
 }
 
 /// `POST /admin/groups/{id}/limit` — set the personal-vault quota (REQ-GRP-005).
@@ -1438,7 +1527,7 @@ async fn admin_create_vault(
 ) -> Response {
     // Resolve + build now so failures surface immediately in the admin UI.
     use crate::sources::{GitSource, LocalSource, VaultSource};
-    let data_dir = std::path::PathBuf::from("data");
+    let data_dir = state.cfg.data_dir.clone();
     let result = match p.kind.as_str() {
         "local" => {
             let src = LocalSource {
@@ -1930,6 +2019,167 @@ mod tests {
         assert!(
             set_cookie.contains("Max-Age=0"),
             "cookie must be expired: {set_cookie}"
+        );
+    }
+
+    // ---------- personal vault loading (REQ-VLT-005/008) ----------
+
+    /// Log in with arbitrary credentials and return the session cookie.
+    async fn login_as(app: &Router, email: &str, password: &str) -> String {
+        let res = req(
+            app.clone(),
+            "POST",
+            "/login",
+            login_headers(),
+            Some(Body::from(format!(
+                "email={}&password={}",
+                email.replace('@', "%40"),
+                password
+            ))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        res.headers()
+            .get(SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    /// A tiny llm-wiki git repo the loader can clone over `file://` (no network).
+    fn wiki_repo(test_name: &str) -> String {
+        let root = std::env::temp_dir().join(format!("morinet-wikirepo-{test_name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("entities")).unwrap();
+        std::fs::write(root.join("index.md"), "# Home\n\nSee [[king-crimson]].\n").unwrap();
+        std::fs::write(
+            root.join("entities/king-crimson.md"),
+            "---\ntitle: King Crimson\ntype: entity\n---\n\nKC.\n",
+        )
+        .unwrap();
+        for cmd in [
+            vec!["git", "init", "-q"],
+            vec!["git", "add", "."],
+            vec![
+                "git",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        ] {
+            let out = std::process::Command::new(cmd[0])
+                .args(&cmd[1..])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{cmd:?} failed: {out:?}");
+        }
+        format!("file://{}", root.display())
+    }
+
+    #[tokio::test]
+    async fn loading_a_vault_requires_a_session() {
+        let (app, _) = test_router().await;
+        let res = req(
+            app,
+            "POST",
+            "/vaults/create",
+            login_headers(),
+            Some(Body::from("name=X&url=file:///nope")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(res.headers().get("location").unwrap(), "/login");
+    }
+
+    #[tokio::test]
+    async fn loading_a_vault_is_refused_when_the_quota_is_reached() {
+        // REQ-VLT-008: the quota is checked BEFORE anything is cloned — a
+        // "limit reached" answer never touches the network (the URL below is
+        // garbage; a clone attempt would say "sync/build failed" instead).
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("demo@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("free").await.unwrap();
+        state.store.set_group_limit(g, Some(0)).await.unwrap();
+        state.store.add_group_member(g, "demo@x.fr").await.unwrap();
+        let cookie = login_as(&app, "demo@x.fr", "pw").await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app,
+            "POST",
+            "/vaults/create",
+            headers,
+            Some(Body::from("name=B3Wiki&url=file:///does-not-exist")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("limit reached"), "quota message: {text}");
+        assert!(!text.contains("sync/build"), "must not have cloned: {text}");
+    }
+
+    #[tokio::test]
+    async fn loading_a_vault_registers_a_personal_vault() {
+        // REQ-VLT-005: a signed-in user loads a GitHub-style vault into their
+        // personal space; it lands in "My vaults" and counts against the quota.
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("demo@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("free").await.unwrap();
+        state.store.set_group_limit(g, Some(2)).await.unwrap();
+        state.store.add_group_member(g, "demo@x.fr").await.unwrap();
+        let url = wiki_repo("load-ok");
+        let cookie = login_as(&app, "demo@x.fr", "pw").await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/create",
+            headers.clone(),
+            Some(Body::from(format!("name=B3Wiki&url={url}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(res.headers().get("location").unwrap(), "/vault/b3wiki/");
+        assert_eq!(
+            state
+                .store
+                .count_personal_vaults("demo@x.fr")
+                .await
+                .unwrap(),
+            1
+        );
+        // The loaded vault appears in the user's index.
+        let res = req(app, "GET", "/", headers, None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("B3Wiki"),
+            "index lists the loaded vault: {text}"
         );
     }
 

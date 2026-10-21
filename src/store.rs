@@ -355,6 +355,28 @@ impl Store {
         Ok(())
     }
 
+    /// Anti-lockout fallback: if NO account has the admin role at boot, create
+    /// (or re-promote) the well-known `admin`/`admin` account. Demoting the
+    /// only admin would otherwise leave the instance unmanageable forever.
+    /// A healthy instance (an admin exists) is left untouched.
+    pub async fn ensure_fallback_admin(&self) -> anyhow::Result<()> {
+        let any_admin: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        if any_admin.is_some() {
+            return Ok(());
+        }
+        let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE email = 'admin'")
+            .fetch_optional(&self.pool)
+            .await?;
+        if existing.is_some() {
+            self.set_user_role("admin", "admin").await
+        } else {
+            self.create_user("admin", "admin", "admin").await
+        }
+    }
+
     /// Change a user's role (REQ-GRP-007) and fix their plan group: an admin
     /// joins `admin`; a reader leaves it and lands in `free` only when they
     /// have no other group. Non-default groups are left untouched.
@@ -1440,6 +1462,55 @@ mod access_tests {
     }
 
     // ---------- builtin groups + default memberships (REQ-GRP-006/007) ----------
+
+    #[tokio::test]
+    async fn fallback_admin_appears_when_the_instance_has_no_admin() {
+        // Anti-lockout: demoting the ONLY admin used to leave the instance
+        // unmanageable (no /admin access at all). At boot, if no admin remains,
+        // the well-known `admin`/`admin` account is created.
+        let s = st("fallback-admin").await;
+        s.ensure_builtin_groups().await.unwrap();
+        s.create_user("demo", "demo", "reader").await.unwrap();
+        s.ensure_fallback_admin().await.unwrap();
+        assert_eq!(s.role_for("admin").await.unwrap().as_deref(), Some("admin"));
+        assert!(
+            s.verify_login("admin", "admin").await.unwrap().is_some(),
+            "admin/admin must be able to log in"
+        );
+        assert_eq!(
+            s.effective_personal_vault_limit("admin").await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_admin_repromotes_a_demoted_admin_account() {
+        let s = st("fallback-repromote").await;
+        s.ensure_builtin_groups().await.unwrap();
+        s.create_user("admin", "admin", "admin").await.unwrap();
+        s.set_user_role("admin", "reader").await.unwrap();
+        assert_eq!(
+            s.role_for("admin").await.unwrap().as_deref(),
+            Some("reader")
+        );
+        s.ensure_fallback_admin().await.unwrap();
+        assert_eq!(s.role_for("admin").await.unwrap().as_deref(), Some("admin"));
+        assert_eq!(
+            s.effective_personal_vault_limit("admin").await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_admin_leaves_a_healthy_instance_alone() {
+        let s = st("fallback-noop").await;
+        s.ensure_builtin_groups().await.unwrap();
+        s.create_user("root@x.fr", "pw", "admin").await.unwrap();
+        s.create_user("demo", "demo", "reader").await.unwrap();
+        s.ensure_fallback_admin().await.unwrap();
+        assert_eq!(s.role_for("demo").await.unwrap().as_deref(), Some("reader"));
+        assert!(s.role_for("admin").await.unwrap().is_none());
+    }
 
     #[tokio::test]
     async fn switching_role_moves_the_user_to_the_right_plan() {

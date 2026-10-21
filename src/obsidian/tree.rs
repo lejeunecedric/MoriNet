@@ -37,10 +37,49 @@ pub fn page_title(fm: &Frontmatter, body: &str, rel: &str) -> String {
 
 /// Generate `src/SUMMARY.md` from page entries (locked D5: folder tree,
 /// alphabetical, `index.md` as Home, regenerated at every sync).
+/// Make a title/alias safe as `[link text](target)` (mdBook's SUMMARY parser
+/// rejects raw `[` in titles): inline markdown links collapse to their display
+/// text (`[Rockasteria](http://x/)` → `Rockasteria`), leftover brackets are
+/// escaped (`[draft] x` → `\[draft\] x`).
+pub fn md_link_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let Some(close) = rest.find(']') else {
+            break;
+        };
+        if rest[close + 1..].starts_with('(') {
+            if let Some(end) = rest[close + 1..].find(')') {
+                let end = close + 1 + end;
+                // [text](url) → text
+                out.push_str(&rest[1..close]);
+                rest = &rest[end + 1..];
+                continue;
+            }
+        }
+        out.push_str("\\[");
+        rest = &rest[1..];
+    }
+    for c in rest.chars() {
+        match c {
+            '[' => out.push_str("\\["),
+            ']' => out.push_str("\\]"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn summary_md(entries: &[PageEntry]) -> String {
     let mut out = String::from("# Summary\n\n");
     if let Some(home) = entries.iter().find(|e| e.rel == "index.md") {
-        out.push_str(&format!("[{}]({})\n\n", home.title, home.rel));
+        out.push_str(&format!(
+            "[{}]({})\n\n",
+            md_link_text(&home.title),
+            home.rel
+        ));
     }
     // Root-level pages (not index.md) as plain items.
     let mut roots: Vec<&PageEntry> = entries
@@ -49,7 +88,7 @@ pub fn summary_md(entries: &[PageEntry]) -> String {
         .collect();
     sort_pages(&mut roots);
     for r in roots {
-        out.push_str(&format!("- [{}]({})\n", r.title, r.rel));
+        out.push_str(&format!("- [{}]({})\n", md_link_text(&r.title), r.rel));
     }
     // One section per top-level folder, alphabetical.
     let mut top_dirs: Vec<String> = entries
@@ -91,7 +130,7 @@ fn render_children(out: &mut String, dir_prefix: &str, kids: &[&PageEntry], inde
         .collect();
     sort_pages(&mut files);
     for f in files {
-        out.push_str(&format!("{pad}- [{}]({})\n", f.title, f.rel));
+        out.push_str(&format!("{pad}- [{}]({})\n", md_link_text(&f.title), f.rel));
     }
     let mut subs: Vec<String> = kids
         .iter()
@@ -112,7 +151,7 @@ fn render_children(out: &mut String, dir_prefix: &str, kids: &[&PageEntry], inde
             .iter()
             .find_map(|n| kids.iter().find(|e| e.rel == format!("{s}/{n}")));
         match parent {
-            Some(p) => out.push_str(&format!("{pad}- [{}]({})\n", p.title, p.rel)),
+            Some(p) => out.push_str(&format!("{pad}- [{}]({})\n", md_link_text(&p.title), p.rel)),
             None => out.push_str(&format!(
                 "{pad}- {}\n",
                 humanize(s.split('/').next_back().unwrap_or(&s))
@@ -208,14 +247,14 @@ pub fn folder_note(
     if !pages.is_empty() {
         out.push_str("Pages in this section:\n\n");
         for (title, href) in pages {
-            out.push_str(&format!("- [{title}]({href})\n"));
+            out.push_str(&format!("- [{}]({href})\n", md_link_text(title)));
         }
         out.push('\n');
     }
     if !subs.is_empty() {
         out.push_str("Subsections:\n\n");
         for (title, href) in subs {
-            out.push_str(&format!("- [{title}]({href})\n"));
+            out.push_str(&format!("- [{}]({href})\n", md_link_text(title)));
         }
         out.push('\n');
     }
@@ -235,7 +274,43 @@ mod tests {
     }
 
     #[test]
-    fn summary_is_a_folder_tree_home_first_alphabetical() {
+    fn summary_survives_titles_with_markdown_links() {
+        // Real B3Wiki case (2026-10-21): pages whose H1 is itself a link
+        // (`# [Rockasteria](http://rockasteria.blogspot.com/)`) produced
+        // `- [[Rockasteria](url)](path)` and mdBook refused to parse the
+        // summary ("Expected a start of a link, actually got Text("[")").
+        // Titles collapse to their display text; leftover brackets escape.
+        let pages = vec![
+            PageEntry {
+                rel: "index.md".to_string(),
+                title: "B3Wiki".to_string(),
+            },
+            PageEntry {
+                rel: "raw/articles/rockasteria.md".to_string(),
+                title: "[Rockasteria](http://rockasteria.blogspot.com/)".to_string(),
+            },
+            PageEntry {
+                rel: "raw/notes.md".to_string(),
+                title: "[draft] gig notes".to_string(),
+            },
+        ];
+        let summary = summary_md(&pages);
+        assert!(
+            summary.contains("- [Rockasteria](raw/articles/rockasteria.md)"),
+            "link-typed title collapses to its text:\n{summary}"
+        );
+        assert!(
+            summary.contains("- [\\[draft\\] gig notes](raw/notes.md)"),
+            "plain brackets are escaped:\n{summary}"
+        );
+        assert!(
+            !summary.contains("- [["),
+            "no raw double bracket:\n{summary}"
+        );
+    }
+
+    #[test]
+    fn page_title_prefers_frontmatterree_home_first_alphabetical() {
         // Sub-folders nest under a LINKED parent (mdBook 0.5 rejects draft
         // parents with children — caught by the real-binary oracle).
         let entries = [

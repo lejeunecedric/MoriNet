@@ -260,7 +260,9 @@ fn render_link(inner: &str, from_page: &str, index: &VaultIndex, embed: bool) ->
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| target.to_string()),
     };
-    let display = alias.unwrap_or(fallback.as_str());
+    // Link text must not carry raw brackets (same class as the SUMMARY title
+    // bug) — collapse/escape them through the shared sanitizer.
+    let display = crate::obsidian::tree::md_link_text(alias.unwrap_or(fallback.as_str()));
     let anchor = section
         .map(|s| format!("#{}", kebab(s)))
         .unwrap_or_default();
@@ -295,6 +297,18 @@ mod tests {
     // Tracer bullet — a bare `[[slug]]` becomes a relative md link.
     // Default display text = the target as written (Obsidian parity); the
     // corpus mostly uses explicit aliases.
+    #[test]
+    fn alias_with_brackets_is_escaped_as_link_text() {
+        // Same class as the SUMMARY title bug: link text must not carry raw
+        // `[`/`]` or mdBook's parser refuses the page.
+        let index = idx(&["index.md", "entities/x.md"]);
+        let out = rewrite("index.md", "see [[x|[draft] the notes]] here", &index);
+        assert!(
+            out.contains("[\\[draft\\] the notes]"),
+            "brackets escaped in the alias: {out}"
+        );
+    }
+
     #[test]
     fn bare_slug_becomes_relative_md_link() {
         let index = idx(&["index.md", "entities/bands/yes.md", "concepts/suite.md"]);
