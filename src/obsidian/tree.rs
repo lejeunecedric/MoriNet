@@ -242,7 +242,40 @@ pub const MORINET_JS: &str = include_str!("../../assets/zoom.js");
 /// below mdBook's print button, holding zoom controls + Close vault.
 pub const ZOOM_CSS: &str = include_str!("../../assets/zoom.css");
 
-pub const MORINET_CSS: &str = ".note-meta{display:flex;flex-wrap:wrap;gap:.5rem;font-size:.8rem;opacity:.85;margin-bottom:1rem}\n.note-meta span{border-radius:999px;padding:.1rem .6rem;border:1px solid rgba(128,128,128,.4)}\n.note-type{font-style:italic}\n.note-contested{color:#d33;border-color:#d33}\n.wikilink-missing{opacity:.55;border-bottom:1px dotted currentColor;cursor:help}\n";
+pub const MORINET_CSS: &str = r#"/*
+ * Formatting of the served mdBook pages (post-critique fixes):
+ * - comfortable reading line-height (mdBook's 1.45 is tight)
+ * - the meta chips are real-sized text, never faded (opacity kills contrast)
+ * - missing wikilinks stay fully readable: dotted underline, no opacity fade
+ * - body font matches the app (system stack) instead of the default Open Sans
+ * - dark-mode icons meet the 3:1 non-text contrast minimum
+ */
+.content p, .content li, .content dd { line-height: 1.65; }
+body, .content { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+.note-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  font-size: 13px;
+  margin-bottom: 1rem;
+}
+.note-meta span {
+  border-radius: 999px;
+  padding: .15rem .7rem;
+  border: 1px solid rgba(128, 128, 128, .4);
+}
+.note-type { font-style: italic; }
+.note-contested { color: #c5221f; border-color: #c5221f; }
+.wikilink-missing {
+  border-bottom: 1px dotted currentColor;
+  cursor: help;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --icons: #7a8290; }
+  .note-contested { color: #f28b82; border-color: #f28b82; }
+}
+"#;
 
 /// Landing page for a sub-folder that has no native index — mdBook requires
 /// nested SUMMARY chapters to hang under a real hyperlink (measured with
