@@ -51,14 +51,19 @@ jobs:
             exit 1
           fi
 
-      # github.event.release.tag_name is null on workflow_dispatch, so fall
-      # back to the dispatch input, then to the latest published release.
+      # Resolve which release to deploy. `github.event.release.tag_name` is set
+      # only on release events; a TAG PUSH has `github.ref_name` instead — use
+      # it, or the deploy falls back to the PREVIOUS release (the known race:
+      # the tag-push deploy starts while cargo-dist is still building).
       - name: Resolve release tag
         id: tag
         run: |
           TAG="${{ inputs.tag }}"
           if [ -z "$TAG" ]; then
             TAG="${{ github.event.release.tag_name }}"
+          fi
+          if [ -z "$TAG" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
           fi
           if [ -z "$TAG" ]; then
             TAG=$(gh release view --repo "$REPO" --json tagName -q .tagName)
@@ -69,6 +74,25 @@ jobs:
             exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      # The tag-push trigger races the release build (cargo-dist takes minutes).
+      # Wait for the release to exist WITH assets before downloading, instead of
+      # deploying whatever "latest release" happened to be at trigger time.
+      - name: Wait for the release to be published
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          for i in $(seq 1 90); do
+            count=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets | length' 2>/dev/null || echo 0)
+            if [ "$count" -gt 0 ]; then
+              echo "release ${TAG} is published with ${count} asset(s)"
+              exit 0
+            fi
+            echo "waiting for release ${TAG} to publish (${i}/90)..."
+            sleep 10
+          done
+          echo "::error::release ${TAG} was never published with assets"
+          exit 1
 
       - name: Download and verify release binary
         env:

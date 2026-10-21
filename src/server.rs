@@ -153,6 +153,7 @@ pub fn build_router_with_email(
     let protected = Router::new()
         .route("/", get(index))
         .route("/logout", post(logout))
+        .route("/account/name", post(set_account_name))
         .route("/vaults/create", post(load_personal_vault))
         .route("/vaults/{slug}/delete", post(delete_my_vault))
         .route("/vaults/{slug}/refresh", post(refresh_my_vault))
@@ -246,7 +247,7 @@ async fn require_dav_auth(
 }
 
 /// Admin gate (REQ-ADMIN-001): valid cookie + role=admin, else 403.
-async fn require_admin(State(state): State<SharedState>, req: Request, next: Next) -> Response {
+async fn require_admin(State(state): State<SharedState>, mut req: Request, next: Next) -> Response {
     let claims = req
         .headers()
         .get(COOKIE)
@@ -255,7 +256,7 @@ async fn require_admin(State(state): State<SharedState>, req: Request, next: Nex
         .and_then(|cookies| cookies.get(&state.cfg.cookie_name).cloned())
         .and_then(|token| state.codec.verify(&token, unix_now()));
 
-    let is_admin = match claims {
+    let is_admin = match claims.as_ref() {
         Some(claims) => state
             .store
             .role_for(&claims.email)
@@ -268,6 +269,10 @@ async fn require_admin(State(state): State<SharedState>, req: Request, next: Nex
     };
 
     if is_admin {
+        // Expose the verified claims to the handler (shared account menu).
+        if let Some(claims) = claims {
+            req.extensions_mut().insert(claims);
+        }
         next.run(req).await
     } else {
         StatusCode::FORBIDDEN.into_response()
@@ -392,20 +397,8 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
             global_items.push_str(&line);
         }
     }
-    // Admin nav (only for admins).
-    let is_admin = state
-        .store
-        .role_for(&claims.email)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| r == "admin")
-        .unwrap_or(false);
-    let admin_nav = if is_admin {
-        r#"<p><a href="/admin"><strong>Admin</strong></a> — manage users, vaults and permissions</p>"#
-    } else {
-        ""
-    };
+    // The shared header carries the admin menu (role=admin only) — no extra
+    // admin link here (the old paragraph was redundant with it).
     // "My vaults" is always rendered: the load form is how a user with no
     // vault yet (e.g. the demo account) loads one (REQ-VLT-005).
     let personal_section = format!(
@@ -429,14 +422,13 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
 <head><meta charset="utf-8"><title>MoriNet — Vaults</title>
 <link rel="stylesheet" href="/assets/style.css"></head>
 <body>
-  <h1>MoriNet</h1>
-  <p>Signed in as {} <form method="post" action="/logout" style="display:inline"><button type="submit">Logout</button></form></p>
-  {admin_nav}
+  {header}
+  <h1>My vaults</h1>
   {personal_section}
   {global_section}
 </body>
 </html>"#,
-        html_escape(&claims.email)
+        header = account_menu(&state, &claims).await
     );
     Html(html).into_response()
 }
@@ -719,15 +711,82 @@ fn html_escape(s: &str) -> String {
 
 // ---------- admin handlers (Phase 4) ----------
 
-async fn admin_page(title: &str, body: String) -> Response {
+/// The shared header (Phase 9 nav shell): brand + "My vaults" + the account
+/// menu (display name editable, email, logout) + the admin menu (role=admin
+/// only). Both dropdowns are native `<details>` — no JS needed.
+async fn account_menu(state: &SharedState, claims: &Claims) -> String {
+    let display = state
+        .store
+        .display_name_for(&claims.email)
+        .await
+        .ok()
+        .flatten();
+    let label = display.unwrap_or_else(|| claims.email.clone());
+    let is_admin = state
+        .store
+        .role_for(&claims.email)
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("admin");
+    let admin_menu = if is_admin {
+        r#"<details class="menu"><summary>Admin</summary><div class="menu-body">
+<a href="/admin">Dashboard</a>
+<a href="/admin/users">Users</a>
+<a href="/admin/groups">Groups</a>
+<a href="/admin/vaults">Vaults mgmt</a>
+<a href="/admin/about">About</a>
+</div></details>"#
+    } else {
+        ""
+    };
+    format!(
+        r#"<header class="mori-nav">
+  <a class="brand" href="/">MoriNet</a>
+  <nav>
+    <a href="/">My vaults</a>
+    {admin_menu}
+    <details class="menu"><summary>{label}</summary><div class="menu-body">
+<span class="menu-email">{email}</span>
+<form method="post" action="/account/name">
+  <input type="text" name="name" value="{label}" placeholder="display name" aria-label="display name">
+  <button type="submit">Save</button>
+</form>
+<form method="post" action="/logout"><button type="submit">Logout</button></form>
+</div></details>
+  </nav>
+</header>"#,
+        admin_menu = admin_menu,
+        label = html_escape(&label),
+        email = html_escape(&claims.email),
+    )
+}
+
+/// `POST /account/name` — the signed-in user renames themselves (REQ-NAV-002).
+async fn set_account_name(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Form(p): Form<NameParams>,
+) -> Response {
+    let name = p.name.trim();
+    if let Err(e) = state.store.set_display_name(&claims.email, name).await {
+        return error_page(&format!("could not save the display name: {e}"));
+    }
+    Redirect::to("/").into_response()
+}
+
+async fn admin_page(state: &SharedState, claims: &Claims, title: &str, body: String) -> Response {
+    let header = account_menu(state, claims).await;
     Html(format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>MoriNet — {title}</title>
 <link rel="stylesheet" href="/assets/style.css"></head>
 <body>
+  {header}
   <h1>MoriNet admin</h1>
-  <nav><a href="/">My vaults</a> | <a href="/admin/users">Users</a> | <a href="/admin/groups">Groups</a> | <a href="/admin/vaults">Vaults mgmt</a> | <a href="/admin/about">About</a> | <form method="post" action="/logout" style="display:inline"><button type="submit">Logout</button></form></nav>
+  <nav><a href="/admin/users">Users</a> | <a href="/admin/groups">Groups</a> | <a href="/admin/vaults">Vaults mgmt</a> | <a href="/admin/about">About</a></nav>
   <h2>{title}</h2>
   {body}
 </body>
@@ -739,21 +798,27 @@ async fn admin_page(title: &str, body: String) -> Response {
 /// `GET /admin/about` — installed version + source repo (REQ-ADMIN-007).
 /// The version comes from `crate::version()` (compile-time `CARGO_PKG_VERSION`),
 /// so it tracks every release automatically — nothing to hardcode.
-async fn admin_about() -> Response {
+async fn admin_about(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
     let body = format!(
         r#"<p><strong>morinet {version}</strong></p>
 <p>Source: <a href="{repo}">{repo}</a></p>"#,
         version = crate::version(),
         repo = REPO_URL
     );
-    admin_page("About", body).await
+    admin_page(&state, &claims, "About", body).await
 }
 
-async fn admin_dashboard(State(state): State<SharedState>) -> Response {
+async fn admin_dashboard(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
     let users = state.store.list_users().await.unwrap_or_default();
     let vaults = state.store.list_all_vaults().await.unwrap_or_default();
     let body = format!("<p>{} user(s), {} vault(s)</p>", users.len(), vaults.len());
-    admin_page("Dashboard", body).await
+    admin_page(&state, &claims, "Dashboard", body).await
 }
 
 /// `POST /admin/users/role` — switch a user between reader and admin
@@ -779,7 +844,10 @@ async fn admin_user_role(
     }
 }
 
-async fn admin_users(State(state): State<SharedState>) -> Response {
+async fn admin_users(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
     let users = state.store.list_users().await.unwrap_or_default();
     let mut rows = String::new();
     for u in &users {
@@ -807,7 +875,7 @@ async fn admin_users(State(state): State<SharedState>) -> Response {
   <button type="submit">Invite</button>
 </form>"#
     );
-    admin_page("Users", body).await
+    admin_page(&state, &claims, "Users", body).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -834,7 +902,11 @@ fn new_token() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InviteParams>) -> Response {
+async fn admin_invite(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Form(p): Form<InviteParams>,
+) -> Response {
     // Phase 5: when SMTP is configured, create an invitation token and email
     // the link. The user does NOT exist yet — it is created when the invitee
     // picks a password. Without SMTP we keep the legacy temp-password flow.
@@ -876,7 +948,7 @@ async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InvitePara
             html_escape(&p.email),
             html_escape(&p.role)
         );
-        return admin_page("Invitation sent", body).await;
+        return admin_page(&state, &claims, "Invitation sent", body).await;
     }
 
     // No SMTP configured: legacy flow, temp password shown once to the admin.
@@ -896,7 +968,7 @@ async fn admin_invite(State(state): State<SharedState>, Form(p): Form<InvitePara
                 html_escape(&p.role),
                 temp_password
             );
-            admin_page("User invited", body).await
+            admin_page(&state, &claims, "User invited", body).await
         }
         Err(e) => {
             let body = format!(
@@ -1204,6 +1276,13 @@ struct GroupLimitParams {
     limit: String,
 }
 
+/// `POST /account/name` — display-name input (REQ-NAV-002).
+#[derive(Debug, Deserialize)]
+struct NameParams {
+    #[serde(default)]
+    name: String,
+}
+
 /// `POST /vaults/create` — personal vault load input (REQ-VLT-005).
 #[derive(Debug, Deserialize)]
 struct LoadVaultParams {
@@ -1224,7 +1303,10 @@ struct UserRoleParams {
     role: String,
 }
 
-async fn admin_groups(State(state): State<SharedState>) -> Response {
+async fn admin_groups(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
     let groups = state.store.list_groups().await.unwrap_or_default();
     let users = state.store.list_users().await.unwrap_or_default();
 
@@ -1298,7 +1380,7 @@ async fn admin_groups(State(state): State<SharedState>) -> Response {
   <button type="submit">Create</button>
 </form>"#
     );
-    admin_page("Groups", body).await
+    admin_page(&state, &claims, "Groups", body).await
 }
 
 async fn admin_create_group(
@@ -1612,7 +1694,10 @@ async fn admin_vault_groups(
     Redirect::to(&format!("/admin/vaults/{}/perms", slug)).into_response()
 }
 
-async fn admin_vaults(State(state): State<SharedState>) -> Response {
+async fn admin_vaults(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
     let vaults = state.store.list_all_vaults().await.unwrap_or_default();
     use crate::obsidian::convert::{detect, VaultFormat};
     let mut rows = String::new();
@@ -1645,7 +1730,7 @@ async fn admin_vaults(State(state): State<SharedState>) -> Response {
 </form>
 <p><em>Note:</em> a vault is an <strong>llm-wiki / Obsidian</strong> directory (wikilinks + frontmatter) — a local path or a git repo; MoriNet converts and builds it automatically, re-syncing every 5 min. mdBook-native repos keep working. A directory matching neither format is flagged.</p>"#
     );
-    admin_page("Vaults", body).await
+    admin_page(&state, &claims, "Vaults", body).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -1709,7 +1794,11 @@ fn error_page(msg: &str) -> Response {
         .into_response()
 }
 
-async fn admin_perms(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
+async fn admin_perms(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+) -> Response {
     let groups = state.store.list_groups().await.unwrap_or_default();
     let assigned = state
         .store
@@ -1777,7 +1866,7 @@ async fn admin_perms(State(state): State<SharedState>, Path(slug): Path<String>)
         name = html_escape(&vault.name),
         slug = html_escape(&slug),
     );
-    admin_page("Vault permissions", body).await
+    admin_page(&state, &claims, "Vault permissions", body).await
 }
 
 async fn admin_delete_vault(
@@ -2478,6 +2567,93 @@ mod tests {
             "autofill script present"
         );
         assert!(text.contains("input[name=\"url\"]"), "url field present");
+    }
+
+    // ---------- Phase 9 nav shell: shared header + account menu ----------
+
+    #[tokio::test]
+    async fn the_account_menu_shows_name_email_and_logout() {
+        // REQ-NAV-002: the shared header carries the account menu — display
+        // name (editable), email and a logout button.
+        let (app, state) = test_router().await;
+        state
+            .store
+            .set_display_name("admin@example.com", "Cédric")
+            .await
+            .unwrap();
+        let cookie = admin_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app, "GET", "/", headers, None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("Cédric"), "display name shown: {text}");
+        assert!(text.contains("admin@example.com"), "email shown: {text}");
+        assert!(
+            text.contains("action=\"/account/name\""),
+            "rename form: {text}"
+        );
+        assert!(text.contains("action=\"/logout\""), "logout button: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_user_renames_themselves_from_the_account_menu() {
+        let (app, state) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/account/name",
+            headers.clone(),
+            Some(Body::from("name=Alice")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state
+                .store
+                .display_name_for("admin@example.com")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Alice")
+        );
+        let res = req(app, "GET", "/", headers, None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Alice"));
+    }
+
+    #[tokio::test]
+    async fn the_admin_menu_only_appears_for_admins() {
+        // REQ-NAV-004: the admin menu is rendered ONLY for role=admin.
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("reader@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "reader@x.fr", "pw").await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app.clone(), "GET", "/", headers.clone(), None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            !text.contains("Vaults mgmt"),
+            "no admin menu for a reader: {text}"
+        );
+        assert!(
+            !text.contains("/admin/users"),
+            "no admin links for a reader: {text}"
+        );
+        let cookie = admin_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app, "GET", "/", headers, None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Vaults mgmt"));
     }
 
     #[tokio::test]
