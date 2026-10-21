@@ -24,6 +24,42 @@ pub struct User {
     pub id: i64,
     pub email: String,
     pub role: String,
+    /// Shown in the UI. `None` until the user sets one; the email stays the
+    /// login identifier.
+    pub display_name: Option<String>,
+}
+
+/// A vault as seen by a user, with the role they hold on it.
+#[derive(Debug, Clone)]
+pub struct AccessibleVault {
+    pub vault: Vault,
+    /// 'read' or 'write'. A personal vault always yields 'write' for its owner.
+    pub role: String,
+    pub personal: bool,
+}
+
+/// What the user may do on a vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    None,
+    Read,
+    Write,
+}
+
+impl Access {
+    pub fn can_read(self) -> bool {
+        matches!(self, Access::Read | Access::Write)
+    }
+    pub fn can_write(self) -> bool {
+        matches!(self, Access::Write)
+    }
+    fn parse(role: &str) -> Access {
+        match role {
+            "write" => Access::Write,
+            "read" => Access::Read,
+            _ => Access::None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -106,15 +142,21 @@ impl Store {
 
     /// Verify credentials against the users table (bcrypt). Returns the user on success.
     pub async fn verify_login(&self, email: &str, password: &str) -> anyhow::Result<Option<User>> {
-        let row: Option<(i64, String, String, String)> =
-            sqlx::query_as("SELECT id, email, password_hash, role FROM users WHERE email = ?")
-                .bind(email)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<(i64, String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, email, password_hash, role, display_name FROM users WHERE email = ?",
+        )
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
         match row {
-            Some((id, email, hash, role)) => {
+            Some((id, email, hash, role, display_name)) => {
                 if bcrypt::verify(password, &hash)? {
-                    Ok(Some(User { id, email, role }))
+                    Ok(Some(User {
+                        id,
+                        email,
+                        role,
+                        display_name,
+                    }))
                 } else {
                     Ok(None)
                 }
@@ -246,14 +288,35 @@ impl Store {
 
     /// List all users (admin-ui table).
     pub async fn list_users(&self) -> anyhow::Result<Vec<User>> {
-        let rows: Vec<(i64, String, String)> =
-            sqlx::query_as("SELECT id, email, role FROM users ORDER BY email")
+        let rows: Vec<(i64, String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, email, role, display_name FROM users ORDER BY email")
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, email, role)| User { id, email, role })
+            .map(|(id, email, role, display_name)| User {
+                id,
+                email,
+                role,
+                display_name,
+            })
             .collect())
+    }
+
+    /// Set the display name shown in the UI (Phase 9, REQ-ACC-002).
+    pub async fn set_display_name(&self, email: &str, name: &str) -> anyhow::Result<()> {
+        let trimmed = name.trim();
+        let value = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        sqlx::query("UPDATE users SET display_name = ? WHERE email = ?")
+            .bind(value)
+            .bind(email)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Role of a user (None if unknown email) — used by the admin gate.
@@ -401,6 +464,305 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(Some(user_id))
+    }
+
+    // ---------- Phase 8: groups + personal vaults ----------
+
+    /// Effective access of `email` on `slug`.
+    ///
+    /// Order matters:
+    ///   1. admin sees everything (existing behaviour);
+    ///   2. the owner of a personal vault always has Write on it;
+    ///   3. otherwise the strongest role across the user's groups wins.
+    pub async fn access_for(&self, email: &str, slug: &str) -> anyhow::Result<Access> {
+        let row: Option<(String, Option<i64>)> =
+            sqlx::query_as("SELECT v.scope, v.owner_id FROM vaults v WHERE v.slug = ?")
+                .bind(slug)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((_scope, owner_id)) = row else {
+            return Ok(Access::None);
+        };
+
+        let user: Option<(i64, String)> =
+            sqlx::query_as("SELECT id, role FROM users WHERE email = ?")
+                .bind(email)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((user_id, role)) = user else {
+            return Ok(Access::None);
+        };
+        if role == "admin" {
+            return Ok(Access::Write);
+        }
+        // Owner of a personal vault: full rights, no group row needed.
+        if owner_id == Some(user_id) {
+            return Ok(Access::Write);
+        }
+
+        let best: Option<(String,)> = sqlx::query_as(
+            "SELECT a.role FROM vault_group_acl a
+             JOIN group_members m ON m.group_id = a.group_id
+             WHERE m.user_id = ? AND a.vault_id = (SELECT id FROM vaults WHERE slug = ?)
+             ORDER BY CASE a.role WHEN 'write' THEN 0 ELSE 1 END
+             LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(best.map(|(r,)| Access::parse(&r)).unwrap_or(Access::None))
+    }
+
+    /// Vaults visible to `email`: their personal ones + the global ones their
+    /// groups are allowed to read. Admins get everything (Phase 8).
+    pub async fn accessible_vaults(&self, email: &str) -> anyhow::Result<Vec<AccessibleVault>> {
+        let user: Option<(i64, String)> =
+            sqlx::query_as("SELECT id, role FROM users WHERE email = ?")
+                .bind(email)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((user_id, role)) = user else {
+            return Ok(vec![]);
+        };
+        let is_admin = role == "admin";
+
+        // Admins: everything.
+        if is_admin {
+            let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
+                "SELECT v.id, v.slug, v.name, v.book_path, v.scope
+                 FROM vaults v ORDER BY v.scope DESC, v.slug",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            return Ok(rows
+                .into_iter()
+                .map(|(id, slug, name, book_path, scope)| AccessibleVault {
+                    vault: Vault {
+                        id,
+                        slug,
+                        name,
+                        book_path,
+                    },
+                    role: "write".to_string(),
+                    personal: scope == "personal",
+                })
+                .collect());
+        }
+
+        let mut out: Vec<AccessibleVault> = Vec::new();
+
+        // Personal vaults owned by this user.
+        let own: Vec<(i64, String, String, String)> = sqlx::query_as(
+            "SELECT id, slug, name, book_path FROM vaults
+             WHERE scope = 'personal' AND owner_id = ?
+             ORDER BY slug",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        for (id, slug, name, book_path) in own {
+            out.push(AccessibleVault {
+                vault: Vault {
+                    id,
+                    slug,
+                    name,
+                    book_path,
+                },
+                role: "write".to_string(),
+                personal: true,
+            });
+        }
+
+        // Global vaults granted through any of the user's groups. The strongest
+        // role per vault wins, hence the GROUP BY + MAX-like CASE.
+        let globals: Vec<(i64, String, String, String, String)> = sqlx::query_as(
+            "SELECT v.id, v.slug, v.name, v.book_path,
+                    CASE WHEN MAX(CASE a.role WHEN 'write' THEN 1 ELSE 0 END) = 1
+                         THEN 'write' ELSE 'read' END AS role
+             FROM vaults v
+             JOIN vault_group_acl a ON a.vault_id = v.id
+             JOIN group_members m ON m.group_id = a.group_id
+             WHERE v.scope = 'global' AND m.user_id = ?
+             GROUP BY v.id
+             ORDER BY v.slug",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        for (id, slug, name, book_path, role) in globals {
+            out.push(AccessibleVault {
+                vault: Vault {
+                    id,
+                    slug,
+                    name,
+                    book_path,
+                },
+                role,
+                personal: false,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Create a personal vault owned by `email` (REQ-VLT-005).
+    pub async fn create_personal_vault(
+        &self,
+        email: &str,
+        slug: &str,
+        name: &str,
+        book_path: &Path,
+    ) -> anyhow::Result<()> {
+        let owner: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some((owner_id,)) = owner else {
+            anyhow::bail!("cannot create a vault for an unknown user");
+        };
+        let path_str = book_path.display().to_string();
+        sqlx::query(
+            "INSERT INTO vaults (slug, name, book_path, scope, owner_id)
+             VALUES (?, ?, ?, 'personal', ?)",
+        )
+        .bind(slug)
+        .bind(name)
+        .bind(path_str)
+        .bind(owner_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // ---------- groups ----------
+
+    pub async fn create_group(&self, name: &str) -> anyhow::Result<i64> {
+        let res = sqlx::query("INSERT INTO groups (name) VALUES (?)")
+            .bind(name.trim())
+            .execute(&self.pool)
+            .await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    pub async fn list_groups(&self) -> anyhow::Result<Vec<(i64, String, i64)>> {
+        // (id, name, member count)
+        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+            "SELECT g.id, g.name, COUNT(m.user_id)
+             FROM groups g LEFT JOIN group_members m ON m.group_id = g.id
+             GROUP BY g.id ORDER BY g.name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn rename_group(&self, group_id: i64, name: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE groups SET name = ? WHERE id = ?")
+            .bind(name.trim())
+            .bind(group_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Deleting a group cascades to its members AND its vault ACLs.
+    pub async fn delete_group(&self, group_id: i64) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM groups WHERE id = ?")
+            .bind(group_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn add_group_member(&self, group_id: i64, email: &str) -> anyhow::Result<bool> {
+        let user: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some((user_id,)) = user else {
+            return Ok(false);
+        };
+        sqlx::query("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)")
+            .bind(group_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(true)
+    }
+
+    pub async fn remove_group_member(&self, group_id: i64, email: &str) -> anyhow::Result<bool> {
+        let res = sqlx::query(
+            "DELETE FROM group_members
+             WHERE group_id = ?
+               AND user_id = (SELECT id FROM users WHERE email = ?)",
+        )
+        .bind(group_id)
+        .bind(email)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Members of a group (email list, sorted).
+    pub async fn group_members(&self, group_id: i64) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT u.email FROM group_members m
+             JOIN users u ON u.id = m.user_id
+             WHERE m.group_id = ? ORDER BY u.email",
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(e,)| e).collect())
+    }
+
+    /// Assign a group a role on a vault ('read' | 'write', REQ-VLT-004).
+    pub async fn set_vault_group_role(
+        &self,
+        slug: &str,
+        group_id: i64,
+        role: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO vault_group_acl (vault_id, group_id, role)
+             VALUES ((SELECT id FROM vaults WHERE slug = ?), ?, ?)
+             ON CONFLICT (vault_id, group_id) DO UPDATE SET role = excluded.role",
+        )
+        .bind(slug)
+        .bind(group_id)
+        .bind(role)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_vault_group_role(&self, slug: &str, group_id: i64) -> anyhow::Result<()> {
+        sqlx::query(
+            "DELETE FROM vault_group_acl
+             WHERE group_id = ? AND vault_id = (SELECT id FROM vaults WHERE slug = ?)",
+        )
+        .bind(group_id)
+        .bind(slug)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Group id → role, for the admin vault-assignment UI.
+    pub async fn vault_group_roles(
+        &self,
+        slug: &str,
+    ) -> anyhow::Result<Vec<(i64, String, String)>> {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT a.group_id, g.name, a.role
+             FROM vault_group_acl a JOIN groups g ON g.id = a.group_id
+             WHERE a.vault_id = (SELECT id FROM vaults WHERE slug = ?)
+             ORDER BY g.name",
+        )
+        .bind(slug)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     fn unix_now(&self) -> u64 {
@@ -760,5 +1122,217 @@ mod tests {
         assert_eq!(vaults.len(), 1);
         assert_eq!(vaults[0].book_path, "/tmp/new");
         assert_eq!(vaults[0].name, "Demo v2");
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+
+    /// Each store is in-memory, so one per test is enough — the `name` is only
+    /// documentation of which fixture a test uses.
+    async fn st(_name: &str) -> Store {
+        Store::connect_memory().await.expect("store")
+    }
+
+    #[tokio::test]
+    async fn existing_vaults_become_global_after_migration() {
+        // A vault created by the legacy path has no owner and is global, so
+        // nothing that worked before the migration stops working.
+        let s = st("legacy").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.seed_vault("legacy", "Legacy", Path::new("/tmp/legacy/book"))
+            .await
+            .unwrap();
+        let (scope, owner): (String, Option<i64>) =
+            sqlx::query_as("SELECT scope, owner_id FROM vaults WHERE slug = 'legacy'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(scope, "global");
+        assert_eq!(owner, None);
+    }
+
+    #[tokio::test]
+    async fn groups_carry_members() {
+        let s = st("groups").await;
+        s.create_user("a@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("b@x.fr", "pw", "reader").await.unwrap();
+        let g = s.create_group("Team").await.unwrap();
+        assert!(s.add_group_member(g, "a@x.fr").await.unwrap());
+        // Adding an unknown user is refused rather than silently ignored.
+        assert!(!s.add_group_member(g, "ghost@x.fr").await.unwrap());
+        assert_eq!(s.group_members(g).await.unwrap(), vec!["a@x.fr"]);
+        assert!(s.remove_group_member(g, "a@x.fr").await.unwrap());
+        assert!(s.group_members(g).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_group_cascades_its_memberships() {
+        let s = st("cascade").await;
+        s.create_user("a@x.fr", "pw", "reader").await.unwrap();
+        let g = s.create_group("Temp").await.unwrap();
+        s.add_group_member(g, "a@x.fr").await.unwrap();
+        s.delete_group(g).await.unwrap();
+        assert!(s.group_members(g).await.unwrap().is_empty());
+        assert!(s.list_groups().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn personal_vault_is_invisible_to_other_users() {
+        let s = st("personal").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.create_user("alice@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("bob@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault(
+            "alice@x.fr",
+            "secret",
+            "Alice's notes",
+            Path::new("/tmp/alice/book"),
+        )
+        .await
+        .unwrap();
+
+        // Alice sees it, with write.
+        let alice = s.accessible_vaults("alice@x.fr").await.unwrap();
+        assert_eq!(alice.len(), 1);
+        assert!(alice[0].personal);
+        assert_eq!(alice[0].role, "write");
+
+        // Bob does not see it at all — not in the list, and no access even when
+        // he guesses the slug (REQ-VLT-002).
+        assert!(s.accessible_vaults("bob@x.fr").await.unwrap().is_empty());
+        assert_eq!(
+            s.access_for("bob@x.fr", "secret").await.unwrap(),
+            Access::None
+        );
+    }
+
+    #[tokio::test]
+    async fn global_vault_is_shared_through_a_group() {
+        let s = st("global").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.create_user("alice@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("bob@x.fr", "pw", "reader").await.unwrap();
+        s.seed_vault("wiki", "Wiki", Path::new("/tmp/wiki/book"))
+            .await
+            .unwrap();
+
+        let g = s.create_group("Readers").await.unwrap();
+        s.add_group_member(g, "alice@x.fr").await.unwrap();
+        s.set_vault_group_role("wiki", g, "read").await.unwrap();
+
+        assert_eq!(
+            s.access_for("alice@x.fr", "wiki").await.unwrap(),
+            Access::Read
+        );
+        assert_eq!(
+            s.access_for("bob@x.fr", "wiki").await.unwrap(),
+            Access::None
+        );
+
+        let alice = s.accessible_vaults("alice@x.fr").await.unwrap();
+        assert_eq!(alice.len(), 1);
+        assert!(!alice[0].personal);
+        assert_eq!(alice[0].role, "read");
+    }
+
+    #[tokio::test]
+    async fn write_role_comes_from_the_strongest_group() {
+        let s = st("strongest").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.create_user("alice@x.fr", "pw", "reader").await.unwrap();
+        s.seed_vault("team", "Team", Path::new("/tmp/team/book"))
+            .await
+            .unwrap();
+        let readers = s.create_group("Readers").await.unwrap();
+        let writers = s.create_group("Writers").await.unwrap();
+        s.add_group_member(readers, "alice@x.fr").await.unwrap();
+        s.add_group_member(writers, "alice@x.fr").await.unwrap();
+        s.set_vault_group_role("team", readers, "read")
+            .await
+            .unwrap();
+        s.set_vault_group_role("team", writers, "write")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            s.access_for("alice@x.fr", "team").await.unwrap(),
+            Access::Write
+        );
+        assert_eq!(
+            s.accessible_vaults("alice@x.fr").await.unwrap()[0].role,
+            "write",
+            "the strongest role wins in the listing too"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoking_membership_removes_access() {
+        let s = st("revoke").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.create_user("alice@x.fr", "pw", "reader").await.unwrap();
+        s.seed_vault("wiki", "Wiki", Path::new("/tmp/wiki/book"))
+            .await
+            .unwrap();
+        let g = s.create_group("Readers").await.unwrap();
+        s.add_group_member(g, "alice@x.fr").await.unwrap();
+        s.set_vault_group_role("wiki", g, "read").await.unwrap();
+        assert!(s.access_for("alice@x.fr", "wiki").await.unwrap().can_read());
+
+        s.remove_group_member(g, "alice@x.fr").await.unwrap();
+        assert_eq!(
+            s.access_for("alice@x.fr", "wiki").await.unwrap(),
+            Access::None
+        );
+        assert!(s.accessible_vaults("alice@x.fr").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn admins_see_everything_including_personal_vaults() {
+        let s = st("adminall").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.create_user("alice@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault("alice@x.fr", "secret", "S", Path::new("/tmp/s/book"))
+            .await
+            .unwrap();
+        s.seed_vault("shared", "Shared", Path::new("/tmp/sh/book"))
+            .await
+            .unwrap();
+
+        let all = s.accessible_vaults("admin@x.fr").await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(
+            s.access_for("admin@x.fr", "secret").await.unwrap(),
+            Access::Write
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_user_and_unknown_vault_have_no_access() {
+        let s = st("unknown").await;
+        s.seed_vault("v", "V", Path::new("/tmp/v/book"))
+            .await
+            .unwrap();
+        assert_eq!(s.access_for("ghost@x.fr", "v").await.unwrap(), Access::None);
+        assert_eq!(
+            s.access_for("admin@x.fr", "nope").await.unwrap(),
+            Access::None
+        );
+        assert!(s.accessible_vaults("ghost@x.fr").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn display_name_round_trips_and_can_be_cleared() {
+        let s = st("display").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.set_display_name("admin@x.fr", "  Ada Lovelace  ")
+            .await
+            .unwrap();
+        let u = s.verify_login("admin@x.fr", "pw").await.unwrap().unwrap();
+        assert_eq!(u.display_name.as_deref(), Some("Ada Lovelace"));
+        s.set_display_name("admin@x.fr", "   ").await.unwrap();
+        let u = s.verify_login("admin@x.fr", "pw").await.unwrap().unwrap();
+        assert_eq!(u.display_name, None, "blank clears the name");
     }
 }

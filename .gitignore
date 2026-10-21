@@ -21,3 +21,6 @@ Thumbs.db
 
 # Misc
 *.log
+
+# Nested git repos / local agent worktrees — never part of this repo
+.worktrees/
