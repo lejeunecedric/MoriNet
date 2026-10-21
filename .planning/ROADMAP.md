@@ -20,7 +20,7 @@
 | 05   | **email**         | SMTP adapter + email invitations + password reset                                        | REQ-EMAIL-*            | ✅ done |
 | 06   | **webdav**        | WebDAV endpoints on vaults (same creds), browse + read                                    | REQ-WEBDAV-*           | ✅ done |
 | 07   | **vault-ux**      | Vault management UX: server-side dir picker, browser-side import, URL field for GitHub   | REQ-UX-*               | ⬜ next |
-| 08   | **access-model**  | Groups + personal vaults: `group_members`, `vault_group_acl`, `scope`/`owner_id`          | REQ-GRP-*, REQ-VLT-*   | 🟡 60% (UI personnel + nav shell restants) |
+| 08   | **access-model**  | Groups + personal vaults: `group_members`, `vault_group_acl`, `scope`/`owner_id`          | REQ-GRP-*, REQ-VLT-*   | ✅ done (v0.1.9/v0.1.11/v0.1.12 — quotas, plans, load/refresh/delete) |
 | 08b  | **obsidian-format** | In-pipeline converter : vault llm-wiki/Obsidian → arbre mdBook (SUMMARY + wikilinks + frontmatter) | REQ-OBSFMT-001..006 | ✅ done (v0.1.8) |
 | 09   | **ux-nav**        | New shell: My vaults landing, account menu top-right, mdbook close button, admin menu    | REQ-ACC-*, REQ-NAV-*   | ⬜ |
 | 10   | **mcp**           | MCP StreamableHttp on `/mcp`, list/read/search tools                                      | REQ-MCP-*              | ⬜ |
@@ -171,15 +171,17 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 
 **Goal**: the new shell.
 
-**Status**: partiellement pull-forwardé (2026-10-21, feedback user sur la page
-admin) : `POST /logout` + bouton logout, nav admin clarifiée (My vaults vs
-Vaults mgmt), bouton **About** (version installée + repo GitHub, REQ-ADMIN-007).
+**Status**: partiellement pull-forwardé (2026-10-21, feedback user) : `POST /logout`
++ bouton logout, nav admin clarifiée (My vaults vs Vaults mgmt), bouton **About**
+(version + repo GitHub, REQ-ADMIN-007), **zoom mdBook** (barre −/100%+/↺, portée
+d'oscbrain) et **bouton "Close vault"** sur les pages mdBook (REQ-NAV-003).
 
 **Criteria**:
 - Shared header on every page: **My vaults** (landing) + account menu top-right
 - Account menu: display name (editable), email, logout
 - Logout clears the cookie and returns to `/login`
-- The mdBook pages get a discreet close button (top-right) back to `/`
+- The mdBook pages get a discreet close button (top-right) back to `/` — **DONE** (v0.1.12, injected via `theme/morinet.js`)
+- A zoom bar (− / 100% / + / reset) on the mdBook pages, scaling the content AND the sidebar in lockstep, persisted in `localStorage` — **DONE** (v0.1.12, ported from oscbrain)
 - The Admin menu appears only for role=admin (dropdown), linking to groups, users, global vaults
 - Admin nav is NOT ambiguous: "My vaults" (landing) vs "Vaults mgmt" (admin) — no bare "Vaults" link
 - Admin users page carries an **About** button showing the installed version (`morinet <version>`) and the GitHub repo URL — version updates with every release, no hardcoding

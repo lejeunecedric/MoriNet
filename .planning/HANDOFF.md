@@ -135,6 +135,8 @@ The two real-mdBook-0.5 bugs are recorded as pitfall #19.
 - The picker modal (list dirs, descend, up, breadcrumb) over the finished `/admin/browse`
 - Browser-side import that **creates a new vault** from a local folder (slug = folder name, scaffolds `book.toml` + `src/SUMMARY.md`)
 
+**v0.1.12 UX (feedback 2026-10-21)** — the mdBook pages now carry the **zoom bar** (ported from oscbrain: `assets/zoom.js` + `assets/zoom.css`, injected into the generated `theme/` and wired through `additional-js`/`additional-css` in the generated `book.toml`) and a **"Close vault"** button (top-right, relative path computed from `location.pathname` so it works at any depth). The load form's **Name field auto-fills from the repository directory name** as the URL is pasted (a hand-typed name is never overwritten; the server also falls back to the repo name when the field is empty).
+
 **Next step to resume — group quota (Phase 8, user decision 2026-10-21)** — **SHIPPED in v0.1.9/v0.1.10** :
 
 - `groups.personal_vault_limit` (NULL = unlimited) — REQ-GRP-005 → `migrations/0005_group_quota.sql`
