@@ -1,6 +1,6 @@
 # MoriNet
 
-> Server [mdBook](https://rust-lang.github.io/mdBook/) that exposes an Obsidian second brain with multi-user auth, WebDAV, and MCP.
+> Server [mdBook](https://rust-lang.github.io/mdBook/) that exposes an LLM-Wiki style knowledge base brain with multi-user auth, WebDAV, and MCP.
 
 [![CI](https://github.com/lejeunecedric/MoriNet/actions/workflows/ci.yml/badge.svg)](https://github.com/lejeunecedric/MoriNet/actions/workflows/ci.yml)
 [![Release](https://github.com/lejeunecedric/MoriNet/actions/workflows/release.yml/badge.svg)](https://github.com/lejeunecedric/MoriNet/releases)
