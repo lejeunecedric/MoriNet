@@ -1358,6 +1358,16 @@ const AUTOFILL_NAME_JS: &str = r#"<script>
 })();
 </script>"#;
 
+/// The `origin` URL of a local git clone (used to recover a vault's upstream
+/// when it was loaded before the source URL was recorded).
+fn git_remote_url(clone_dir: &std::path::Path) -> Option<String> {
+    let repo = git2::Repository::open(clone_dir).ok()?;
+    let remote = repo.find_remote("origin").ok()?;
+    let url = remote.url()?.to_string();
+    // Normalize file:// URLs to a plain path-like URL the clone can re-use.
+    Some(url)
+}
+
 /// The repository/directory name from a GitHub-style URL: the last path
 /// segment, without a `.git` suffix (UX: the vault name defaults to it).
 fn repo_name_from_url(url: &str) -> String {
@@ -1401,8 +1411,21 @@ async fn refresh_my_vault(
     if !access.can_write() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Some(url) = state.store.vault_source(&slug).await.ok().flatten() else {
-        return error_page("this vault has no upstream to refresh (local vault)");
+    // The upstream URL is normally remembered at load time. For a vault loaded
+    // before that column existed, recover it from the clone's git remote.
+    let url = match state.store.vault_source(&slug).await.ok().flatten() {
+        Some(u) => u,
+        None => match git_remote_url(&state.cfg.data_dir.join("repos").join(&slug)) {
+            Some(u) => {
+                let _ = state.store.set_vault_source(&slug, &u).await;
+                u
+            }
+            None => {
+                return error_page(
+                    "this vault has no upstream to refresh (it was not loaded from GitHub)",
+                )
+            }
+        },
     };
     let Some(name) = state.store.vault_name(&slug).await.ok().flatten() else {
         return error_page("unknown vault");
@@ -2392,6 +2415,27 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), 65536).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("Fresh"));
+    }
+
+    #[tokio::test]
+    async fn the_upstream_url_is_recovered_from_the_git_remote() {
+        // A vault loaded BEFORE the source URL was recorded has an empty
+        // source_url; the refresh recovers it from the clone's git remote.
+        let url = wiki_repo("remote-url");
+        let root = std::env::temp_dir().join("morinet-wikirepo-remote-url");
+        let clone = std::env::temp_dir().join("morinet-clone-remote-url");
+        let _ = std::fs::remove_dir_all(&clone);
+        let out = std::process::Command::new("git")
+            .args(["clone", "-q", &url, clone.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "clone failed: {out:?}");
+        let found = git_remote_url(&clone).expect("remote url");
+        assert!(
+            found.contains("morinet-wikirepo-remote-url"),
+            "remote url points at the repo: {found}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
