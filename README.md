@@ -6,7 +6,7 @@
 [![Release](https://github.com/lejeunecedric/MoriNet/actions/workflows/release.yml/badge.svg)](https://github.com/lejeunecedric/MoriNet/releases)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 
-> 🚧 **Phase 0 — bootstrap**. See [`.planning/ROADMAP.md`](.planning/ROADMAP.md) for the full 8-phase roadmap.
+> 🚧 **Active development** — v0.1.7, phases 00→06 shipped. Next up: phase 07 *vault-ux*. See [`.planning/ROADMAP.md`](.planning/ROADMAP.md).
 
 ## What
 
@@ -18,11 +18,11 @@
 - 🤖 Vaults accessible via **MCP** (Model Context Protocol) — for AI agents
 - 📨 Invitations and password reset by email
 - 🎨 Custom mdbook visual mods: image zoom, collapsible sections, external links
-- 🚀 Distribution: a single static Rust binary, `cargo install morinet`
+- 📦 Single static Rust binary — `cargo install --git ...` (crates.io lands in phase +11)
 
 ## Install
 
-> Phase 0: from this repo. Phase 8+: from `crates.io`.
+> From git until phase +11 publishes to crates.io.
 
 ```bash
 cargo install --git https://github.com/lejeunecedric/MoriNet morinet
@@ -59,13 +59,13 @@ morinet serve --config ./config.toml
 | 10 mcp | MCP StreamableHttp | ⬜ |
 | 11 polish | installer + README + release v1.0 | ⬜ |
 
-**Live**: https://morinet.treklair.fr — public demo instance (no real data; credentials not in this repo). **Handoff notes for agents**: [`.planning/HANDOFF.md`](.planning/HANDOFF.md).
+**Live**: [morinet.treklair.fr](https://morinet.treklair.fr) — public demo instance (no real data; credentials not in this repo). **Handoff notes for agents**: [`.planning/HANDOFF.md`](.planning/HANDOFF.md).
 
-See [`.planning/REQUIREMENTS.md`](.planning/REQUIREMENTS.md) for the 48 REQ-IDs catalog.
+See [`.planning/REQUIREMENTS.md`](.planning/REQUIREMENTS.md) for the 91 REQ-IDs catalog.
 
 ## Architecture & decisions
 
-All architectural decisions are tracked in [`.planning/STATE.md`](.planning/STATE.md) (AD-1 to AD-10) with rationale. Key points:
+All architectural decisions are tracked in [`.planning/STATE.md`](.planning/STATE.md) (AD-1 to AD-13) with rationale. Key points:
 
 - **Stack 100% Rust** (single-crate `morinet`)
 - **mdbook upstream** + a "mori" theme injected via `additional-css` / `additional-js` (no fork)
@@ -79,11 +79,7 @@ All architectural decisions are tracked in [`.planning/STATE.md`](.planning/STAT
 MIT OR Apache-2.0 — see [LICENSE](LICENSE).
 
 ## Credits
-Inspired by the works of Andrej Karpathy on LLM-Wiki
-https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
-Early phase development during the FRAMES IBC Accelerator project 
-https://show.ibc.org/ibc2026/accelerator-frames-federated-retrieval-agentic-media-environment-and-software-defined-workflows
-Inputs from the Reseau Intelligence de la Complexité AI workgroup
-https://www.intelligence-complexite.org
 
-
+- Inspired by the works of **Andrej Karpathy** on LLM-Wiki — [gist: llm-wiki.md](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
+- Early-phase development during the **FRAMES** IBC Accelerator project — [showcase: Federated Retrieval, Agentic Media Environment and Software-Defined Workflows](https://show.ibc.org/ibc2026/accelerator-frames-federated-retrieval-agentic-media-environment-and-software-defined-workflows)
+- Inputs from the **Réseau Intelligence de la Complexité** AI workgroup — [intelligence-complexite.org](https://www.intelligence-complexite.org)
