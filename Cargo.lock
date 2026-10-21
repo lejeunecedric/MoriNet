@@ -1111,6 +1111,7 @@ dependencies = [
  "lettre",
  "pretty_assertions",
  "serde",
+ "serde_json",
  "sha2",
  "sqlx",
  "subtle",

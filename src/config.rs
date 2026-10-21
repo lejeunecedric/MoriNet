@@ -105,6 +105,9 @@ pub struct RuntimeConfig {
     pub admin_password: String,
     /// Phase 5: outbound email config (empty = delivery disabled).
     pub smtp: SmtpConfig,
+    /// Root of the data directory. Phase 7: also the confinement root for the
+    /// admin directory picker — an admin must not be able to browse `/etc`.
+    pub data_dir: PathBuf,
     /// Directory containing the compiled mdbook (`book/`) to serve at `/vault/demo/`.
     pub vault_book_dir: Option<PathBuf>,
 }
@@ -147,6 +150,7 @@ pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Resu
         admin_email,
         admin_password,
         smtp: cfg.smtp,
+        data_dir: PathBuf::from(cfg.storage.data_dir),
         vault_book_dir,
     })
 }
