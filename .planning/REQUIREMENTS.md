@@ -51,6 +51,7 @@
 | REQ-ADMIN-004   | `GET /admin/vaults` page (table + add vault button)                 | HTML snapshot                     |
 | REQ-ADMIN-005   | `GET /admin/vaults/<slug>/perms` page (ACL editor)                   | HTML snapshot                     |
 | REQ-ADMIN-006   | `POST /admin/vaults/{create,delete,update-acl}` + tests              | integration                       |
+| REQ-ADMIN-007   | About button in admin UI: installed version + GitHub repo URL         | click → shows `morinet <version>` + repo link |
 
 ## EMAIL — SMTP
 
@@ -113,6 +114,7 @@
 | REQ-NAV-003    | An mdBook page shows a discreet close button (top-right) → back to /       | browser click-through                 |
 | REQ-NAV-004    | The Admin menu is rendered ONLY when role=admin                            | reader sees no admin entry            |
 | REQ-NAV-005    | Admin menu items: groups, users, global vaults                            | each page reachable                   |
+| REQ-NAV-006    | Admin nav distinguishes "My vaults" (landing) from "Vaults mgmt" (admin) — no ambiguous "Vaults" link | browser click-through |
 
 ## MCP — Model Context Protocol
 
@@ -194,3 +196,4 @@
 - Phase 8: REQ-MCP-001..007 (renumbered)
 - Phase 9: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
 - Phase 8b: REQ-OBSFMT-001..006 (converter llm-wiki/Obsidian → mdBook)
+- Phase 9 pull-forward (2026-10-21, feedback user) : REQ-ACC-003 (`POST /logout`), REQ-NAV-006 (nav claire), REQ-ADMIN-007 (bouton About version + repo)
