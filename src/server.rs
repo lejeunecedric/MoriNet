@@ -730,14 +730,10 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
         .flatten()
         .as_deref()
         == Some("admin");
-    let admin_menu = if is_admin {
-        r#"<details class="menu"><summary class="menu-btn menu-admin">&#9881; Admin <span class="caret">&#9662;</span></summary><div class="menu-body">
-<a href="/admin">Dashboard</a>
-<a href="/admin/users">Users</a>
-<a href="/admin/groups">Groups</a>
-<a href="/admin/vaults">Vaults mgmt</a>
-<a href="/admin/about">About</a>
-</div></details>"#
+    // The Admin control is a single entry point — the section links live in
+    // the tab bar on admin pages (no second copy of the same nav).
+    let admin_entry = if is_admin {
+        r#"<a class="menu-btn menu-admin" href="/admin">&#9881; Admin</a>"#
     } else {
         ""
     };
@@ -747,26 +743,42 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
         .next()
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_default();
+    // The email is only shown when it differs from the display name — a demo
+    // account like `admin`/`admin` would otherwise print the same string 4x.
+    let email_line = if claims.email != label {
+        format!(
+            r#"<span class="menu-email">{}</span>"#,
+            html_escape(&claims.email)
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<header class="mori-nav">
   <a class="brand" href="/"><span class="brand-mark">&#9638;</span> MoriNet</a>
   <nav>
-    {admin_menu}
-    <details class="menu"><summary class="menu-btn"><span class="avatar">{initial}</span> {label} <span class="caret">&#9662;</span></summary><div class="menu-body">
-<span class="menu-email">{email}</span>
-<form method="post" action="/account/name">
-  <label class="menu-label">Display name</label>
-  <input type="text" name="name" value="{label}" placeholder="display name" aria-label="display name">
-  <button type="submit">Save</button>
-</form>
-<form method="post" action="/logout"><button type="submit" class="btn-quiet">Log out</button></form>
-</div></details>
+    {admin_entry}
+    <details class="menu">
+      <summary class="menu-btn"><span class="avatar">{initial}</span> {label} <span class="caret">&#9662;</span></summary>
+      <div class="menu-body">
+        <div class="menu-identity"><strong>{label}</strong>{email_line}</div>
+        <hr class="menu-sep">
+        <form method="post" action="/account/name">
+          <label class="menu-label" for="display-name">Display name</label>
+          <div class="menu-row"><input id="display-name" type="text" name="name" value="{label}" placeholder="display name"><button type="submit">Save</button></div>
+        </form>
+        <hr class="menu-sep">
+        <form method="post" action="/logout"><button type="submit" class="btn-quiet">Log out</button></form>
+      </div>
+    </details>
   </nav>
-</header>"#,
-        admin_menu = admin_menu,
+</header>
+{menu_js}"#,
+        admin_entry = admin_entry,
         initial = html_escape(&initial),
         label = html_escape(&label),
-        email = html_escape(&claims.email),
+        email_line = email_line,
+        menu_js = MENU_JS,
     )
 }
 
@@ -1491,6 +1503,23 @@ const PICKER_JS: &str = r#"(function () {
     document.getElementById("dir-picker").showModal();
   };
 })();"#;
+
+/// Menu ergonomics: one open menu at a time, Escape/outside-click closes
+/// (native `<details>` does none of that on its own).
+const MENU_JS: &str = r#"<script>
+// menu-ergonomics: one open menu at a time; Escape or an outside click closes it.
+(function () {
+  var menus = function () { return Array.prototype.slice.call(document.querySelectorAll("details.menu")); };
+  document.addEventListener("click", function (e) {
+    menus().forEach(function (d) {
+      if (d.open && !d.contains(e.target)) d.removeAttribute("open");
+    });
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") menus().forEach(function (d) { d.removeAttribute("open"); });
+  });
+})();
+</script>"#;
 
 /// Inline script on the index: the "Name" field defaults to the repository
 /// directory name, live as the URL is typed or pasted. A name typed by hand is
@@ -2732,18 +2761,20 @@ mod tests {
         let body = to_bytes(res.into_body(), 65536).await.unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(
-            !text.contains("Vaults mgmt"),
-            "no admin menu for a reader: {text}"
-        );
-        assert!(
-            !text.contains("/admin/users"),
-            "no admin links for a reader: {text}"
+            !text.contains("href=\"/admin\""),
+            "no admin entry for a reader: {text}"
         );
         let cookie = admin_cookie(&app).await;
         let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
         let res = req(app, "GET", "/", headers, None).await;
         let body = to_bytes(res.into_body(), 65536).await.unwrap();
-        assert!(String::from_utf8_lossy(&body).contains("Vaults mgmt"));
+        let text = String::from_utf8_lossy(&body);
+        // The admin entry is a single link — the section links live in the tab
+        // bar on admin pages (no duplicated nav lists).
+        assert!(
+            text.contains("href=\"/admin\""),
+            "admin entry for an admin: {text}"
+        );
     }
 
     // ---------- Phase 7: server-side directory picker (REQ-UX-001) ----------
