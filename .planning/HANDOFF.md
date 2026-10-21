@@ -19,6 +19,7 @@ A Rust server that exposes Obsidian second brains as mdBook sites with multi-use
 | CI → Release (cargo-dist, 16 assets, 5 platforms) → Deploy → restart + healthcheck | every `git push origin v0.1.x` |
 | Styled UI (embedded CSS, dark mode) | `/assets/style.css` |
 | Email invitations (24h, single-use) + password reset (1h) — SMTP via `[smtp]`, degrades to temp-password flow when unset | `/invite/{token}`, `/reset`, `/reset/{token}` |
+| WebDAV: PROPFIND (depth 0/1) + GET + admin PUT on the vault **source** (markdown in, `mdbook build` out) | `/webdav/<slug>/` (HTTP Basic + same ACL) |
 
 **Deploy pipeline** (`.github/workflows/`): `ci.yml` (fmt+clippy+test+build), `release.yml` (cargo-dist — **NEVER hand-edit it**, drift check), `deploy.yml` (staging scp + atomic mv + `sudo systemctl restart morinet` + `/health`).
 
@@ -44,6 +45,20 @@ An import of *raw* Obsidian wikis (B3Wiki/ProgWiki, 128 .md without book.toml) w
 - A rejected short password does **not** consume the token.
 - Every generated page goes through `app_page()` (AD-12) — a raw `Html(body)` ships unstyled.
 
+## Phase 6 (WebDAV) — how it works
+
+- `src/webdav.rs` is pure logic (no axum); `src/server.rs` holds the handlers. Split keeps the XML/date/joining rules unit-testable.
+- Exposes the vault **source** dir = `book_path.parent()` (mdBook always writes `<src>/book`). PUT a `.md`, and `mdbook build` re-runs so the change goes live.
+- Auth: HTTP Basic against the same bcrypt users table, then the same per-vault ACL as the web UI. 401 carries `WWW-Authenticate: Basic realm=...`.
+- **PUT is admin-only** — readers get 403 even with an ACL grant. No MKCOL/DELETE (out of scope v1).
+- Paths are **percent-decoded before** the traversal check. Never parse-then-check with different normalizations.
+
+```bash
+curl -u admin@example.com:PASS -X PROPFIND http://localhost:8080/webdav/demo -H 'Depth: 1'
+curl -u admin@example.com:PASS http://localhost:8080/webdav/demo/src/note.md
+curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.md --data-binary '# hi'
+```
+
 ## Known pitfalls (all hit, all documented)
 
 1. **cargo-dist drift check**: NEVER hand-edit `.github/workflows/release.yml` — CI fails. Generate via `~/.cargo/bin/dist` (installed as `dist`, not a cargo subcommand). Put custom logic in separate workflows.
@@ -56,6 +71,9 @@ An import of *raw* Obsidian wikis (B3Wiki/ProgWiki, 128 .md without book.toml) w
 8. **The patch tool's linter has no Cargo edition** → dozens of fake `E0670 async fn is not permitted in Rust 2015`. Ignore them; `cargo clippy` is the source of truth.
 9. **lettre 0.11**: HTML bodies use `SinglePart::html(..).singlepart(..)`. `MessagePart` no longer exists, and `.multipart(..)` is wrong for a single HTML part.
 10. **Green tests do not mean a styled UI.** A full browser pass is required for server-rendered HTML (see AD-12).
+11. **WebDAV routes need `any(handler)`, not `get(handler)`** — otherwise PROPFIND/PUT get the router's 405 before the handler runs.
+12. **Decode the URL path before splitting it.** `%2f` hiding a separator let a `PUT ..%2fescaped.md` through (201 + literal file). Caught by curl, not by the 96 green unit tests.
+13. **A hand-rolled HTTP date formatter will be wrong** — the epoch was a Thursday, so `days % 7` misses by 4. Verified against a reference.
 
 ## What's left (ROADMAP)
 
@@ -68,7 +86,8 @@ Ops open items: vops owns holldemo provisioning (systemd unit with env creds, ng
 
 ## Testing conventions
 
-- TDD strict, `cargo test` (72 tests green at handoff), clippy `-D warnings`, fmt.
+- TDD strict, `cargo test` (102 tests green at handoff), clippy `-D warnings`, fmt.
 - sqlite fixtures: `Store::connect_memory()`, bcrypt cost default (tests take ~15-25s, that's normal).
 - e2e via `tower::ServiceExt::oneshot` on the Router — no network.
 - UI verification: run `morinet serve` on :8099 with a throwaway config, then drive Chromium — click the real buttons, follow the real links, screenshot each page. Two unstyled-page bugs were only findable this way.
+- API verification: `curl -X PROPFIND` against the running server (the roadmap also suggests a `cadaver` walkthrough). This is how the percent-encoded traversal hole was found — unit tests were green.
