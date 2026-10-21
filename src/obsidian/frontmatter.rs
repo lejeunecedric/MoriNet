@@ -45,6 +45,11 @@ impl Frontmatter {
         self.scalar("title")
     }
 
+    /// SCHEMA.md `type:` — entity | concept | comparison | query | summary.
+    pub fn page_type(&self) -> Option<&str> {
+        self.scalar("type")
+    }
+
     /// SCHEMA.md: optional `contested: true` marks unresolved contradictions.
     pub fn is_contested(&self) -> bool {
         self.scalar("contested") == Some("true")
