@@ -71,3 +71,5 @@ em { color: #666; }
   button { background: #0b57d0; }
   button:hover { background: #3a7ae8; }
 }
+
+.vault-warn{color:#e33;font-style:normal;font-size:.85rem}

@@ -15,22 +15,31 @@ pub trait VaultSource: Send + Sync {
     /// Bring the local copy up to date and return the book-source directory.
     fn sync(&self) -> anyhow::Result<PathBuf>;
 
-    /// Run `mdbook build` on the synced directory when mdbook is available.
-    /// Returns the compiled book directory (`<src>/book`).
-    fn build(&self, src_dir: &Path) -> anyhow::Result<PathBuf> {
-        let book = src_dir.join("book");
-        let has_book_toml = src_dir.join("book.toml").is_file();
-        let already_compiled = book.join("index.html").is_file();
-        if !has_book_toml {
-            // Nothing to build (plain static dir) — accept it as-is.
-            return Ok(src_dir.to_path_buf());
-        }
-        if already_compiled {
+    /// Bring the vault to a servable compiled book (Phase 8b, decisions
+    /// D2/AD-14 — dispatch on `obsidian::detect`):
+    /// - `Native` (book.toml or src/SUMMARY.md): `mdbook build <src>` → `<src>/book`.
+    /// - `LlmWiki` (llm-wiki/Obsidian vault): convert into `<src>/.morinet-build/`
+    ///   first, then build that tree → `<src>/.morinet-build/book`. Always
+    ///   re-converted — links, SUMMARY and meta must reflect the latest sync.
+    /// - `Neither` (matching neither format): registered as-is; the caller is
+    ///   responsible for surfacing the admin warning (PRD-6).
+    fn build(&self, src_dir: &Path, vault_name: &str) -> anyhow::Result<PathBuf> {
+        use crate::obsidian::convert::{convert, detect, VaultFormat};
+        let format = detect(src_dir);
+        let build_dir = match format {
+            VaultFormat::LlmWiki => convert(src_dir, vault_name)?.build_dir,
+            VaultFormat::Native => src_dir.to_path_buf(),
+            VaultFormat::Neither => return Ok(src_dir.to_path_buf()),
+        };
+        let book = build_dir.join("book");
+        // Native books keep the legacy skip-when-compiled fast path; llm-wiki
+        // books are rebuilt on every sync (freshness is the point, D5).
+        if matches!(format, VaultFormat::Native) && book.join("index.html").is_file() {
             return Ok(book);
         }
         match std::process::Command::new("mdbook")
             .arg("build")
-            .arg(src_dir)
+            .arg(&build_dir)
             .output()
         {
             Ok(out) if out.status.success() => Ok(book),
@@ -188,11 +197,11 @@ mod tests {
     }
 
     #[test]
-    fn build_skips_dirs_without_book_toml() {
+    fn build_serves_neither_format_dir_as_is() {
         let dir = tmp("build-plain");
         let src = LocalSource { path: dir.clone() };
-        let out = src.build(&dir).unwrap();
-        assert_eq!(out, dir, "no book.toml → serve as-is");
+        let out = src.build(&dir, "Plain").unwrap();
+        assert_eq!(out, dir, "matches no format → serve as-is (admin warns)");
     }
 
     #[test]
@@ -202,7 +211,35 @@ mod tests {
         std::fs::create_dir_all(dir.join("book")).unwrap();
         std::fs::write(dir.join("book").join("index.html"), "<html></html>").unwrap();
         let src = LocalSource { path: dir.clone() };
-        assert_eq!(src.build(&dir).unwrap(), dir.join("book"));
+        assert_eq!(src.build(&dir, "T").unwrap(), dir.join("book"));
+    }
+
+    #[test]
+    fn build_converts_llm_wiki_before_building() {
+        // The wiring that makes phase 8b real: a wiki dir (no book.toml) goes
+        // through convert(), NOT the legacy static fallback. Asserted on the
+        // conversion artifacts so it passes whether or not mdbook is installed.
+        let dir = tmp("build-llmwiki");
+        std::fs::write(
+            dir.join("index.md"),
+            "---\ntitle: Home\n---\n\n# Home\n\n[[x]]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("concepts")).unwrap();
+        std::fs::write(
+            dir.join("concepts/x.md"),
+            "---\ntitle: X\ntype: concept\n---\n\nConcept.\n",
+        )
+        .unwrap();
+        let src = LocalSource { path: dir.clone() };
+        let book = src.build(&dir, "My Wiki").unwrap();
+        assert_eq!(book, dir.join(".morinet-build").join("book"));
+        let build = dir.join(".morinet-build");
+        assert!(build.join("book.toml").is_file(), "convert ran");
+        let summary = std::fs::read_to_string(build.join("src/SUMMARY.md")).unwrap();
+        assert!(summary.contains("[Home](index.md)"));
+        let x = std::fs::read_to_string(build.join("src/concepts/x.md")).unwrap();
+        assert!(x.contains("note-type"), "meta block applied");
     }
 
     #[test]
