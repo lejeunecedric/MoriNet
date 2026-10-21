@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MoriNet — Vaults &amp; accès</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617; min-height: 100vh; padding: 2rem; color: white;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5); border-radius: 1rem;
+      border: 1px solid #1e293b; padding: 1.5rem; overflow-x: auto;
+    }
+    svg { width: 100%; min-width: 1000px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15, 23, 42, 0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card-dot.orange { background: #fb923c; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .card li b { color: #e2e8f0; font-weight: 600; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>MoriNet — Vaults &amp; accès</h1>
+      </div>
+      <p class="subtitle">Schéma relationnel réel + qui accède à quoi · v0.1.7</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 720">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowrose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <marker id="arrowviolet" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa" />
+          </marker>
+          <marker id="arrowamber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ============ BOUNDARY: the MoriNet process ============ -->
+        <rect x="150" y="40" width="820" height="480" rx="12" fill="rgba(251,191,36,0.04)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="162" y="58" fill="#fbbf24" font-size="10" font-weight="600">MoriNet — binaire Rust (axum, :8080)</text>
+
+        <!-- ============ ARROWS (drawn first, behind boxes) ============ -->
+
+        <!-- Client -> routes -->
+        <line x1="130" y1="150" x2="188" y2="150" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="159" y="144" fill="#94a3b8" font-size="8" text-anchor="middle">HTTPS</text>
+
+        <!-- web UI -> ACL check -->
+        <line x1="300" y1="182" x2="300" y2="245" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- webdav -> ACL check -->
+        <path d="M 430 205 L 430 245" fill="none" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- browse -> filesystem (no ACL row check, admin gate only) -->
+        <path d="M 540 205 L 540 300" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowrose)"/>
+
+        <!-- ACL check -> store -->
+        <line x1="420" y1="278" x2="620" y2="278" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowviolet)"/>
+        <text x="520" y="272" fill="#94a3b8" font-size="8" text-anchor="middle">vault_acl</text>
+
+        <!-- store -> filesystem -->
+        <line x1="760" y1="310" x2="760" y2="360" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowamber)"/>
+
+        <!-- admin manage vault -->
+        <line x1="240" y1="350" x2="240" y2="300" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="230" y="325" fill="#34d399" font-size="8" text-anchor="end">grant/revoke</text>
+
+        <!-- ============ COMPONENTS ============ -->
+
+        <!-- Client -->
+        <rect x="30" y="120" width="100" height="60" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="80" y="145" fill="white" font-size="11" font-weight="600" text-anchor="middle">Client</text>
+        <text x="80" y="161" fill="#94a3b8" font-size="9" text-anchor="middle">navigateur</text>
+        <text x="80" y="174" fill="#94a3b8" font-size="8" text-anchor="middle">WebDAV · curl</text>
+
+        <!-- Web UI routes -->
+        <rect x="188" y="120" width="112" height="62" rx="6" fill="#0f172a"/>
+        <rect x="188" y="120" width="112" height="62" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="244" y="140" fill="white" font-size="11" font-weight="600" text-anchor="middle">UI Web</text>
+        <text x="244" y="155" fill="#94a3b8" font-size="8" text-anchor="middle">/  /login  /vault/&lt;slug&gt;</text>
+        <text x="244" y="170" fill="#22d3ee" font-size="7" text-anchor="middle">cookie HMAC HttpOnly</text>
+
+        <!-- WebDAV routes -->
+        <rect x="374" y="120" width="112" height="62" rx="6" fill="#0f172a"/>
+        <rect x="374" y="120" width="112" height="62" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="430" y="140" fill="white" font-size="11" font-weight="600" text-anchor="middle">WebDAV</text>
+        <text x="430" y="155" fill="#94a3b8" font-size="8" text-anchor="middle">/webdav/&lt;slug&gt;/</text>
+        <text x="430" y="170" fill="#fb923c" font-size="7" text-anchor="middle">PROPFIND · GET · PUT</text>
+
+        <!-- Admin/browse -->
+        <rect x="488" y="120" width="104" height="62" rx="6" fill="#0f172a"/>
+        <rect x="488" y="120" width="104" height="62" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="540" y="140" fill="white" font-size="11" font-weight="600" text-anchor="middle">Admin</text>
+        <text x="540" y="155" fill="#94a3b8" font-size="8" text-anchor="middle">/admin/*  /admin/browse</text>
+        <text x="540" y="170" fill="#fb7185" font-size="7" text-anchor="middle">role = admin</text>
+
+        <!-- ACL gate -->
+        <rect x="188" y="245" width="232" height="66" rx="8" fill="#0f172a"/>
+        <rect x="188" y="245" width="232" height="66" rx="8" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="304" y="266" fill="white" font-size="11" font-weight="600" text-anchor="middle">Contrôle d'accès — acl_allows()</text>
+        <text x="304" y="281" fill="#94a3b8" font-size="8" text-anchor="middle">admin → tous les vaults  |  reader → ACL requise</text>
+        <text x="304" y="298" fill="#34d399" font-size="8" text-anchor="middle">appliqué à CHAQUE lecture (web, WebDAV)</text>
+
+        <!-- Vault management -->
+        <rect x="168" y="350" width="144" height="76" rx="8" fill="#0f172a"/>
+        <rect x="168" y="350" width="144" height="76" rx="8" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="240" y="370" fill="white" font-size="11" font-weight="600" text-anchor="middle">Gestion vaults</text>
+        <text x="240" y="385" fill="#94a3b8" font-size="8" text-anchor="middle">/admin/vaults</text>
+        <text x="240" y="398" fill="#94a3b8" font-size="8" text-anchor="middle">créer · supprimer</text>
+        <text x="240" y="411" fill="#34d399" font-size="7" text-anchor="middle">browse (T1 livré)</text>
+
+        <!-- SQLite -->
+        <rect x="620" y="245" width="150" height="130" rx="8" fill="#0f172a"/>
+        <rect x="620" y="245" width="150" height="130" rx="8" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="695" y="266" fill="white" font-size="11" font-weight="600" text-anchor="middle">SQLite</text>
+        <text x="695" y="280" fill="#94a3b8" font-size="8" text-anchor="middle">data/morinet.db</text>
+
+        <!-- users table -->
+        <rect x="632" y="290" width="126" height="26" rx="4" fill="rgba(76,29,149,0.6)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="695" y="307" fill="#c4b5fd" font-size="9" font-weight="500" text-anchor="middle">users</text>
+
+        <!-- vaults table -->
+        <rect x="632" y="320" width="126" height="26" rx="4" fill="rgba(76,29,149,0.6)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="695" y="337" fill="#c4b5fd" font-size="9" font-weight="500" text-anchor="middle">vaults</text>
+
+        <!-- acl table -->
+        <rect x="632" y="348" width="126" height="22" rx="4" fill="rgba(251,191,36,0.35)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="695" y="363" fill="#fcd34d" font-size="9" font-weight="600" text-anchor="middle">vault_acl  ★ pivot</text>
+
+        <!-- Filesystem -->
+        <rect x="430" y="360" width="500" height="140" rx="10" fill="rgba(120,53,15,0.12)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="6,4"/>
+        <text x="444" y="380" fill="#fbbf24" font-size="10" font-weight="600">Filesystem serveur — un vault = un dossier</text>
+
+        <!-- vault A -->
+        <rect x="450" y="392" width="140" height="94" rx="6" fill="#0f172a"/>
+        <rect x="450" y="392" width="140" height="94" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="520" y="410" fill="white" font-size="10" font-weight="600" text-anchor="middle">vault « notes »</text>
+        <text x="520" y="425" fill="#94a3b8" font-size="8" text-anchor="middle">book.toml + src/*.md</text>
+        <text x="520" y="440" fill="#22d3ee" font-size="8" text-anchor="middle">mdbook build</text>
+        <rect x="466" y="450" width="108" height="24" rx="4" fill="rgba(8,51,68,0.7)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="520" y="466" fill="#a5f3fc" font-size="8" text-anchor="middle">book/  ← book_path</text>
+
+        <!-- vault B -->
+        <rect x="610" y="392" width="140" height="94" rx="6" fill="#0f172a"/>
+        <rect x="610" y="392" width="140" height="94" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="680" y="410" fill="white" font-size="10" font-weight="600" text-anchor="middle">vault « wiki »</text>
+        <text x="680" y="425" fill="#94a3b8" font-size="8" text-anchor="middle">clone git2 + build</text>
+        <text x="680" y="440" fill="#22d3ee" font-size="8" text-anchor="middle">re-sync 5 min</text>
+        <rect x="626" y="450" width="108" height="24" rx="4" fill="rgba(8,51,68,0.7)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="680" y="466" fill="#a5f3fc" font-size="8" text-anchor="middle">book/  ← book_path</text>
+
+        <!-- vault C -->
+        <rect x="770" y="392" width="140" height="94" rx="6" fill="#0f172a"/>
+        <rect x="770" y="392" width="140" height="94" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="840" y="410" fill="white" font-size="10" font-weight="600" text-anchor="middle">vault « archive »</text>
+        <text x="840" y="425" fill="#94a3b8" font-size="8" text-anchor="middle">dossier choisi au browse</text>
+        <text x="840" y="440" fill="#22d3ee" font-size="8" text-anchor="middle">confiné à data_dir</text>
+        <rect x="786" y="450" width="108" height="24" rx="4" fill="rgba(8,51,68,0.7)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="840" y="466" fill="#a5f3fc" font-size="8" text-anchor="middle">book/  ← book_path</text>
+
+        <!-- ============ PHASE 8 : future fusion ============ -->
+        <rect x="150" y="545" width="820" height="140" rx="12" fill="rgba(34,211,238,0.05)" stroke="#22d3ee" stroke-width="1" stroke-dasharray="6,4"/>
+        <text x="164" y="566" fill="#22d3ee" font-size="10" font-weight="600">PHASE 8 — evolution planifiée : livre fusionné par utilisateur</text>
+        <text x="164" y="582" fill="#64748b" font-size="8">pas encore implémenté — aujourd'hui chaque vault est son propre mdbook</text>
+
+        <!-- future users -->
+        <rect x="180" y="596" width="110" height="56" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="235" y="618" fill="white" font-size="10" font-weight="600" text-anchor="middle">user A</text>
+        <text x="235" y="632" fill="#94a3b8" font-size="8" text-anchor="middle">notes + wiki</text>
+        <text x="235" y="645" fill="#64748b" font-size="7" text-anchor="middle">selon son ACL</text>
+
+        <rect x="310" y="596" width="110" height="56" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="365" y="618" fill="white" font-size="10" font-weight="600" text-anchor="middle">user B</text>
+        <text x="365" y="632" fill="#94a3b8" font-size="8" text-anchor="middle">notes seul</text>
+        <text x="365" y="645" fill="#64748b" font-size="7" text-anchor="middle">selon son ACL</text>
+
+        <!-- merged books -->
+        <path d="M 292 636 L 472 636" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 422 636 L 472 636" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="382" y="686" fill="#22d3ee" font-size="7" text-anchor="middle">build + cache sur disque</text>
+
+        <rect x="480" y="592" width="190" height="64" rx="6" fill="#0f172a"/>
+        <rect x="480" y="592" width="190" height="64" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="575" y="612" fill="white" font-size="10" font-weight="600" text-anchor="middle">books/A/  — fusionné</text>
+        <text x="575" y="627" fill="#94a3b8" font-size="8" text-anchor="middle">SUMMARY regroupé par vault</text>
+        <text x="575" y="644" fill="#34d399" font-size="7" text-anchor="middle">archive absent (pas d'ACL)</text>
+
+        <rect x="690" y="592" width="190" height="64" rx="6" fill="#0f172a"/>
+        <rect x="690" y="592" width="190" height="64" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="785" y="612" fill="white" font-size="10" font-weight="600" text-anchor="middle">books/B/  — fusionné</text>
+        <text x="785" y="627" fill="#94a3b8" font-size="8" text-anchor="middle">SUMMARY regroupé par vault</text>
+        <text x="785" y="644" fill="#34d399" font-size="7" text-anchor="middle">wiki absent (pas d'ACL)</text>
+
+        <!-- ============ LEGEND (outside all boundaries) ============ -->
+        <text x="790" y="72" fill="white" font-size="10" font-weight="600">Légende</text>
+
+        <rect x="790" y="82" width="16" height="10" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="812" y="90" fill="#94a3b8" font-size="8">UI / vault</text>
+
+        <rect x="790" y="98" width="16" height="10" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="812" y="106" fill="#94a3b8" font-size="8">contrôle d'accès</text>
+
+        <rect x="790" y="114" width="16" height="10" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="812" y="122" fill="#94a3b8" font-size="8">données SQLite</text>
+
+        <rect x="790" y="130" width="16" height="10" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="812" y="138" fill="#94a3b8" font-size="8">filesystem</text>
+
+        <rect x="790" y="146" width="16" height="10" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="812" y="154" fill="#94a3b8" font-size="8">admin uniquement</text>
+
+        <rect x="790" y="162" width="16" height="10" rx="2" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1"/>
+        <text x="812" y="170" fill="#94a3b8" font-size="8">WebDAV</text>
+
+        <line x1="790" y1="184" x2="806" y2="184" stroke="#fb7185" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="812" y="187" fill="#94a3b8" font-size="8">flux non-ACL</text>
+
+        <rect x="790" y="194" width="16" height="10" rx="2" fill="transparent" stroke="#22d3ee" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="812" y="202" fill="#94a3b8" font-size="8">à venir (P8)</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>Les trois tables</h3>
+        </div>
+        <ul>
+          <li>• <b>users</b> — email UNIQUE, password_hash (bcrypt), role <b>CHECK IN ('admin','reader')</b></li>
+          <li>• <b>vaults</b> — slug UNIQUE, name, book_path (le dossier <b>book/</b> compilé)</li>
+          <li>• <b>vault_acl</b> — table pivot (vault_id, user_id), PK composite, <b>CASCADE</b> des deux côtés</li>
+          <li>• <b>vaults</b> ne contient <b>aucun</b> champ de source : le type (local/github) est dans config.toml</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>Règle d'accès</h3>
+        </div>
+        <ul>
+          <li>• <b>admin</b> → voit et accède à <b>tous</b> les vaults, sans ligne ACL</li>
+          <li>• <b>reader</b> → seulement ceux avec une ligne dans <b>vault_acl</b></li>
+          <li>• Le contrôle est appelé sur <b>chaque</b> lecture : UI web ET WebDAV</li>
+          <li>• <b>PUT WebDAV = admin uniquement</b>, même avec une ACL accordée</li>
+          <li>• <b>/admin/browse</b> = admin, et confiné à <b>data_dir</b> (403 si on sort)</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot cyan"></div>
+          <h3>Vault : cycle de vie</h3>
+        </div>
+        <ul>
+          <li>• Source <b>local</b> : dossier existant, build immédiat</li>
+          <li>• Source <b>github</b> : clone git2, re-sync + rebuild toutes les 5 min</li>
+          <li>• <b>Contrat vault</b> = <b>book.toml</b> + <b>src/SUMMARY.md</b> (mdBook natif)</li>
+          <li>• <b>book_path</b> pointe vers <b>book/</b> — WebDAV expose le parent (= la source)</li>
+          <li>• Supprimer un vault → <b>CASCADE</b> efface ses lignes ACL</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot rose"></div>
+          <h3>Authentification</h3>
+        </div>
+        <ul>
+          <li>• <b>Web</b> : cookie HMAC HttpOnly, 24 h, signature en temps constant</li>
+          <li>• <b>WebDAV</b> : HTTP Basic sur la <b>même</b> table bcrypt</li>
+          <li>• <b>Email</b> : tokens sha256, single-use (invitation 24 h, reset 1 h)</li>
+          <li>• Admin créé au boot via <b>MORINET_ADMIN_EMAIL/PASSWORD</b></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>Ce qui change en Phase 8</h3>
+        </div>
+        <ul>
+          <li>• Aujourd'hui : <b>1 vault = 1 mdbook</b>, servi sur <b>/vault/&lt;slug&gt;/</b></li>
+          <li>• Demain : <b>1 livre par user</b>, fusionné, cache sur disque</li>
+          <li>• La source de vérité reste <b>vault_acl</b> — seul le rendu change</li>
+          <li>• Un vault révoqué disparaît du livre au build suivant</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot orange"></div>
+          <h3>Invariant de sécurité</h3>
+        </div>
+        <ul>
+          <li>• Aucun vault non-autorisé ne doit apparaître dans un livre</li>
+          <li>• Le chemin client est <b>désencodé une seule fois</b>, avant tout contrôle</li>
+          <li>• Sortir de la racine = <b>refusé</b>, jamais silencieusement ramené</li>
+          <li>• Ce sont des propriétés <b>testées</b>, pas des conventions</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      MoriNet v0.1.7 • schéma dérivé de migrations/0001..0003 et de src/store.rs • 125 tests
+    </p>
+  </div>
+</body>
+</html>
