@@ -105,15 +105,12 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 
 ## What's left (ROADMAP)
 
-**In flight now (Phase 8 — access-model, ~60% done)**
+**Phase 8b (obsidian-format) — DONE, shipped in v0.1.8.** The vault contract
+changed: a vault is now an **llm-wiki/Obsidian directory** (see "Vault
+contract" above), converted in-pipeline. mdBook-native repos still work.
+The two real-mdBook-0.5 bugs are recorded as pitfall #19.
 
-Done and committed:
-- `migrations/0004_groups.sql` — `groups`, `group_members`, `vault_group_acl(vault, group, role)`, `vaults.scope`/`owner_id`, `users.display_name`
-- Store layer: `access_for()`, `accessible_vaults()`, `create_personal_vault()`, group CRUD, `set/clear_vault_group_role()`
-- Admin UI: `/admin/groups` (members, rename, delete), `/admin/vaults/<slug>/perms` (per-group read/write/no-access)
-- **All read/write paths rewired** to `access_for()` / `accessible_vaults()` — the legacy `vault_acl` is no longer the source of truth
-
-Still to do:
+**Still open in the access model (Phase 8, ~60 %)**
 - UI to create a **personal** vault (the store method exists; no screen yet)
 - "My vaults" / "Shared with me" sections exist on the index but there is no **nav shell** yet (Phase 9)
 
