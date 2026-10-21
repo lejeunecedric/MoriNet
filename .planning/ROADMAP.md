@@ -19,7 +19,7 @@
 | 04   | **admin-ui**      | Admin page: invite users, reset passwords, manage vaults + perms                         | REQ-ADMIN-*            | ✅ done (v0.1.4+) |
 | 05   | **email**         | SMTP adapter + email invitations + password reset                                        | REQ-EMAIL-*            | ✅ done |
 | 06   | **webdav**        | WebDAV endpoints on vaults (same creds), browse + read                                    | REQ-WEBDAV-*           | ✅ done |
-| 07   | **vault-ux**      | Vault management UX: server-side directory picker for local vaults, URL field for GitHub   | REQ-UX-*               | ⬜ next |
+| 07   | **vault-ux**      | Vault management UX: server-side dir picker, browser-side import, URL field for GitHub   | REQ-UX-*               | ⬜ next |
 | 08   | **mcp**           | MCP StreamableHttp on `/mcp`, list/read/search tools                                      | REQ-MCP-*              | ⬜ |
 | +09  | **polish**        | Clean one-line installer, full README, badges, Release v1.0                              | REQ-OPS-*              | ⬜ |
 
@@ -115,6 +115,7 @@
 
 **Criteria**:
 - `GET /admin/browse?path=<dir>` → JSON `{ current, parent, dirs[] }` (admin only)
+- **Import**: a browser-side folder picker (`<input type=file webkitdirectory>`) uploads the selected files into the server-side vault chosen by the picker — the browser path is never trusted as a server path
 - The "Add vault" form hides the path field behind a **Browse** button when `kind=local`
 - Clicking a directory descends into it; "up" walks to the parent; a breadcrumb shows the current path
 - Selecting a folder closes the modal and fills the path field
