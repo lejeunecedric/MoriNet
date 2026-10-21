@@ -8,6 +8,7 @@
 //!
 //! Decisions locked 2026-10-21: see `.planning/phases/08b-obsidian-format/`.
 
+pub mod convert;
 pub mod frontmatter;
 pub mod links;
 pub mod tree;
