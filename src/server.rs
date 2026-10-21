@@ -153,6 +153,7 @@ pub fn build_router_with_email(
     let protected = Router::new()
         .route("/", get(index))
         .route("/logout", post(logout))
+        .route("/account", get(account_page))
         .route("/account/name", post(set_account_name))
         .route("/vaults/create", post(load_personal_vault))
         .route("/vaults/{slug}/delete", post(delete_my_vault))
@@ -373,7 +374,7 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     let mut global_items = String::new();
     for a in &accessible {
         let mut line = format!(
-            r#"<li><a href="/vault/{}/">{}</a> <small>({})</small>"#,
+            r#"<li><a class="vault-name" href="/vault/{}/">{}</a> <small>({})</small><span class="vault-actions">"#,
             html_escape(&a.vault.slug),
             html_escape(&a.vault.name),
             if a.personal {
@@ -384,13 +385,14 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
         );
         if a.personal {
             // The owner manages their own vault: pull upstream updates or
-            // remove it (which frees the quota slot).
+            // remove it (which frees the quota slot). Quiet buttons — the
+            // accent is reserved for the one primary action on the page.
             line.push_str(&format!(
-                r#" <form method="post" action="/vaults/{s}/refresh" style="display:inline"><button type="submit">Refresh</button></form> <form method="post" action="/vaults/{s}/delete" style="display:inline" onsubmit="return confirm('Remove this vault from your collection?')"><button type="submit">Delete</button></form>"#,
+                r#"<form method="post" action="/vaults/{s}/refresh"><button type="submit" class="btn-ghost">Refresh</button></form><form method="post" action="/vaults/{s}/delete" onsubmit="return confirm('Remove this vault from your collection?')"><button type="submit" class="btn-quiet">Delete</button></form>"#,
                 s = html_escape(&a.vault.slug),
             ));
         }
-        line.push_str("</li>\n");
+        line.push_str("</span></li>\n");
         if a.personal {
             personal_items.push_str(&line);
         } else {
@@ -401,20 +403,27 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     // admin link here (the old paragraph was redundant with it).
     // "My vaults" is always rendered: the load form is how a user with no
     // vault yet (e.g. the demo account) loads one (REQ-VLT-005).
+    // The page title heads the list — no second "My vaults" heading inside a
+    // panel (it read as the page repeating itself).
     let personal_section = format!(
-        "<section class=\"panel\">\n<h2>My vaults</h2>\n{list}\n</section>\n<section class=\"panel\">\n<h2>Load a vault</h2>\n<form method=\"post\" action=\"/vaults/create\" class=\"stacked\">\n  <div class=\"field\"><label for=\"lv-name\">Name</label><input id=\"lv-name\" type=\"text\" name=\"name\" placeholder=\"e.g. My Wiki\"></div>\n  <div class=\"field field-wide\"><label for=\"lv-url\">GitHub URL</label><input id=\"lv-url\" type=\"url\" name=\"url\" required placeholder=\"https://github.com/owner/repo\"></div>\n  <div class=\"field\"><label for=\"lv-token\">Token <small>(optional)</small></label><input id=\"lv-token\" type=\"text\" name=\"token\" placeholder=\"private repos only\"></div>\n  <button type=\"submit\">Load vault</button>\n</form>\n{autofill}\n</section>\n",
+        "<section class=\"panel\">\n{list}\n</section>\n<section class=\"panel\">\n<h2>Load a vault</h2>\n<form method=\"post\" action=\"/vaults/create\" class=\"stacked\">\n  <div class=\"field\"><label for=\"lv-name\">Name</label><input id=\"lv-name\" type=\"text\" name=\"name\" placeholder=\"e.g. My Wiki\"></div>\n  <div class=\"field field-wide\"><label for=\"lv-url\">GitHub URL</label><input id=\"lv-url\" type=\"url\" name=\"url\" required placeholder=\"https://github.com/owner/repo\"></div>\n  <div class=\"field\"><label for=\"lv-token\">Token <small>(optional)</small></label><input id=\"lv-token\" type=\"text\" name=\"token\" placeholder=\"private repos only\"></div>\n  <button type=\"submit\">Load vault</button>\n</form>\n{autofill}\n</section>\n",
         list = if personal_items.is_empty() {
             "<p class=\"empty\">No personal vaults yet.</p>".to_string()
         } else {
-            format!("<ul>{personal_items}</ul>")
+            format!("<ul class=\"vault-list\">{personal_items}</ul>")
         },
         autofill = AUTOFILL_NAME_JS,
     );
-    let global_section = if global_items.is_empty() {
-        "<p class=\"empty\">No shared vaults yet.</p>".to_string()
-    } else {
-        format!("<h2>Shared with me</h2>\n<ul>{global_items}</ul>")
-    };
+    // "Shared with me" is always a real section (heading + content) — the old
+    // empty case dropped a bare paragraph with no heading below the page.
+    let global_section = format!(
+        "<section class=\"panel\">\n<h2>Shared with me</h2>\n{shared}\n</section>\n",
+        shared = if global_items.is_empty() {
+            "<p class=\"empty\">No shared vaults yet.</p>".to_string()
+        } else {
+            format!("<ul class=\"vault-list\">{global_items}</ul>")
+        },
+    );
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -730,10 +739,12 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
         .flatten()
         .as_deref()
         == Some("admin");
-    // The Admin control is a single entry point — the section links live in
-    // the tab bar on admin pages (no second copy of the same nav).
+    // ONE header control: the account menu carries the Admin entry too. The
+    // section links live in the tab bar on admin pages — a separate Admin pill
+    // next to a menu that says "admin" read as two admin buttons (clutter).
     let admin_entry = if is_admin {
-        r#"<a class="menu-btn menu-admin" href="/admin">&#9881; Admin</a>"#
+        r#"<hr class="menu-sep">
+        <a class="menu-link menu-admin" href="/admin">&#9881; Admin</a>"#
     } else {
         ""
     };
@@ -757,18 +768,13 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
         r#"<header class="mori-nav">
   <a class="brand" href="/"><span class="brand-mark">&#9638;</span> MoriNet</a>
   <nav>
-    {admin_entry}
     <details class="menu">
       <summary class="menu-btn"><span class="avatar">{initial}</span> {label} <span class="caret">&#9662;</span></summary>
       <div class="menu-body">
-        <div class="menu-identity"><strong>{label}</strong>{email_line}</div>
+        <a class="menu-identity" href="/account"><strong>{label}</strong>{email_line}<span class="menu-edit">&#9998; Edit display name</span></a>
+        {admin_entry}
         <hr class="menu-sep">
-        <form method="post" action="/account/name">
-          <label class="menu-label" for="display-name">Display name</label>
-          <div class="menu-row"><input id="display-name" type="text" name="name" value="{label}" placeholder="display name"><button type="submit">Save</button></div>
-        </form>
-        <hr class="menu-sep">
-        <form method="post" action="/logout"><button type="submit" class="btn-quiet">Log out</button></form>
+        <form method="post" action="/logout"><button type="submit" class="btn-ghost">Log out</button></form>
       </div>
     </details>
   </nav>
@@ -780,6 +786,45 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
         email_line = email_line,
         menu_js = MENU_JS,
     )
+}
+
+/// `GET /account` — the account page: identity + display-name editing
+/// (REQ-NAV-002). The rename form lives here, not inside the header dropdown:
+/// a menu is for navigation, a form is editing (anti-clutter).
+async fn account_page(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
+    let display = state
+        .store
+        .display_name_for(&claims.email)
+        .await
+        .ok()
+        .flatten();
+    let label = display.unwrap_or_else(|| claims.email.clone());
+    let header = account_menu(&state, &claims).await;
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>MoriNet — Account</title>
+<link rel="stylesheet" href="/assets/style.css"></head>
+<body>
+  {header}
+  <h1 class="page-title">Account</h1>
+  <section class="panel">
+    <h2>Profile</h2>
+    <p><strong>{label}</strong><br><small>{email}</small></p>
+    <form method="post" action="/account/name" class="stacked">
+      <div class="field field-wide"><label for="display-name">Display name</label><input id="display-name" type="text" name="name" value="{label}" placeholder="display name"></div>
+      <button type="submit">Save</button>
+    </form>
+  </section>
+</body>
+</html>"#,
+        label = html_escape(&label),
+        email = html_escape(&claims.email),
+    ))
+    .into_response()
 }
 
 /// `POST /account/name` — the signed-in user renames themselves (REQ-NAV-002).
@@ -2702,16 +2747,25 @@ mod tests {
             .unwrap();
         let cookie = admin_cookie(&app).await;
         let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
-        let res = req(app, "GET", "/", headers, None).await;
+        let res = req(app.clone(), "GET", "/", headers, None).await;
         let body = to_bytes(res.into_body(), 65536).await.unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("Cédric"), "display name shown: {text}");
         assert!(text.contains("admin@example.com"), "email shown: {text}");
         assert!(
-            text.contains("action=\"/account/name\""),
-            "rename form: {text}"
+            text.contains("href=\"/account\""),
+            "account page link: {text}"
         );
         assert!(text.contains("action=\"/logout\""), "logout button: {text}");
+        // The rename form lives on the account page, not in the dropdown.
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app.clone(), "GET", "/account", headers, None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("action=\"/account/name\""),
+            "rename form on /account: {text}"
+        );
     }
 
     #[tokio::test]
