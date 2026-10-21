@@ -51,10 +51,16 @@ proper feature.
 > 809 resolved, 4 inert-missing on ProgWiki. Lesson captured: assets must resolve
 > by bare filename too (Obsidian), pages win ties.
 > bite 3 (tree) ✅ `76aad86` — SUMMARY/book.toml/meta-block generators, 5 golden tests.
-> bite 4 (convert+detect) ✅ — mirror into `.morinet-build/`, source untouched;
+> bite 4 (convert+detect) ✅ `fd333c1` — mirror into `.morinet-build/`, source untouched;
 > **real mdbook 0.5.4 oracle caught 2 generator bugs** (`multilingual` removed in
 > 0.5; SUMMARY draft-parents illegal → generated `_section.md` folder notes).
 > Built corpus: 139 HTML, 0 broken links. 161 tests.
+> bite 5 (wiring) ✅ `0b60093` — dispatch in `sources.rs::build()`, WebDAV rebuild
+> re-converts, `source_dir_of` unwraps `.morinet-build`, PRD-6 admin badge.
+> Route-level tests. 165 tests.
+> bite 6 (E2E) ✅ — real browser pass on a live server + real ProgWiki:
+> 40 resolved links, meta chips, sidebar with folder notes, WebDAV PUT → note
+> re-converted + live without restart. 165/165, clippy 0, fmt clean. **v0.1.8**.
 
 | Bite | Deliverable | Acceptance |
 |------|-------------|------------|

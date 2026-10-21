@@ -6,15 +6,15 @@
 [![Release](https://github.com/lejeunecedric/MoriNet/actions/workflows/release.yml/badge.svg)](https://github.com/lejeunecedric/MoriNet/releases)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 
-> 🚧 **Active development** — v0.1.7, phases 00→06 shipped. Next up: phase 07 *vault-ux*. See [`.planning/ROADMAP.md`](.planning/ROADMAP.md).
+> 🚧 **Active development** — v0.1.8, phases 00→06 shipped, phase 08b *obsidian-format* landed (llm-wiki/Obsidian vaults are now converted and served natively). Next up: phase 08 *personal vaults*, phase 07 *vault-ux*, phase 09 *ux-nav*. See [`.planning/ROADMAP.md`](.planning/ROADMAP.md).
 
 ## What
 
-- 📚 Serves one or more Obsidian vaults (compiled to mdbook) over HTTP
+- 📚 Serves one or more **llm-wiki / Obsidian** vaults — `[[wikilinks]]`, YAML frontmatter and all — compiled to mdbook and served over HTTP
 - 🔐 Email + password auth (HttpOnly signed cookies)
 - 👤 `admin` / `reader` roles
 - 📂 Sources = local folder OR GitHub repo (clone + periodic sync)
-- 📡 Vaults accessible via **WebDAV** (same creds as mdbook)
+- 📡 Vaults accessible via **WebDAV** (same creds as mdbook) — put a note, it goes live
 - 🤖 Vaults accessible via **MCP** (Model Context Protocol) — for AI agents
 - 📨 Invitations and password reset by email
 - 🎨 Custom mdbook visual mods: image zoom, collapsible sections, external links
@@ -54,7 +54,8 @@ morinet serve --config ./config.toml
 | 05 email | SMTP + invitations + reset | ✅ |
 | 06 webdav | WebDAV exposure | ✅ |
 | 07 vault-ux | server-side folder picker for local vaults | ⬜ next |
-| 08 access-model | groups + personal vaults | ⬜ |
+| 08 access-model | groups + personal vaults | 🟡 store + admin UI done |
+| 08b obsidian-format | llm-wiki/Obsidian vaults → mdbook (wikilinks, frontmatter, auto-SUMMARY) | ✅ |
 | 09 ux-nav | new shell: my vaults, account menu | ⬜ |
 | 10 mcp | MCP StreamableHttp | ⬜ |
 | 11 polish | installer + README + release v1.0 | ⬜ |
