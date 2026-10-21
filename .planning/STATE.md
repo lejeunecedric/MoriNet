@@ -20,7 +20,8 @@
 - **Email change requires confirmation** at the new address (`pending_emails`); unconfirmed changes never break the existing login.
 - **Obsidian format blocker RESOLVED & SHIPPED (2026-10-21)**: in-pipeline converter (AD-14/PRD-6) — llm-wiki vault → generated mdBook tree in `.morinet-build/`, wikilinks à l'Obsidian, frontmatter consommé, SUMMARY régénéré à chaque sync. Corpus réel mesuré en local (ProgWiki) : 131 .md, 812 wikilinks, 542 aliases, 0 book.toml. **E2E vérifié en navigateur** : liens résolus, chips méta, sidebar avec folder notes, PUT WebDAV → note re-convertie et live sans redémarrage.
 - **Next**: Phase 8 (écran vault personnel) → Phase 7 bites 2..5 (picker modal, import) → Phase 9 ux-nav (+ `/logout`) → Phase 10 (MCP) → Phase 11 (polish v1.0)
-- **Not started**: `/logout` does not exist; no nav shell yet; no screen to create a personal vault (store method exists)
+- **Phase 9 pull-forward (2026-10-21, feedback user sur la page admin)**: `POST /logout` + bouton logout, nav admin clarifiée (My vaults vs Vaults mgmt — le lien "Vaults" ambigu), bouton **About** (version installée + repo GitHub, REQ-ADMIN-007). En cours d'implémentation.
+- **Not started**: no nav shell yet; no screen to create a personal vault (store method exists). `/logout` now EXISTS (Phase 9 pull-forward, 2026-10-21).
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
 ## Architectural Decisions (AD)

@@ -114,9 +114,15 @@ The two real-mdBook-0.5 bugs are recorded as pitfall #19.
 - UI to create a **personal** vault (the store method exists; no screen yet)
 - "My vaults" / "Shared with me" sections exist on the index but there is no **nav shell** yet (Phase 9)
 
-**Phase 9 — ux-nav** (not started):
+**Phase 9 pull-forward (2026-10-21, feedback user sur la page admin)** — DONE:
+- `POST /logout` (REQ-ACC-003) + bouton Logout dans la nav admin et sur l'index
+- Nav admin clarifiée : "My vaults" (landing) vs "Vaults mgmt" (admin) — plus de lien "Vaults" ambigu (REQ-NAV-006)
+- Bouton **About** (REQ-ADMIN-007) : page `/admin/about` montrant `morinet <version>` (via `crate::version()`, donc auto à chaque release) + URL du repo GitHub
+- Reste de Phase 9 : nav shell complet, menu compte (display name/email), bouton close sur les pages mdBook, menu Admin en dropdown
+
+**Phase 9 — ux-nav** (partiellement pull-forwardé — voir ci-dessus) :
 - Shared header on every page, account menu top-right (display name, email, logout)
-- `POST /logout` — **does not exist yet**
+- `POST /logout` — ✅ DONE (2026-10-21) + bouton Logout dans la nav admin et l'index
 - mdBook pages get a discreet close button (top-right) back to `/`
 - Admin menu as a dropdown, rendered only for role=admin
 
