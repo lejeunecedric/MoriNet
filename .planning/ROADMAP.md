@@ -8,7 +8,7 @@
 
 ---
 
-## Overview (8 phases)
+## Overview (9 phases)
 
 | #    | Phase             | Goal                                                                                     | Key REQ-IDs            | Status |
 |------|-------------------|------------------------------------------------------------------------------------------|------------------------|--------|
@@ -19,8 +19,9 @@
 | 04   | **admin-ui**      | Admin page: invite users, reset passwords, manage vaults + perms                         | REQ-ADMIN-*            | ✅ done (v0.1.4+) |
 | 05   | **email**         | SMTP adapter + email invitations + password reset                                        | REQ-EMAIL-*            | ✅ done |
 | 06   | **webdav**        | WebDAV endpoints on vaults (same creds), browse + read                                    | REQ-WEBDAV-*           | ✅ done |
-| 07   | **mcp**           | MCP StreamableHttp on `/mcp`, list/read/search tools                                      | REQ-MCP-*              | ⬜ next |
-| +08  | **polish**        | Clean one-line installer, full README, badges, Release v1.0                              | REQ-OPS-*              | ⬜ |
+| 07   | **vault-ux**      | Vault management UX: server-side directory picker for local vaults, URL field for GitHub   | REQ-UX-*               | ⬜ next |
+| 08   | **mcp**           | MCP StreamableHttp on `/mcp`, list/read/search tools                                      | REQ-MCP-*              | ⬜ |
+| +09  | **polish**        | Clean one-line installer, full README, badges, Release v1.0                              | REQ-OPS-*              | ⬜ |
 
 **Ops done alongside the roadmap** (REQ-OPS-006..008): CI → cargo-dist release → auto-deploy to holldemo (`morinet.treklair.fr`). v0.1.1 binary installed on holldemo; systemd/nginx/TLS provisioning owned by vops (brief lives in the vops workspace, demo instance creds live on the server — not in this public repo).
 
@@ -106,7 +107,26 @@
 - `MKCOL` / `DELETE`: out of scope v1 (read-only-ish)
 - Tests: curl WebDAV + a `cadaver` walkthrough
 
-## Phase 7 — mcp
+## Phase 7 — vault-ux
+
+**Goal**: adding a local vault must not require typing a path on the server. An admin clicks **Browse**, walks the server's directories, and picks one.
+
+**User decision (2026-10-21)**: the picker browses **the server's filesystem**, not the admin's machine. A vault is a path on the host running MoriNet; offering a browser-side folder picker would upload a path string that does not exist there.
+
+**Criteria**:
+- `GET /admin/browse?path=<dir>` → JSON `{ current, parent, dirs[] }` (admin only)
+- The "Add vault" form hides the path field behind a **Browse** button when `kind=local`
+- Clicking a directory descends into it; "up" walks to the parent; a breadcrumb shows the current path
+- Selecting a folder closes the modal and fills the path field
+- GitHub vaults show a **URL** field only — no Browse button
+- Traversal outside the configured root is refused (`400`); unauthenticated → `401`
+- Readable error when the chosen directory is not a valid vault (no `book.toml`)
+
+**Out of scope here**: upload, drag-and-drop, creating directories, file previews.
+
+---
+
+## Phase 8 — mcp
 
 **Goal**: MCP StreamableHttp on `/mcp`, Bearer auth (token derived from password), tools on accessible vaults.
 
@@ -117,7 +137,9 @@
 - JSON schema returned by the tools
 - Tests via the `mcp-cli` client when available
 
-## Phase +8 — polish
+---
+
+## Phase +9 — polish
 
 **Goal**: ready to ship.
 

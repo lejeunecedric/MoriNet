@@ -14,7 +14,8 @@
 - **Phase 5 (email) shipped**: `EmailSender` trait + lettre SMTP + `InMemorySender` mock, `[smtp]` in config, invitation links (24h, single-use, sha256-hashed) and password reset (1h), all UI pages styled. Admin invite falls back to the old temp-password flow when SMTP is absent/invalid
 - **Auto-scaffold of raw wikis REVERTED** (`2b924f3`): vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The B3Wiki/ProgWiki import was a format-validation test, not a feature — see HANDOFF.md before re-attempting
 - **Deploy quirks**: staging + atomic `mv` (ETXTBSY), re-dispatch may be needed right after a release finishes (tag-push deploy races the release and falls back to "latest release")
-- **Next**: Phase 7 (MCP) → Phase 8 (polish v1.0)
+- **Planning refreshed (2026-10-21)**: a new **Phase 7 — vault-ux** was inserted BEFORE MCP (MCP → 08, polish → 09). User-driven: adding a local vault should not require typing a server path.
+- **Next**: Phase 7 (vault-ux: server-side directory picker) → Phase 8 (MCP) → Phase 9 (polish v1.0)
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
 ## Architectural Decisions (AD)

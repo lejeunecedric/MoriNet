@@ -84,6 +84,18 @@
 | REQ-MCP-006   | Tool `search_notes(query, slug?)` → results                               | invoke + assert                       |
 | REQ-MCP-007   | Vault ACL respected on MCP side (user without ACL → empty list)          | invoke + assert                       |
 
+## UX — Vault management UI
+
+| REQ-ID        | Description                                                                    | Verification                  |
+|---------------|--------------------------------------------------------------------------------|-------------------------------|
+| REQ-UX-001    | "Add vault" form has a **Browse** button for local vaults (not a raw text input) | browser click → modal opens    |
+| REQ-UX-002    | Browse modal lists **directories on the server**, click to descend              | browser: click into a subdir  |
+| REQ-UX-003    | "Up one level" + current path breadcrumb in the modal                          | browser: navigate up          |
+| REQ-UX-004    | Selecting a directory fills the vault path field and closes the modal          | form value populated          |
+| REQ-UX-005    | GitHub vaults use a plain **URL field** — no file browser                      | browser: no Browse button     |
+| REQ-UX-006    | Browse endpoint is **admin-only** and cannot escape a configured root          | curl unauth → 401; `..` → 400 |
+| REQ-UX-007    | Invalid selections give a readable message (not a raw 500)                     | browser: missing book.toml    |
+
 ## OPS — Operations / polish
 
 | REQ-ID        | Description                                                       | Verification                  |
@@ -119,4 +131,6 @@
 - Phase 5: REQ-EMAIL-001..005, REQ-AUTH-005
 - Phase 6: REQ-WEBDAV-001..005
 - Phase 7: REQ-MCP-001..007
-- Phase 8: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
+- Phase 7: REQ-UX-001..007 (vault management UX — inserted before MCP)
+- Phase 8: REQ-MCP-001..007 (renumbered)
+- Phase 9: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
