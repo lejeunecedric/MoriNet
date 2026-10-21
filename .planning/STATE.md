@@ -8,12 +8,13 @@
 
 - **Latest release**: v0.1.6 (embedded stylesheet + admin nav on index) — releasing at handoff time; if holldemo lags behind, re-dispatch Deploy with `inputs.tag=v0.1.6`
 - **Live instance**: https://morinet.treklair.fr — public demo instance, admin-ui accessible via the **Admin** nav link on the index. Credentials live on the server, not in this repo
-- **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui, **05 email**
-- **72/72 tests** (44 → 54 token layer → 61 email module + config → 72 end-to-end HTTP), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
+- **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui, 05 email, **06 webdav**
+- **102/102 tests** (44 → 54 tokens → 72 email+HTTP → 102 webdav), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
+- **Phase 6 (WebDAV) shipped**: PROPFIND (depth 0/1) + GET + admin PUT on `/webdav/<slug>/…`. Exposes the vault **source** (`book.toml` + `src/`), not the compiled `book/` — PUT markdown then `mdbook build`. HTTP Basic against the same bcrypt users + the same per-vault ACL
 - **Phase 5 (email) shipped**: `EmailSender` trait + lettre SMTP + `InMemorySender` mock, `[smtp]` in config, invitation links (24h, single-use, sha256-hashed) and password reset (1h), all UI pages styled. Admin invite falls back to the old temp-password flow when SMTP is absent/invalid
 - **Auto-scaffold of raw wikis REVERTED** (`2b924f3`): vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The B3Wiki/ProgWiki import was a format-validation test, not a feature — see HANDOFF.md before re-attempting
 - **Deploy quirks**: staging + atomic `mv` (ETXTBSY), re-dispatch may be needed right after a release finishes (tag-push deploy races the release and falls back to "latest release")
-- **Next**: Phase 6 (WebDAV) → Phase 7 (MCP) → Phase 8 (polish v1.0)
+- **Next**: Phase 7 (MCP) → Phase 8 (polish v1.0)
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
 ## Architectural Decisions (AD)
@@ -46,6 +47,9 @@
 - **AD-12** *(2026-10-20)* — **Generated pages MUST go through `app_page()`**, never a raw `Html(body)`.
   - Rationale: a browser pass caught that every handler-generated page (`/invite/{token}`, `/reset/{token}`, error pages) shipped WITHOUT the stylesheet link — default serif, no card, no layout. Unit tests were green the whole time. Lesson recorded: server-rendered HTML needs a rendering check, not just an HTTP status + body-substring assertion. `app_page()` is the single choke point so a new page cannot forget the CSS again.
 
+- **AD-13** *(2026-10-20)* — **WebDAV exposes the vault SOURCE, not the compiled book**, and the handler takes a single `Request` extractor instead of stacked extractors.
+  - Rationale: (1) the useful direction is PUT-markdown-then-render, so serving `book/` HTML would be pointless; the store keeps `<src>/book` so the source is its parent. (2) `.route(..., get(h))` matches GET only — PROPFIND/PUT fell through to the router's 405. (3) stacking `Method`/`Uri`/`HeaderMap`/`Body`/`Path` extractors made axum return 500 *before* the handler ran; one `Request` + manual extraction is robust and easier to read.
+
 ## Product Decisions (PRD)
 
 - **PRD-5** *(2026-10-20)* — Staging target = `morinet.treklair.fr` on holldemo, DNS A record set by user. Host/IP kept out of this public repo.
@@ -61,6 +65,11 @@
   - User decided. We code a generic `lettre` adapter with host/port/user/pass.
 
 ## Notable errors & learnings
+
+- **2026-10-20 (Phase 6)**: **percent-decode BEFORE splitting a URL path.** `PUT /webdav/demo/..%2fescaped.md` returned 201 and wrote a literal file named `..%2fescaped.md`. `rel_from_uri` read `uri.path()` raw, so `%2f` was not a separator and the traversal check never saw it. Found by a real curl pass, NOT by the 96 unit tests that were green. Decoding first makes `%2e%2e` / `%2f` visible to `safe_join`. Any parser that normalizes one way and checks another is a hole.
+- **2026-10-20 (Phase 6)**: `days % 7` gives the wrong weekday — the Unix epoch (1970-01-01) was a **Thursday**, so the Sunday-first table needs a `+4` offset. A hand-rolled RFC 7231 date formatter is a trap; verify against a reference (Python) for several instants.
+- **2026-10-20 (Phase 6)**: WebDAV methods are NOT in `http::Method` — `Method::PROPFIND` does not exist. They arrive as extension methods; match `method.as_str()`.
+- **2026-10-20 (Phase 6)**: a route declared `.route(p, get(h))` answers 405 to PROPFIND/PUT before the handler is ever called. WebDAV routes need `any(h)` + in-handler dispatch.
 
 - **2026-10-20 (Phase 5)**: **the patch tool's linter compiles without the Cargo edition** → dozens of bogus `E0670: async fn is not permitted in Rust 2015` on healthy files. Do NOT "fix" them. Use `cargo clippy` for the real verdict.
 - **2026-10-20 (Phase 5)**: lettre 0.11 renamed `MessagePart` → `SinglePart`, and the builder method is `.singlepart(...)`, not `.multipart(...)` for a single HTML part. Verified by reading the crate source instead of guessing.
