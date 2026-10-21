@@ -5,19 +5,20 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Form, Path, Request, State};
+use axum::extract::{Extension, Form, Path, Request, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::routing::{any, get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 
 use crate::config::RuntimeConfig;
 use crate::email::{invitation_email, reset_email, EmailSender, InMemorySender, SmtpSender};
 use crate::session::{Claims, SessionCodec, DEFAULT_TTL_SECS};
 use crate::store::Store;
+use crate::webdav;
 
 /// Invitation links are valid 24h (REQ-EMAIL-005).
 const INVITE_TTL_SECS: u64 = 24 * 3600;
@@ -169,7 +170,61 @@ pub fn build_router_with_email(
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin))
         .with_state(state.clone());
 
-    public.merge(protected).merge(admin)
+    // WebDAV (Phase 6). Method-routing inside one catch-all handler (PROPFIND
+    // is not a known method in the router, so it cannot be a .route() verb).
+    let webdav = Router::new()
+        .route("/webdav/{slug}", any(webdav_entry))
+        .route("/webdav/{slug}/{*rest}", any(webdav_entry))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_dav_auth,
+        ))
+        .with_state(state.clone());
+
+    public.merge(protected).merge(admin).merge(webdav)
+}
+
+/// WebDAV gate: HTTP Basic against the same bcrypt users table, then the
+/// per-vault ACL. Returns 401 with a challenge when creds are missing/bad.
+async fn require_dav_auth(
+    State(state): State<SharedState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let creds = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(webdav::parse_basic);
+
+    let unauthorized = || {
+        (
+            StatusCode::UNAUTHORIZED,
+            [webdav::www_authenticate_basic()],
+            "authentication required",
+        )
+            .into_response()
+    };
+
+    let Some((user, pass)) = creds else {
+        return unauthorized();
+    };
+    match state.store.verify_login(&user, &pass).await {
+        Ok(Some(user)) => {
+            // Same pattern as require_session: hand the verified identity to
+            // the handler as an extension.
+            req.extensions_mut().insert(Claims {
+                email: user.email,
+                expires_at: 0,
+            });
+            next.run(req).await
+        }
+        Ok(None) => unauthorized(),
+        Err(e) => {
+            eprintln!("webdav verify_login failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// Admin gate (REQ-ADMIN-001): valid cookie + role=admin, else 403.
@@ -379,6 +434,164 @@ async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str)
             }
             Err(_) => StatusCode::NOT_FOUND.into_response(),
         },
+    }
+}
+
+/// Resolve the vault's SOURCE dir for a slug, after the ACL gate.
+/// Returns (source_dir, is_admin, book_dir).
+async fn dav_resolve(
+    state: &AppState,
+    email: &str,
+    slug: &str,
+) -> Result<(PathBuf, bool, PathBuf), StatusCode> {
+    let vaults = state.store.list_vaults_for(email).await.unwrap_or_default();
+    let Some(vault) = vaults.iter().find(|v| v.slug == slug) else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let book_dir = PathBuf::from(&vault.book_path);
+    let Some(src) = webdav::source_dir_of(&book_dir) else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let is_admin = state
+        .store
+        .role_for(email)
+        .await
+        .unwrap_or(None)
+        .map(|r| r == "admin")
+        .unwrap_or(false);
+    Ok((src, is_admin, book_dir))
+}
+
+/// Single entry point for every WebDAV verb on `/webdav/{slug}/...`.
+async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Response {
+    // Extracted manually rather than via many extractors: PROPFIND is a custom
+    // method and mixing Method/Uri/HeaderMap/Body extractors here is fragile.
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let headers = req.headers().clone();
+    let claims = req
+        .extensions()
+        .get::<Claims>()
+        .cloned()
+        .unwrap_or_else(|| Claims {
+            email: String::new(),
+            expires_at: 0,
+        });
+    let slug = uri
+        .path()
+        .strip_prefix("/webdav/")
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let body = req.into_body();
+    // The Basic-auth middleware verified the user; we still re-check the ACL
+    // per vault (admins pass list_vaults_for, readers need a grant).
+    if let Ok(false) = state.store.acl_allows(&claims.email, &slug).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let (src_dir, is_admin, book_dir) = match dav_resolve(&state, &claims.email, &slug).await {
+        Ok(v) => v,
+        Err(code) => return code.into_response(),
+    };
+    let rel = webdav::rel_from_uri(&uri, &slug);
+    let base = format!("/webdav/{slug}");
+
+    if webdav::is_propfind(&method) {
+        let full = match webdav::safe_join(&src_dir, &rel) {
+            Some(p) => p,
+            None => return StatusCode::BAD_REQUEST.into_response(),
+        };
+        let meta = match tokio::fs::metadata(&full).await {
+            Ok(m) => m,
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        };
+        if meta.is_file() {
+            return webdav::file_propfind_response(
+                &base,
+                &rel,
+                meta.len(),
+                meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            );
+        }
+        let depth0 = webdav::depth_of(&headers) == 0;
+        return match webdav::list_dir(&src_dir, &rel, &base, depth0).await {
+            Some(xml) => webdav::propfind_response(xml),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    }
+
+    match method {
+        Method::GET => {
+            let full = match webdav::safe_join(&src_dir, &rel) {
+                Some(p) => p,
+                None => return StatusCode::BAD_REQUEST.into_response(),
+            };
+            match tokio::fs::read(&full).await {
+                Ok(bytes) => (
+                    [(axum::http::header::CONTENT_TYPE, content_type(&rel))],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => StatusCode::NOT_FOUND.into_response(),
+            }
+        }
+        Method::PUT => {
+            // REQ-WEBDAV: writes are admin-only.
+            if !is_admin {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            if rel.is_empty() {
+                return StatusCode::METHOD_NOT_ALLOWED.into_response();
+            }
+            let full = match webdav::safe_join(&src_dir, &rel) {
+                Some(p) => p,
+                None => return StatusCode::BAD_REQUEST.into_response(),
+            };
+            let bytes = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
+                Ok(b) => b,
+                Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+            };
+            if let Some(parent) = full.parent() {
+                if tokio::fs::create_dir_all(parent).await.is_err() {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
+            if tokio::fs::write(&full, &bytes).await.is_err() {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            // Rebuild so the served HTML reflects the new note (AD-10).
+            rebuild_book(&book_dir, &src_dir);
+            StatusCode::CREATED.into_response()
+        }
+        _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+    }
+}
+
+/// Re-run `mdbook build` on the source dir so the change goes live.
+/// Best-effort: a build failure is logged, the write already happened.
+fn rebuild_book(book_dir: &std::path::Path, src_dir: &std::path::Path) {
+    if !src_dir.join("book.toml").is_file() {
+        return;
+    }
+    match std::process::Command::new("mdbook")
+        .arg("build")
+        .arg(src_dir)
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            eprintln!(
+                "webdav: rebuilt {} -> {}",
+                src_dir.display(),
+                book_dir.display()
+            );
+        }
+        Ok(out) => eprintln!(
+            "webdav: mdbook build failed after PUT: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(_) => eprintln!("webdav: mdbook not available, book not rebuilt"),
     }
 }
 
@@ -945,6 +1158,7 @@ mod tests {
     use tower::ServiceExt; // oneshot
 
     use crate::email::SmtpConfig;
+    use base64::Engine;
 
     fn test_config() -> RuntimeConfig {
         RuntimeConfig {
@@ -1733,6 +1947,263 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    // ---------- Phase 6: WebDAV ----------
+
+    fn basic(user: &str, pass: &str) -> HeaderMap {
+        let raw = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
+        HeaderMap::from_iter([(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {raw}").parse().unwrap(),
+        )])
+    }
+
+    /// A vault whose stored path is `<src>/book`, with real mdbook sources.
+    async fn seed_dav_vault(state: &SharedState) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("morinet-dav-vault-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("book.toml"), "[book]\ntitle = \"T\"\n").unwrap();
+        std::fs::write(root.join("src").join("SUMMARY.md"), "# Summary\n").unwrap();
+        std::fs::write(root.join("src").join("note.md"), "# Note\n\nhello\n").unwrap();
+        std::fs::create_dir_all(root.join("book")).unwrap();
+        std::fs::write(root.join("book").join("index.html"), "<html>built</html>").unwrap();
+        state
+            .store
+            .seed_vault("dav", "DAV vault", &root.join("book"))
+            .await
+            .unwrap();
+        root
+    }
+
+    async fn dav_request(
+        app: Router,
+        method: &str,
+        uri: &str,
+        auth: HeaderMap,
+        body: Option<&str>,
+    ) -> Response {
+        let b = Body::from(body.unwrap_or("").to_string());
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Depth", "1");
+        for (k, v) in auth.iter() {
+            builder = builder.header(k, v);
+        }
+        app.oneshot(builder.body(b).unwrap()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn webdav_requires_authentication() {
+        let (app, state) = test_router().await;
+        seed_dav_vault(&state).await;
+        let res = dav_request(app, "PROPFIND", "/webdav/dav", HeaderMap::new(), None).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let challenge = res
+            .headers()
+            .get(axum::http::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            challenge.starts_with("Basic realm="),
+            "challenge: {challenge}"
+        );
+    }
+
+    #[tokio::test]
+    async fn webdav_rejects_bad_credentials() {
+        let (app, state) = test_router().await;
+        seed_dav_vault(&state).await;
+        let res = dav_request(
+            app,
+            "PROPFIND",
+            "/webdav/dav",
+            basic("admin@example.com", "wrong"),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn propfind_lists_the_vault_source_depth1() {
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault(&state).await;
+        let res = dav_request(
+            app,
+            "PROPFIND",
+            "/webdav/dav",
+            basic("admin@example.com", "Passw0rd!"),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::MULTI_STATUS);
+        let body = to_bytes(res.into_body(), 16384).await.unwrap();
+        let xml = String::from_utf8_lossy(&body);
+        assert!(xml.contains("<D:multistatus"), "xml body: {xml}");
+        assert!(xml.contains("src/"), "src dir listed: {xml}");
+        assert!(xml.contains("book.toml"), "book.toml listed: {xml}");
+        // The compiled book/ must NOT be the exposed surface.
+        assert!(
+            !xml.contains("/book/index.html"),
+            "built files not served: {xml}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn propfind_depth0_returns_only_the_collection() {
+        let (app, state) = test_router().await;
+        seed_dav_vault(&state).await;
+        // No Depth header at all => depth 0 (RFC 4918 default).
+        let mut b = Request::builder().method("PROPFIND").uri("/webdav/dav");
+        for (k, v) in basic("admin@example.com", "Passw0rd!").iter() {
+            b = b.header(k, v);
+        }
+        let res = app.oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::MULTI_STATUS);
+        let body = to_bytes(res.into_body(), 16384).await.unwrap();
+        let xml = String::from_utf8_lossy(&body);
+        assert!(!xml.contains("book.toml"), "depth 0 hides children: {xml}");
+        assert!(
+            xml.contains("<D:collection/>"),
+            "the collection itself is returned"
+        );
+    }
+
+    #[tokio::test]
+    async fn webdav_get_returns_raw_markdown() {
+        let (app, state) = test_router().await;
+        seed_dav_vault(&state).await;
+        let res = dav_request(
+            app,
+            "GET",
+            "/webdav/dav/src/note.md",
+            basic("admin@example.com", "Passw0rd!"),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ct.contains("markdown"), "content-type: {ct}");
+        let body = to_bytes(res.into_body(), 8192).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn webdav_rejects_path_traversal() {
+        let (app, state) = test_router().await;
+        seed_dav_vault(&state).await;
+        for uri in [
+            "/webdav/dav/../../etc/passwd",
+            "/webdav/dav/src/../../../etc/passwd",
+        ] {
+            let res = dav_request(
+                app.clone(),
+                "GET",
+                uri,
+                basic("admin@example.com", "Passw0rd!"),
+                None,
+            )
+            .await;
+            assert!(
+                res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::NOT_FOUND,
+                "traversal {uri} must not succeed, got {}",
+                res.status()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reader_without_acl_is_denied_on_webdav() {
+        let (app, state) = test_router().await;
+        seed_dav_vault(&state).await;
+        state
+            .store
+            .create_user("reader@example.com", "Read!pw123", "reader")
+            .await
+            .unwrap();
+        let res = dav_request(
+            app,
+            "PROPFIND",
+            "/webdav/dav",
+            basic("reader@example.com", "Read!pw123"),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "no ACL, no access");
+    }
+
+    #[tokio::test]
+    async fn reader_put_is_forbidden_even_with_acl() {
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault(&state).await;
+        state
+            .store
+            .create_user("reader@example.com", "Read!pw123", "reader")
+            .await
+            .unwrap();
+        state
+            .store
+            .grant_acl("reader@example.com", "dav")
+            .await
+            .unwrap();
+        let res = dav_request(
+            app,
+            "PUT",
+            "/webdav/dav/src/evil.md",
+            basic("reader@example.com", "Read!pw123"),
+            Some("pwned"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "readers never write");
+        assert!(!root.join("src/evil.md").exists(), "no file written");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn admin_put_writes_the_source_file() {
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault(&state).await;
+        let res = dav_request(
+            app,
+            "PUT",
+            "/webdav/dav/src/new-note.md",
+            basic("admin@example.com", "Passw0rd!"),
+            Some("# Fresh note\n\nwritten over webdav\n"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let written = std::fs::read_to_string(root.join("src/new-note.md")).expect("file written");
+        assert!(
+            written.contains("written over webdav"),
+            "content: {written}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn admin_put_traversal_is_refused() {
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault(&state).await;
+        let res = dav_request(
+            app,
+            "PUT",
+            "/webdav/dav/../escaped.md",
+            basic("admin@example.com", "Passw0rd!"),
+            Some("nope"),
+        )
+        .await;
+        assert_ne!(res.status(), StatusCode::CREATED, "traversal write refused");
+        assert!(!root.parent().unwrap().join("escaped.md").exists());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]
