@@ -132,14 +132,17 @@ The two real-mdBook-0.5 bugs are recorded as pitfall #19.
 - The picker modal (list dirs, descend, up, breadcrumb) over the finished `/admin/browse`
 - Browser-side import that **creates a new vault** from a local folder (slug = folder name, scaffolds `book.toml` + `src/SUMMARY.md`)
 
-**Next step to resume — group quota (Phase 8, user decision 2026-10-21)**
+**Next step to resume — group quota (Phase 8, user decision 2026-10-21)** — **IMPLÉMENTÉ (non release)** :
 
-The user wants real group-based user management with a per-group vault quota:
-- `groups` gains `personal_vault_limit` (NULL = unlimited) — REQ-GRP-005
-- Builtin groups at bootstrap: `free` (limit **2**), `admin` (unlimited) — REQ-GRP-006
-- **`demo` becomes a `reader` in `free`, NOT admin**; the bootstrap admin is in `admin` — REQ-GRP-007
-- The quota caps **personal vaults a member can CREATE** — shared/global vaults do NOT count, and visibility is NOT capped — REQ-VLT-008
-- Effective limit for a user = the most permissive across their groups (NULL beats any; otherwise max) — REQ-GRP-008
+- `groups.personal_vault_limit` (NULL = unlimited) — REQ-GRP-005 → `migrations/0005_group_quota.sql`
+- Builtin groups at bootstrap: `free` (limit **2**), `admin` (unlimited) — REQ-GRP-006 → `Store::ensure_builtin_groups()` (called at boot in `main.rs`)
+- **`demo` becomes a `reader` in `free`, NOT admin**; the bootstrap admin is in `admin` — REQ-GRP-007 → `Store::set_user_role()` (UI: role switcher on `/admin/users`), `create_user` auto-joins `free`/`admin`, and `Store::ensure_default_memberships()` sweeps groupless accounts at boot
+- The quota caps **personal vaults a member can CREATE** — shared/global vaults do NOT count, and visibility is NOT capped — REQ-VLT-008 → enforced inside `create_personal_vault`
+- Effective limit for a user = the most permissive across their groups (NULL beats any; otherwise max) — REQ-GRP-008 → `Store::effective_personal_vault_limit()`
+- Admin UI: quota form per group on `/admin/groups` (`POST /admin/groups/{id}/limit`, empty = unlimited), role switcher on `/admin/users`
+- Verified E2E in a real browser (AD-12): builtin groups seeded, quota form set/restore, role switch reader↔admin, demoted user lands in `free`. 177/177 tests.
+
+**Deploy-side leftover (vops, not code)**: on treklair, `demo` is currently role `admin` because the bootstrap admin env is `demo`. Demote it to `reader` (one click in `/admin/users`, or SQL) — the boot sweep then puts it in `free` with quota 2, and the Admin button disappears for that account. Longer term: set `MORINET_ADMIN_EMAIL` to a real admin address on the server.
 
 **Why the Admin button showed for demo (NOT a code bug — do not re-diagnose):**
 `index` (`src/server.rs`) and `require_admin` both gate on `role_for(email) == "admin"`

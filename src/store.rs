@@ -296,6 +296,98 @@ impl Store {
             .bind(role)
             .execute(&self.pool)
             .await?;
+        // Join the default plan group when the builtin groups are provisioned
+        // (REQ-GRP-006/007): readers get the `free` quota, admins the `admin`
+        // one. A no-op when those groups don't exist (bare test stores).
+        let default_group = if role == "admin" { "admin" } else { "free" };
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id)
+             SELECT g.id, u.id FROM groups g, users u
+             WHERE g.name = ? AND u.email = ?
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(default_group)
+        .bind(email)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Idempotently provision the builtin plan groups (REQ-GRP-006):
+    /// `free` (2 personal vaults) and `admin` (unlimited).
+    pub async fn ensure_builtin_groups(&self) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO groups (name, personal_vault_limit) VALUES ('free', 2)
+             ON CONFLICT(name) DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO groups (name, personal_vault_limit) VALUES ('admin', NULL)
+             ON CONFLICT(name) DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Idempotent boot sweep (REQ-GRP-007): every account lands in its default
+    /// plan group — admins in `admin`, groupless readers in `free`. A user an
+    /// admin already placed in a group is left untouched.
+    pub async fn ensure_default_memberships(&self) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id)
+             SELECT g.id, u.id FROM groups g, users u
+             WHERE g.name = 'admin' AND u.role = 'admin'
+             ON CONFLICT DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id)
+             SELECT g.id, u.id FROM groups g, users u
+             WHERE g.name = 'free' AND u.role = 'reader'
+               AND NOT EXISTS (SELECT 1 FROM group_members m WHERE m.user_id = u.id)
+             ON CONFLICT DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Change a user's role (REQ-GRP-007) and fix their plan group: an admin
+    /// joins `admin`; a reader leaves it and lands in `free` only when they
+    /// have no other group. Non-default groups are left untouched.
+    pub async fn set_user_role(&self, email: &str, role: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(role == "admin" || role == "reader", "unknown role {role}");
+        sqlx::query("UPDATE users SET role = ? WHERE email = ?")
+            .bind(role)
+            .bind(email)
+            .execute(&self.pool)
+            .await?;
+        if role == "reader" {
+            sqlx::query(
+                "DELETE FROM group_members
+                 WHERE user_id = (SELECT id FROM users WHERE email = ?)
+                   AND group_id = (SELECT id FROM groups WHERE name = 'admin')",
+            )
+            .bind(email)
+            .execute(&self.pool)
+            .await?;
+        }
+        let default_group = if role == "admin" { "admin" } else { "free" };
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id)
+             SELECT g.id, u.id FROM groups g, users u
+             WHERE g.name = ? AND u.email = ?
+               AND (u.role = 'admin'
+                    OR NOT EXISTS (SELECT 1 FROM group_members m WHERE m.user_id = u.id))
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(default_group)
+        .bind(email)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -625,7 +717,8 @@ impl Store {
         Ok(out)
     }
 
-    /// Create a personal vault owned by `email` (REQ-VLT-005).
+    /// Create a personal vault owned by `email` (REQ-VLT-005), respecting the
+    /// caller's group quota (REQ-VLT-008).
     pub async fn create_personal_vault(
         &self,
         email: &str,
@@ -640,6 +733,16 @@ impl Store {
         let Some((owner_id,)) = owner else {
             anyhow::bail!("cannot create a vault for an unknown user");
         };
+        // Quota (REQ-VLT-008): a member cannot create more personal vaults than
+        // their most permissive group allows. Shared/global vaults never count.
+        if let Some(limit) = self.effective_personal_vault_limit(email).await? {
+            let used = self.count_personal_vaults(email).await?;
+            if used >= limit {
+                anyhow::bail!(
+                    "personal vault limit reached: {used}/{limit} — ask an admin for a larger group"
+                );
+            }
+        }
         let path_str = book_path.display().to_string();
         sqlx::query(
             "INSERT INTO vaults (slug, name, book_path, scope, owner_id)
@@ -654,6 +757,39 @@ impl Store {
         Ok(())
     }
 
+    /// How many personal vaults `email` owns (REQ-VLT-008).
+    pub async fn count_personal_vaults(&self, email: &str) -> anyhow::Result<i64> {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM vaults v
+             JOIN users u ON u.id = v.owner_id
+             WHERE u.email = ? AND v.scope = 'personal'",
+        )
+        .bind(email)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n)
+    }
+
+    /// How many personal vaults `email` may create (REQ-GRP-008).
+    /// `None` = unlimited (a user in no group, or in a group with a NULL limit).
+    /// The most permissive group wins: NULL beats any number, otherwise max.
+    pub async fn effective_personal_vault_limit(&self, email: &str) -> anyhow::Result<Option<i64>> {
+        let limits: Vec<(Option<i64>,)> = sqlx::query_as(
+            "SELECT g.personal_vault_limit
+             FROM groups g
+             JOIN group_members m ON m.group_id = g.id
+             JOIN users u ON u.id = m.user_id
+             WHERE u.email = ?",
+        )
+        .bind(email)
+        .fetch_all(&self.pool)
+        .await?;
+        if limits.iter().any(|(l,)| l.is_none()) {
+            return Ok(None);
+        }
+        Ok(limits.into_iter().filter_map(|(l,)| l).max())
+    }
+
     // ---------- groups ----------
 
     pub async fn create_group(&self, name: &str) -> anyhow::Result<i64> {
@@ -664,16 +800,27 @@ impl Store {
         Ok(res.last_insert_rowid())
     }
 
-    pub async fn list_groups(&self) -> anyhow::Result<Vec<(i64, String, i64)>> {
-        // (id, name, member count)
-        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-            "SELECT g.id, g.name, COUNT(m.user_id)
+    pub async fn list_groups(&self) -> anyhow::Result<Vec<(i64, String, i64, Option<i64>)>> {
+        // (id, name, member count, personal_vault_limit) — limit NULL = unlimited.
+        let rows: Vec<(i64, String, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT g.id, g.name, COUNT(m.user_id), g.personal_vault_limit
              FROM groups g LEFT JOIN group_members m ON m.group_id = g.id
              GROUP BY g.id ORDER BY g.name",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Set the per-group personal vault creation limit (REQ-GRP-005).
+    /// `None` = unlimited.
+    pub async fn set_group_limit(&self, group_id: i64, limit: Option<i64>) -> anyhow::Result<()> {
+        sqlx::query("UPDATE groups SET personal_vault_limit = ? WHERE id = ?")
+            .bind(limit)
+            .bind(group_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn rename_group(&self, group_id: i64, name: &str) -> anyhow::Result<()> {
@@ -1196,6 +1343,197 @@ mod access_tests {
         s.delete_group(g).await.unwrap();
         assert!(s.group_members(g).await.unwrap().is_empty());
         assert!(s.list_groups().await.unwrap().is_empty());
+    }
+
+    // ---------- personal vault quota (REQ-GRP-005..008, REQ-VLT-008) ----------
+
+    #[tokio::test]
+    async fn group_limit_caps_personal_vault_creation() {
+        // REQ-VLT-008: a member of `free` (limit 2) creates 2 personal vaults,
+        // the 3rd is refused with a clear error.
+        let s = st("quota-cap").await;
+        s.create_user("demo@x.fr", "pw", "reader").await.unwrap();
+        let g = s.create_group("free").await.unwrap();
+        s.set_group_limit(g, Some(2)).await.unwrap();
+        s.add_group_member(g, "demo@x.fr").await.unwrap();
+        s.create_personal_vault("demo@x.fr", "v1", "V1", Path::new("/tmp/q1/book"))
+            .await
+            .unwrap();
+        s.create_personal_vault("demo@x.fr", "v2", "V2", Path::new("/tmp/q2/book"))
+            .await
+            .unwrap();
+        let err = s
+            .create_personal_vault("demo@x.fr", "v3", "V3", Path::new("/tmp/q3/book"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("limit"), "clear error: {err}");
+        assert_eq!(s.count_personal_vaults("demo@x.fr").await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn shared_vaults_do_not_count_toward_the_quota() {
+        // REQ-VLT-008: the quota counts PERSONAL vaults only — shared/global
+        // ones are granted by groups and never consume a member's quota.
+        let s = st("quota-shared").await;
+        s.create_user("demo@x.fr", "pw", "reader").await.unwrap();
+        let g = s.create_group("free").await.unwrap();
+        s.set_group_limit(g, Some(1)).await.unwrap();
+        s.add_group_member(g, "demo@x.fr").await.unwrap();
+        s.seed_vault("shared", "Shared", Path::new("/tmp/sh/book"))
+            .await
+            .unwrap();
+        // The shared vault above does not eat the quota: one personal still fits.
+        s.create_personal_vault("demo@x.fr", "v1", "V1", Path::new("/tmp/sq1/book"))
+            .await
+            .unwrap();
+        assert!(s
+            .create_personal_vault("demo@x.fr", "v2", "V2", Path::new("/tmp/sq2/book"))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn effective_limit_is_the_most_permissive_group() {
+        // REQ-GRP-008: NULL (unlimited) beats any number; otherwise the max
+        // across the user's groups. No group at all = no configured limit.
+        let s = st("quota-effective").await;
+        s.create_user("a@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("b@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("c@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("lone@x.fr", "pw", "reader").await.unwrap();
+        let free = s.create_group("free").await.unwrap();
+        s.set_group_limit(free, Some(2)).await.unwrap();
+        let power = s.create_group("power").await.unwrap();
+        s.set_group_limit(power, Some(5)).await.unwrap();
+        let unlimited = s.create_group("unlimited").await.unwrap();
+        s.add_group_member(free, "a@x.fr").await.unwrap();
+        s.add_group_member(free, "b@x.fr").await.unwrap();
+        s.add_group_member(power, "b@x.fr").await.unwrap();
+        s.add_group_member(unlimited, "c@x.fr").await.unwrap();
+        assert_eq!(
+            s.effective_personal_vault_limit("a@x.fr").await.unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            s.effective_personal_vault_limit("b@x.fr").await.unwrap(),
+            Some(5)
+        );
+        assert_eq!(
+            s.effective_personal_vault_limit("c@x.fr").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            s.effective_personal_vault_limit("lone@x.fr").await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn group_limit_roundtrips_through_list_groups() {
+        let s = st("quota-list").await;
+        let g = s.create_group("free").await.unwrap();
+        s.set_group_limit(g, Some(2)).await.unwrap();
+        assert_eq!(
+            s.list_groups().await.unwrap(),
+            vec![(g, "free".to_string(), 0, Some(2))]
+        );
+    }
+
+    // ---------- builtin groups + default memberships (REQ-GRP-006/007) ----------
+
+    #[tokio::test]
+    async fn switching_role_moves_the_user_to_the_right_plan() {
+        // REQ-GRP-007: demoting `demo` to reader drops it out of `admin` and
+        // lands it in `free` (quota 2); re-promoting grants the unlimited plan;
+        // a user already placed in another group is left alone.
+        let s = st("role-switch").await;
+        s.ensure_builtin_groups().await.unwrap();
+        s.create_user("demo@x.fr", "pw", "admin").await.unwrap();
+        s.create_user("team@x.fr", "pw", "reader").await.unwrap();
+        let team = s.create_group("team").await.unwrap();
+        s.set_group_limit(team, Some(7)).await.unwrap();
+        s.add_group_member(team, "team@x.fr").await.unwrap();
+
+        s.set_user_role("demo@x.fr", "reader").await.unwrap();
+        assert_eq!(
+            s.role_for("demo@x.fr").await.unwrap().as_deref(),
+            Some("reader")
+        );
+        assert_eq!(
+            s.effective_personal_vault_limit("demo@x.fr").await.unwrap(),
+            Some(2),
+            "demoted user gets the free quota"
+        );
+
+        s.set_user_role("demo@x.fr", "admin").await.unwrap();
+        assert_eq!(
+            s.effective_personal_vault_limit("demo@x.fr").await.unwrap(),
+            None
+        );
+
+        assert_eq!(
+            s.effective_personal_vault_limit("team@x.fr").await.unwrap(),
+            Some(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_groups_seeded_with_default_limits() {
+        // REQ-GRP-006: `free` (limit 2) and `admin` (unlimited) exist after the
+        // seed, and seeding twice does not duplicate them.
+        let s = st("builtin").await;
+        s.ensure_builtin_groups().await.unwrap();
+        s.ensure_builtin_groups().await.unwrap();
+        let groups = s.list_groups().await.unwrap();
+        let by_name = |n: &str| groups.iter().find(|(_, name, _, _)| name == n).cloned();
+        assert_eq!(by_name("free").map(|(_, _, _, l)| l), Some(Some(2)));
+        assert_eq!(by_name("admin").map(|(_, _, _, l)| l), Some(None));
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn new_users_join_their_default_group() {
+        // REQ-GRP-006/007: a reader joins `free` (quota 2), an admin joins
+        // `admin` (unlimited) — as soon as the builtin groups are provisioned.
+        let s = st("default-join").await;
+        s.ensure_builtin_groups().await.unwrap();
+        s.create_user("demo@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("root@x.fr", "pw", "admin").await.unwrap();
+        assert_eq!(
+            s.effective_personal_vault_limit("demo@x.fr").await.unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            s.effective_personal_vault_limit("root@x.fr").await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn groupless_users_are_swept_into_their_default_group_at_boot() {
+        // REQ-GRP-007: existing accounts (e.g. `demo`) land in `free` / `admin`
+        // on boot — but a user already placed in another group is left alone.
+        let s = st("sweep").await;
+        s.create_user("demo@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("root@x.fr", "pw", "admin").await.unwrap();
+        s.create_user("team@x.fr", "pw", "reader").await.unwrap();
+        let team = s.create_group("team").await.unwrap();
+        s.set_group_limit(team, Some(7)).await.unwrap();
+        s.add_group_member(team, "team@x.fr").await.unwrap();
+        s.ensure_builtin_groups().await.unwrap();
+        s.ensure_default_memberships().await.unwrap();
+        assert_eq!(
+            s.effective_personal_vault_limit("demo@x.fr").await.unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            s.effective_personal_vault_limit("root@x.fr").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            s.effective_personal_vault_limit("team@x.fr").await.unwrap(),
+            Some(7)
+        );
     }
 
     #[tokio::test]
