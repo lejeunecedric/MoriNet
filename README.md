@@ -133,6 +133,8 @@ MIT OR Apache-2.0 — see [LICENSE](LICENSE).
 
 ## Credits
 
+- The name **MoriNet** is a nod to **Edgar Morin**, the French philosopher of
+  complexity — [Wikipedia (EN)](https://en.wikipedia.org/wiki/Edgar_Morin).
 - Inspired by the works of **Andrej Karpathy** on LLM-Wiki — [gist: llm-wiki.md](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - Early-phase development during the **FRAMES** IBC Accelerator project — [showcase: Federated Retrieval, Agentic Media Environment and Software-Defined Workflows](https://show.ibc.org/ibc2026/accelerator-frames-federated-retrieval-agentic-media-environment-and-software-defined-workflows)
 - Inputs from the **Réseau Intelligence de la Complexité** AI workgroup — [intelligence-complexite.org](https://www.intelligence-complexite.org)
