@@ -29,7 +29,17 @@ pub fn source_dir_of(book_path: &Path) -> Option<PathBuf> {
         // (a plain static dir is registered as-is).
         return Some(p);
     }
-    p.parent().map(Path::to_path_buf)
+    let parent = p.parent()?;
+    // llm-wiki layout: <source>/.morinet-build/book — the generated tree is
+    // never a source; WebDAV must write into the vault the user owns (AD-13).
+    if parent
+        .file_name()
+        .map(|n| n == ".morinet-build")
+        .unwrap_or(false)
+    {
+        return parent.parent().map(Path::to_path_buf);
+    }
+    Some(parent.to_path_buf())
 }
 
 /// Reject `..` segments and absolute paths, then join under `root`.
@@ -315,6 +325,14 @@ mod tests {
     fn source_dir_is_the_parent_of_book() {
         let p = source_dir_of(Path::new("/data/vaults/demo/book"));
         assert_eq!(p, Some(PathBuf::from("/data/vaults/demo")));
+    }
+
+    #[test]
+    fn source_dir_unwraps_the_morinet_build_layout() {
+        // llm-wiki vault: WebDAV must expose the user's source, NOT the
+        // generated tree (<src>/.morinet-build/book → <src>).
+        let p = source_dir_of(Path::new("/data/vaults/wiki/.morinet-build/book"));
+        assert_eq!(p, Some(PathBuf::from("/data/vaults/wiki")));
     }
 
     #[test]

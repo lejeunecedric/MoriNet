@@ -481,7 +481,7 @@ async fn dav_resolve(
     state: &AppState,
     email: &str,
     slug: &str,
-) -> Result<(PathBuf, bool, PathBuf), StatusCode> {
+) -> Result<(PathBuf, bool, PathBuf, String), StatusCode> {
     let accessible = state
         .store
         .accessible_vaults(email)
@@ -501,7 +501,7 @@ async fn dav_resolve(
         .unwrap_or(None)
         .map(|r| r == "admin")
         .unwrap_or(false);
-    Ok((src, is_admin, book_dir))
+    Ok((src, is_admin, book_dir, entry.vault.name.clone()))
 }
 
 /// Single entry point for every WebDAV verb on `/webdav/{slug}/...`.
@@ -538,10 +538,11 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    let (src_dir, _is_admin, book_dir) = match dav_resolve(&state, &claims.email, &slug).await {
-        Ok(v) => v,
-        Err(code) => return code.into_response(),
-    };
+    let (src_dir, _is_admin, book_dir, vault_name) =
+        match dav_resolve(&state, &claims.email, &slug).await {
+            Ok(v) => v,
+            Err(code) => return code.into_response(),
+        };
     let rel = webdav::rel_from_uri(&uri, &slug);
     let base = format!("/webdav/{slug}");
 
@@ -610,22 +611,34 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
             // Rebuild so the served HTML reflects the new note (AD-10).
-            rebuild_book(&book_dir, &src_dir);
+            // llm-wiki sources are re-converted first (AD-14).
+            rebuild_book(&book_dir, &src_dir, &vault_name);
             StatusCode::CREATED.into_response()
         }
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
     }
 }
 
-/// Re-run `mdbook build` on the source dir so the change goes live.
-/// Best-effort: a build failure is logged, the write already happened.
-fn rebuild_book(book_dir: &std::path::Path, src_dir: &std::path::Path) {
-    if !src_dir.join("book.toml").is_file() {
-        return;
-    }
+/// Make the change go live (AD-10): llm-wiki sources are re-converted into
+/// `.morinet-build/` then built; native sources are built directly; a dir
+/// matching neither format has nothing to rebuild. Best-effort: a build
+/// failure is logged, the write already happened (AD-14 dispatch).
+fn rebuild_book(book_dir: &std::path::Path, src_dir: &std::path::Path, vault_name: &str) {
+    use crate::obsidian::convert::{convert, detect, VaultFormat};
+    let build_dir = match detect(src_dir) {
+        VaultFormat::LlmWiki => match convert(src_dir, vault_name) {
+            Ok(r) => r.build_dir,
+            Err(e) => {
+                eprintln!("webdav: llm-wiki convert failed after PUT: {e}");
+                return;
+            }
+        },
+        VaultFormat::Native => src_dir.to_path_buf(),
+        VaultFormat::Neither => return,
+    };
     match std::process::Command::new("mdbook")
         .arg("build")
-        .arg(src_dir)
+        .arg(&build_dir)
         .output()
     {
         Ok(out) if out.status.success() => {
@@ -1254,10 +1267,18 @@ async fn admin_vault_groups(
 
 async fn admin_vaults(State(state): State<SharedState>) -> Response {
     let vaults = state.store.list_all_vaults().await.unwrap_or_default();
+    use crate::obsidian::convert::{detect, VaultFormat};
     let mut rows = String::new();
     for v in &vaults {
+        // PRD-6: a vault matching neither llm-wiki nor mdBook format is flagged.
+        let warn = match webdav::source_dir_of(std::path::Path::new(&v.book_path)) {
+            Some(src) if matches!(detect(&src), VaultFormat::Neither) => {
+                " <em class=\"vault-warn\">⚠ LLM-Wiki not detected: this vault might not work as expected</em>"
+            }
+            _ => "",
+        };
         rows.push_str(&format!(
-            r#"<tr><td><a href="/admin/vaults/{s}/perms">{s}</a></td><td>{n}</td><td><form method="post" action="/admin/vaults/{s}/delete" style="display:inline"><button type="submit">Delete</button></form></td></tr>
+            r#"<tr><td><a href="/admin/vaults/{s}/perms">{s}</a></td><td>{n}{warn}</td><td><form method="post" action="/admin/vaults/{s}/delete" style="display:inline"><button type="submit">Delete</button></form></td></tr>
 "#,
             s = html_escape(&v.slug),
             n = html_escape(&v.name)
@@ -1275,7 +1296,7 @@ async fn admin_vaults(State(state): State<SharedState>) -> Response {
   <span id="gh-fields" style="display:none"><label>Git URL <input type="text" name="url"></label><label>Token <input type="text" name="token"></label></span>
   <button type="submit">Add</button>
 </form>
-<p><em>Note:</em> `local` expects a compiled book directory; `github` expects a repo with <code>book.toml</code> + <code>src/SUMMARY.md</code> (cloned + built on add, re-synced every 5 min).</p>"#
+<p><em>Note:</em> a vault is an <strong>llm-wiki / Obsidian</strong> directory (wikilinks + frontmatter) — a local path or a git repo; MoriNet converts and builds it automatically, re-syncing every 5 min. mdBook-native repos keep working. A directory matching neither format is flagged.</p>"#
     );
     admin_page("Vaults", body).await
 }
@@ -1305,7 +1326,7 @@ async fn admin_create_vault(
             let src = LocalSource {
                 path: PathBuf::from(&p.path),
             };
-            src.sync().and_then(|d| src.build(&d))
+            src.sync().and_then(|d| src.build(&d, &p.name))
         }
         "github" => {
             let src = GitSource::github(
@@ -1313,7 +1334,7 @@ async fn admin_create_vault(
                 (!p.token.is_empty()).then(|| p.token.clone()),
                 data_dir.join("repos").join(&p.slug),
             );
-            src.sync().and_then(|d| src.build(&d))
+            src.sync().and_then(|d| src.build(&d, &p.name))
         }
         other => return error_page(&format!("unknown kind '{other}'")),
     };
@@ -2285,6 +2306,33 @@ mod tests {
         root
     }
 
+    /// llm-wiki vault source (bare `[[wikilinks]]` + frontmatter, no book.toml).
+    /// Stored path is the generated `<src>/.morinet-build/book` layout (D2).
+    async fn seed_wiki_vault_named(state: &SharedState, slug: &str) -> std::path::PathBuf {
+        let src = std::env::temp_dir().join(format!("morinet-dav-wiki-{slug}"));
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(src.join("concepts")).unwrap();
+        std::fs::write(
+            src.join("index.md"),
+            "---\ntitle: Home\n---\n\n# Home\n\nSee [[z]].\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("concepts/z.md"),
+            "---\ntitle: Z\ntype: concept\n---\n\nZ page.\n",
+        )
+        .unwrap();
+        let build = src.join(".morinet-build");
+        std::fs::create_dir_all(build.join("book")).unwrap();
+        std::fs::write(build.join("book").join("index.html"), "<html>wiki</html>").unwrap();
+        state
+            .store
+            .seed_vault(slug, "Wiki vault", &build.join("book"))
+            .await
+            .unwrap();
+        src
+    }
+
     async fn dav_request(
         app: Router,
         method: &str,
@@ -2495,6 +2543,72 @@ mod tests {
             "content: {written}"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn webdav_put_on_llm_wiki_vault_reconverts_the_tree() {
+        // REQ-OBSFMT-006 at the ROUTE level (pitfall #14): PUT a note on the
+        // SOURCE; the generated tree must reflect it — converted page with meta
+        // block + SUMMARY regenerated, not just a file on disk.
+        let (app, state) = test_router().await;
+        let src = seed_wiki_vault_named(&state, "wikidav").await;
+        let res = dav_request(
+            app,
+            "PUT",
+            "/webdav/wikidav/concepts/new.md",
+            basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+            Some("---\ntitle: New Page\ntype: concept\n---\n\nFresh.\n"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let gen_src = src.join(".morinet-build").join("src");
+        let page = std::fs::read_to_string(gen_src.join("concepts/new.md"))
+            .expect("new note converted into the build tree");
+        assert!(page.contains("<div class=\"note-meta\">"), "got: {page}");
+        let summary = std::fs::read_to_string(gen_src.join("SUMMARY.md")).unwrap();
+        assert!(
+            summary.contains("[New Page](concepts/new.md)"),
+            "SUMMARY regenerated: {summary}"
+        );
+        std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[tokio::test]
+    async fn admin_vaults_warn_when_format_matches_neither() {
+        // PRD-6: the exact warning string, visible on the admin vaults page.
+        let (app, state) = test_router().await;
+        let plain = std::env::temp_dir().join("morinet-plain-vault-badge");
+        let _ = std::fs::remove_dir_all(&plain);
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("page.html"), "<html></html>").unwrap();
+        state
+            .store
+            .seed_vault("plain", "Plain vault", &plain)
+            .await
+            .unwrap();
+        let cookie = admin_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app, "GET", "/admin/vaults", headers, None).await;
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        // The warning sits on the Plain vault row (a bare static dir: neither
+        // llm-wiki nor mdBook → D2/PRD-6 flags it).
+        let plain_row = text
+            .lines()
+            .find(|l| l.contains("Plain vault"))
+            .expect("plain vault row present");
+        assert!(
+            plain_row.contains("LLM-Wiki not detected"),
+            "expected warning on the plain row, got: {plain_row}"
+        );
+        assert!(
+            plain_row.contains("this vault might not work as expected"),
+            "exact PRD-6 wording, got: {plain_row}"
+        );
+        // The demo fixture is the SAME kind (bare compiled HTML, no sources) →
+        // also honestly flagged; a vault WITH real sources must not be.
+        assert!(text.contains("LLM-Wiki not detected"));
+        std::fs::remove_dir_all(&plain).ok();
     }
 
     #[tokio::test]

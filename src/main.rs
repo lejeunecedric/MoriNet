@@ -94,7 +94,7 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
         let src = LocalSource {
             path: book_dir.clone(),
         };
-        let book = src.sync().and_then(|d| src.build(&d))?;
+        let book = src.sync().and_then(|d| src.build(&d, "Demo vault"))?;
         store.seed_vault("demo", "Demo vault", &book).await?;
     } else {
         for entry in &file_cfg.vaults.entries {
@@ -103,12 +103,12 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
                     let src = LocalSource {
                         path: PathBuf::from(&entry.path),
                     };
-                    src.sync().and_then(|d| src.build(&d))
+                    src.sync().and_then(|d| src.build(&d, &entry.name))
                 }
                 "github" => {
                     let dest = data_dir.join("repos").join(&entry.slug);
                     let src = GitSource::github(entry.url.clone(), entry.token.clone(), dest);
-                    src.sync().and_then(|d| src.build(&d))
+                    src.sync().and_then(|d| src.build(&d, &entry.name))
                 }
                 other => anyhow::bail!("unknown vault kind '{other}' for '{}'", entry.slug),
             };
@@ -145,7 +145,7 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
                 for (slug, source, name) in &github_sources {
-                    match source.sync().and_then(|d| source.build(&d)) {
+                    match source.sync().and_then(|d| source.build(&d, name)) {
                         Ok(book_dir) => {
                             if let Err(e) = bg_store.seed_vault(slug, name, &book_dir).await {
                                 eprintln!("background sync: seed '{}' failed: {e}", slug);
