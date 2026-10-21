@@ -154,6 +154,8 @@ pub fn build_router_with_email(
         .route("/", get(index))
         .route("/logout", post(logout))
         .route("/vaults/create", post(load_personal_vault))
+        .route("/vaults/{slug}/delete", post(delete_my_vault))
+        .route("/vaults/{slug}/refresh", post(refresh_my_vault))
         .route("/vault", get(vault_root_redirect))
         .route("/vault/{slug}/", get(vault_index))
         .route("/vault/{slug}/{*rest}", get(vault_file))
@@ -365,8 +367,8 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     let mut personal_items = String::new();
     let mut global_items = String::new();
     for a in &accessible {
-        let line = format!(
-            r#"<li><a href="/vault/{}/">{}</a> <small>({})</small></li>"#,
+        let mut line = format!(
+            r#"<li><a href="/vault/{}/">{}</a> <small>({})</small>"#,
             html_escape(&a.vault.slug),
             html_escape(&a.vault.name),
             if a.personal {
@@ -375,6 +377,15 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
                 a.role.as_str()
             },
         );
+        if a.personal {
+            // The owner manages their own vault: pull upstream updates or
+            // remove it (which frees the quota slot).
+            line.push_str(&format!(
+                r#" <form method="post" action="/vaults/{s}/refresh" style="display:inline"><button type="submit">Refresh</button></form> <form method="post" action="/vaults/{s}/delete" style="display:inline" onsubmit="return confirm('Remove this vault from your collection?')"><button type="submit">Delete</button></form>"#,
+                s = html_escape(&a.vault.slug),
+            ));
+        }
+        line.push_str("</li>\n");
         if a.personal {
             personal_items.push_str(&line);
         } else {
@@ -1318,6 +1329,57 @@ async fn admin_delete_group(State(state): State<SharedState>, Path(id): Path<i64
     Redirect::to("/admin/groups").into_response()
 }
 
+/// `POST /vaults/{slug}/delete` — the owner removes their personal vault.
+/// Owner-only (the store enforces it); the quota slot is freed at once.
+async fn delete_my_vault(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+) -> Response {
+    match state
+        .store
+        .delete_personal_vault(&claims.email, &slug)
+        .await
+    {
+        Ok(true) => Redirect::to("/").into_response(),
+        Ok(false) => StatusCode::FORBIDDEN.into_response(),
+        Err(e) => error_page(&format!("could not delete the vault: {e}")),
+    }
+}
+
+/// `POST /vaults/{slug}/refresh` — re-pull the vault's upstream and rebuild so
+/// pages added after the load appear without reloading (REQ-VLT-005).
+async fn refresh_my_vault(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+) -> Response {
+    let access = match state.store.access_for(&claims.email, &slug).await {
+        Ok(a) => a,
+        Err(e) => return error_page(&format!("access check failed: {e}")),
+    };
+    if !access.can_write() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(url) = state.store.vault_source(&slug).await.ok().flatten() else {
+        return error_page("this vault has no upstream to refresh (local vault)");
+    };
+    let Some(name) = state.store.vault_name(&slug).await.ok().flatten() else {
+        return error_page("unknown vault");
+    };
+    use crate::sources::VaultSource as _;
+    let src =
+        crate::sources::GitSource::github(url, None, state.cfg.data_dir.join("repos").join(&slug));
+    let book_dir = match src.sync().and_then(|d| src.build(&d, &name)) {
+        Ok(b) => b,
+        Err(e) => return error_page(&format!("refresh failed: {e}")),
+    };
+    match state.store.seed_vault(&slug, &name, &book_dir).await {
+        Ok(()) => Redirect::to(&format!("/vault/{slug}/")).into_response(),
+        Err(e) => error_page(&format!("could not register the refreshed book: {e}")),
+    }
+}
+
 /// `POST /vaults/create` — a signed-in user loads a GitHub vault into their
 /// PERSONAL space (REQ-VLT-005/008). The quota is checked first so the common
 /// "limit reached" answer never clones anything; the slug is derived from the
@@ -1382,7 +1444,11 @@ async fn load_personal_vault(
         .create_personal_vault(&claims.email, &slug, name, &book_dir)
         .await
     {
-        Ok(()) => Redirect::to(&format!("/vault/{slug}/")).into_response(),
+        Ok(()) => {
+            // Remember the upstream so the vault can be refreshed later.
+            let _ = state.store.set_vault_source(&slug, url).await;
+            Redirect::to(&format!("/vault/{slug}/")).into_response()
+        }
         Err(e) if e.to_string().contains("UNIQUE") => error_page(&format!(
             "the slug '{slug}' is already taken — rename the vault"
         )),
@@ -2083,6 +2149,198 @@ mod tests {
             assert!(out.status.success(), "{cmd:?} failed: {out:?}");
         }
         format!("file://{}", root.display())
+    }
+
+    /// Add a commit to a fixture repo created by `wiki_repo`.
+    fn wiki_repo_commit(test_name: &str, file: &str, content: &str) {
+        let root = std::env::temp_dir().join(format!("morinet-wikirepo-{test_name}"));
+        std::fs::write(root.join(file), content).unwrap();
+        for cmd in [
+            vec!["git", "add", "."],
+            vec![
+                "git",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "update",
+            ],
+        ] {
+            let out = std::process::Command::new(cmd[0])
+                .args(&cmd[1..])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{cmd:?} failed: {out:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_can_delete_their_personal_vault_and_reuse_the_quota() {
+        // REQ-VLT-005 follow-up: without a delete, the 2-vault quota could be
+        // exhausted for life. Delete is owner-only and frees the slot.
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("demo@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("free").await.unwrap();
+        state.store.set_group_limit(g, Some(1)).await.unwrap();
+        state.store.add_group_member(g, "demo@x.fr").await.unwrap();
+        let url = wiki_repo("pv-delete");
+        let cookie = login_as(&app, "demo@x.fr", "pw").await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/create",
+            headers.clone(),
+            Some(Body::from(format!("name=Del One&url={url}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        // Quota (1) is now full.
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/create",
+            headers.clone(),
+            Some(Body::from(format!("name=Del Two&url={url}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // Delete the vault → slot free again, index stops listing it.
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/del-one/delete",
+            headers.clone(),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state
+                .store
+                .count_personal_vaults("demo@x.fr")
+                .await
+                .unwrap(),
+            0
+        );
+        let res = req(app.clone(), "GET", "/", headers.clone(), None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("Del One (private)"));
+        // The freed slot works again.
+        let res = req(
+            app,
+            "POST",
+            "/vaults/create",
+            headers,
+            Some(Body::from(format!("name=Del Two&url={url}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn non_owner_cannot_delete_a_personal_vault() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("a@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        state
+            .store
+            .create_user("b@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        state
+            .store
+            .create_personal_vault(
+                "a@x.fr",
+                "mine",
+                "Mine",
+                std::path::Path::new("/tmp/mine/book"),
+            )
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "b@x.fr", "pw").await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(app, "POST", "/vaults/mine/delete", headers, None).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            state.store.count_personal_vaults("a@x.fr").await.unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_pulls_the_latest_commit() {
+        // The loaded vault remembers its source; refresh re-pulls and rebuilds,
+        // so new upstream pages appear without reloading.
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("demo@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("free").await.unwrap();
+        state.store.set_group_limit(g, Some(2)).await.unwrap();
+        state.store.add_group_member(g, "demo@x.fr").await.unwrap();
+        let url = wiki_repo("pv-refresh");
+        let cookie = login_as(&app, "demo@x.fr", "pw").await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/create",
+            headers.clone(),
+            Some(Body::from(format!("name=Refresh One&url={url}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        // A new page lands upstream after the load.
+        wiki_repo_commit("pv-refresh", "new-page.md", "# New Page\n\nFresh.\n");
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/refresh-one/refresh",
+            headers.clone(),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.headers().get("location").unwrap(),
+            "/vault/refresh-one/"
+        );
+        let res = req(
+            app,
+            "GET",
+            "/vault/refresh-one/new-page.html",
+            headers,
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Fresh"));
     }
 
     #[tokio::test]

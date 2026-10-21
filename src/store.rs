@@ -779,6 +779,50 @@ impl Store {
         Ok(())
     }
 
+    /// Delete a PERSONAL vault owned by `email` — owner-only, and the freed
+    /// quota slot is immediately reusable. Returns whether a row went away.
+    pub async fn delete_personal_vault(&self, email: &str, slug: &str) -> anyhow::Result<bool> {
+        let res = sqlx::query(
+            "DELETE FROM vaults
+             WHERE slug = ? AND scope = 'personal'
+               AND owner_id = (SELECT id FROM users WHERE email = ?)",
+        )
+        .bind(slug)
+        .bind(email)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// The upstream URL a vault was loaded from (None = local/legacy).
+    pub async fn vault_source(&self, slug: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT source_url FROM vaults WHERE slug = ?")
+                .bind(slug)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(v,)| v))
+    }
+
+    /// Remember where a vault came from (set at load time).
+    pub async fn set_vault_source(&self, slug: &str, url: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE vaults SET source_url = ? WHERE slug = ?")
+            .bind(url)
+            .bind(slug)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The vault name (for rebuilds).
+    pub async fn vault_name(&self, slug: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT name FROM vaults WHERE slug = ?")
+            .bind(slug)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(n,)| n))
+    }
+
     /// How many personal vaults `email` owns (REQ-VLT-008).
     pub async fn count_personal_vaults(&self, email: &str) -> anyhow::Result<i64> {
         let (n,): (i64,) = sqlx::query_as(
@@ -1368,6 +1412,58 @@ mod access_tests {
     }
 
     // ---------- personal vault quota (REQ-GRP-005..008, REQ-VLT-008) ----------
+
+    #[tokio::test]
+    async fn personal_vault_delete_is_owner_only_and_releases_the_quota() {
+        // Without a delete, a `free` member could exhaust their 2 slots for
+        // life. Deleting is owner-only: another user (even an admin-ish
+        // sibling owner) cannot drop someone else's vault.
+        let s = st("pv-delete").await;
+        s.create_user("a@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("b@x.fr", "pw", "reader").await.unwrap();
+        let g = s.create_group("free").await.unwrap();
+        s.set_group_limit(g, Some(2)).await.unwrap();
+        s.add_group_member(g, "a@x.fr").await.unwrap();
+        s.add_group_member(g, "b@x.fr").await.unwrap();
+        s.create_personal_vault("a@x.fr", "v1", "V1", Path::new("/tmp/d1/book"))
+            .await
+            .unwrap();
+        s.create_personal_vault("a@x.fr", "v2", "V2", Path::new("/tmp/d2/book"))
+            .await
+            .unwrap();
+        // Quota full: a third is refused.
+        assert!(s
+            .create_personal_vault("a@x.fr", "v3", "V3", Path::new("/tmp/d3/book"))
+            .await
+            .is_err());
+        // B cannot delete A's vault.
+        assert!(!s.delete_personal_vault("b@x.fr", "v1").await.unwrap());
+        assert_eq!(s.count_personal_vaults("a@x.fr").await.unwrap(), 2);
+        // A deletes v1 → the slot is free again.
+        assert!(s.delete_personal_vault("a@x.fr", "v1").await.unwrap());
+        assert_eq!(s.count_personal_vaults("a@x.fr").await.unwrap(), 1);
+        s.create_personal_vault("a@x.fr", "v3", "V3", Path::new("/tmp/d3/book"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn vault_source_roundtrips() {
+        // A loaded vault remembers where it came from so it can be refreshed.
+        let s = st("pv-source").await;
+        s.create_user("a@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault("a@x.fr", "v1", "V1", Path::new("/tmp/s1/book"))
+            .await
+            .unwrap();
+        assert_eq!(s.vault_source("v1").await.unwrap(), None);
+        s.set_vault_source("v1", "https://github.com/lejeunecedric/B3Wiki")
+            .await
+            .unwrap();
+        assert_eq!(
+            s.vault_source("v1").await.unwrap().as_deref(),
+            Some("https://github.com/lejeunecedric/B3Wiki")
+        );
+    }
 
     #[tokio::test]
     async fn group_limit_caps_personal_vault_creation() {
