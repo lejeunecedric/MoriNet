@@ -72,18 +72,47 @@
 | REQ-WEBDAV-004  | `PUT` allowed for admin only                                            | curl PUT as reader → 403              |
 | REQ-WEBDAV-005  | Vault ACL respected on WebDAV (user without ACL → 401)                 | curl non-ACL → 401                    |
 
-## FUSION — Per-user merged book
+## GROUPS — Admin-managed groups
 
-| REQ-ID        | Description                                                                  | Verification                          |
-|---------------|------------------------------------------------------------------------------|---------------------------------------|
-| REQ-FUSE-001  | Each user sees ONE merged mdbook containing only the vaults they may access   | reader A vs reader B see different books |
-| REQ-FUSE-002  | Merged `SUMMARY.md` groups entries **by vault** (one top-level section each)   | generated SUMMARY snapshot           |
-| REQ-FUSE-003  | The sidebar groups chapters by vault with a visible group heading             | browser screenshot                    |
-| REQ-FUSE-004  | Revoking a vault ACL removes it from the merged book on next build           | grant → revoke → book changes        |
-| REQ-FUSE-005  | Merged books are cached on disk under `data/books/<user>/`, reused if fresh   | second request does not rebuild       |
-| REQ-FUSE-006  | Cache key includes the vault set + ACL state (no stale cross-user reads)     | different users → different dirs     |
-| REQ-FUSE-007  | Vaults stay independently managed (own dir, own git, own sync)               | editing one vault does not touch another |
-| REQ-FUSE-008  | A merged build never leaks a vault the user cannot read                       | reader without ACL → not in SUMMARY   |
+| REQ-ID         | Description                                                                | Verification                          |
+|----------------|----------------------------------------------------------------------------|---------------------------------------|
+| REQ-GRP-001    | `groups` table (name) + `group_members` (user ↔ group)                     | migration + e2e                       |
+| REQ-GRP-002    | Admin creates / edits / deletes a group                                    | browser click-through                 |
+| REQ-GRP-003    | Admin adds and removes users from a group                                  | browser + membership reflected in ACL |
+| REQ-GRP-004    | Deleting a group removes its membership rows (CASCADE)                    | delete then list                      |
+
+## VAULTS — Global and personal
+
+| REQ-ID         | Description                                                                | Verification                          |
+|----------------|----------------------------------------------------------------------------|---------------------------------------|
+| REQ-VLT-001    | `vaults` gains `scope` ('global' \| 'personal') and `owner_id`             | migration preserves existing rows as global |
+| REQ-VLT-002    | A **personal** vault is visible ONLY to its owner                         | user B cannot list/GET it (403)       |
+| REQ-VLT-003    | A **global** vault is visible to the groups assigned to it                | member sees it, non-member does not  |
+| REQ-VLT-004    | `vault_group_acl(vault_id, group_id, role)` with role in ('read','write')  | role enforced on read and write       |
+| REQ-VLT-005    | Any user may add a vault from the UI (browse + import)                    | user creates a personal vault         |
+| REQ-VLT-006    | A user always has 'write' on their own personal vault                      | PUT on own vault succeeds             |
+| REQ-VLT-007    | Admins see every vault (global and personal)                               | admin list shows all                  |
+
+## ACCOUNT — Self-service profile
+
+| REQ-ID         | Description                                                                | Verification                          |
+|----------------|----------------------------------------------------------------------------|---------------------------------------|
+| REQ-ACC-001    | Account menu top-right: name, email, logout                               | browser screenshot                    |
+| REQ-ACC-002    | `users.display_name` (nullable) shown in nav and menus                     | set then reload                       |
+| REQ-ACC-003    | `POST /logout` clears the session cookie and redirects to /login           | click logout → logged out             |
+| REQ-ACC-004    | Email change requires confirmation at the NEW address                      | old email still works before confirm   |
+| REQ-ACC-005    | `pending_emails` table: email changes only after confirmation             | confirm then new email logs in        |
+| REQ-ACC-006    | An unconfirmed change never breaks the existing login                      | e2e regression                        |
+
+## UX-NAV — Navigation
+
+| REQ-ID         | Description                                                                | Verification                          |
+|----------------|----------------------------------------------------------------------------|---------------------------------------|
+| REQ-NAV-001    | Every app page carries the same header: account menu top-right             | browser screenshot                    |
+| REQ-NAV-002    | "My vaults" is the landing page after login (list of global + personal)   | click vault → mdbook                  |
+| REQ-NAV-003    | An mdBook page shows a discreet close button (top-right) → back to /       | browser click-through                 |
+| REQ-NAV-004    | The Admin menu is rendered ONLY when role=admin                            | reader sees no admin entry            |
+| REQ-NAV-005    | Admin menu items: groups, users, global vaults                            | each page reachable                   |
 
 ## MCP — Model Context Protocol
 
