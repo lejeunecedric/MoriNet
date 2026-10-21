@@ -81,6 +81,10 @@
 | REQ-GRP-002    | Admin creates / edits / deletes a group                                    | browser click-through                 |
 | REQ-GRP-003    | Admin adds and removes users from a group                                  | browser + membership reflected in ACL |
 | REQ-GRP-004    | Deleting a group removes its membership rows (CASCADE)                    | delete then list                      |
+| REQ-GRP-005    | `groups.personal_vault_limit` (NULL = unlimited) — quota de création de vaults **personnels** | migration + store test |
+| REQ-GRP-006    | Groupes builtin au bootstrap : `free` (limit 2) et `admin` (illimité)      | fresh DB has both, with limits        |
+| REQ-GRP-007    | Le compte **demo** est un `reader` membre de `free` (PAS admin) ; l'admin du bootstrap est membre de `admin` | role_for(demo) = reader, demo ∉ admin |
+| REQ-GRP-008    | La limite effective d'un user = le plus permissif de ses groupes (NULL > tout ; sinon max) | multi-group test                      |
 
 ## VAULTS — Global and personal
 
@@ -93,6 +97,7 @@
 | REQ-VLT-005    | Any user may add a vault from the UI (browse + import)                    | user creates a personal vault         |
 | REQ-VLT-006    | A user always has 'write' on their own personal vault                      | PUT on own vault succeeds             |
 | REQ-VLT-007    | Admins see every vault (global and personal)                               | admin list shows all                  |
+| REQ-VLT-008    | `create_personal_vault` refuse au-delà de la limite du groupe (les partages ne comptent pas) | 3e création par un membre de `free` → erreur |
 
 ## ACCOUNT — Self-service profile
 
@@ -194,6 +199,7 @@
 - Phase 7: REQ-MCP-001..007
 - Phase 7: REQ-UX-001..007 (vault management UX — inserted before MCP)
 - Phase 8: REQ-MCP-001..007 (renumbered)
+- Phase 8 (access-model, quotas): REQ-GRP-001..008, REQ-VLT-001..008
 - Phase 9: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
 - Phase 8b: REQ-OBSFMT-001..006 (converter llm-wiki/Obsidian → mdBook)
 - Phase 9 pull-forward (2026-10-21, feedback user) : REQ-ACC-003 (`POST /logout`), REQ-NAV-006 (nav claire), REQ-ADMIN-007 (bouton About version + repo)

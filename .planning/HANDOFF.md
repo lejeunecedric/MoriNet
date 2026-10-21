@@ -25,9 +25,10 @@ A Rust server that exposes Obsidian second brains as mdBook sites with multi-use
 
 ## Current state at handoff time
 
-- Latest release: **v0.1.6** (embedded stylesheet, admin nav on index). If holldemo still serves an older build, re-run the deploy: GitHub → Actions → Deploy → Run workflow → tag `v0.1.6`.
+- Latest release: **v0.1.8** (Phase 8b obsidian-format — llm-wiki/Obsidian vaults converted & served natively). Live: **https://morinet.treklair.fr**.
+- On `main`, **not yet released**: Phase 9 pull-forward (logout + About page + clarified admin nav) — commit `b307e18`. It's tested (167/167) and CI-green; needs a version bump + tag to ship.
 - The deploy auto-triggers on tag push AND on release published, but **re-dispatch may be needed right after a release finishes** (the tag-push deploy can race ahead of the release and fall back to "latest release"). Watch for that.
-- holldemo has **no vaults configured yet** — add one via `/admin/vaults` (kind `github` needs a repo with `book.toml` + `src/SUMMARY.md`).
+- treklair has **no vaults configured yet** — add one via `/admin/vaults` (kind `github` needs a repo with `book.toml` + `src/SUMMARY.md`; or a local llm-wiki dir, which the v0.1.8 converter now serves natively).
 
 ## Vault contract (IMPORTANT)
 
@@ -102,6 +103,7 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 18. **The remote moves while you work.** Fetch and diff before merging — do not force-push. Several PRs landed mid-session (README description, credits, phase table, a deleted docs file).
 19. **Your model of a tool's schema can be out of date — the tool is the oracle.** `mdbook` 0.5 REMOVED `multilingual` from `[book]` ("unknown field") and REJECTS a draft SUMMARY parent that has children ("link items for nested chapters must only contain a hyperlink"). Both bugs passed my unit tests because my fixtures encoded my (wrong) model of mdBook. Only running the real binary on a real corpus found them. Same class of bug as the WebDAV date formatter (pitfall #13) — the fix is the same: an `#[ignore]`d oracle against the real tool + a real corpus.
 20. **The demo fixture can be a legitimately-flagged vault.** The `demo` test vault is a bare compiled-HTML dir → it matches NEITHER format, so the PRD-6 warning applies to it too. Don't write a test that assumes "the demo vault is never flagged" — assert per-row instead.
+21. **"The admin button shows for a non-admin" is usually a role-in-DB problem, not a nav bug.** `index` and `require_admin` both gate on `role_for(email) == "admin"` and are consistent. If a user sees Admin, they ARE admin in the DB — MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env, so on treklair the `demo` login is the admin. Check the role in the DB before touching the nav logic.
 
 ## What's left (ROADMAP)
 
@@ -130,17 +132,21 @@ The two real-mdBook-0.5 bugs are recorded as pitfall #19.
 - The picker modal (list dirs, descend, up, breadcrumb) over the finished `/admin/browse`
 - Browser-side import that **creates a new vault** from a local folder (slug = folder name, scaffolds `book.toml` + `src/SUMMARY.md`)
 
-**Blocker to resolve first — Obsidian wikis are NOT mdBook**
+**Next step to resume — group quota (Phase 8, user decision 2026-10-21)**
 
-The vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The user states the real input is **always an Obsidian-format wiki**. `B3Wiki` was inspected and confirms it:
+The user wants real group-based user management with a per-group vault quota:
+- `groups` gains `personal_vault_limit` (NULL = unlimited) — REQ-GRP-005
+- Builtin groups at bootstrap: `free` (limit **2**), `admin` (unlimited) — REQ-GRP-006
+- **`demo` becomes a `reader` in `free`, NOT admin**; the bootstrap admin is in `admin` — REQ-GRP-007
+- The quota caps **personal vaults a member can CREATE** — shared/global vaults do NOT count, and visibility is NOT capped — REQ-VLT-008
+- Effective limit for a user = the most permissive across their groups (NULL beats any; otherwise max) — REQ-GRP-008
 
-- **0** `book.toml`, **0** `SUMMARY.md`, **147** `.md` in a Karpathy layout (`entities/`, `concepts/`, `comparisons/`, `raw/`, `queries/`)
-- **641** `[[wikilinks]]`, many with aliases: `[[jimmy-smith|Jimmy Smith]]`
-- YAML frontmatter on every page (`title`, `created`, `updated`, `type`, `tags`)
-
-A hand-written `SUMMARY.md` does build, but mdBook **does not resolve `[[…]]`**: the links render as literal text and stay broken. Converting is therefore not enough — it needs `[[wikilink]]` resolution, `|alias` support, and frontmatter handling.
-
-An earlier raw-wiki import was tried and **deliberately reverted** (`2b924f3`) because it was a format-validation test, not a feature. Do not re-add it as a silent hack — build it properly.
+**Why the Admin button showed for demo (NOT a code bug — do not re-diagnose):**
+`index` (`src/server.rs`) and `require_admin` both gate on `role_for(email) == "admin"`
+— they are correct and consistent. The button shows because **`demo` has role `admin`
+in the prod DB**: MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env,
+and on treklair that email is `demo`. The fix is the data/role change above (demo →
+reader in `free`), which makes the button disappear — not a change to the nav logic.
 
 ## Testing conventions
 
