@@ -106,19 +106,31 @@ fn render_children(out: &mut String, dir_prefix: &str, kids: &[&PageEntry], inde
     subs.sort();
     subs.dedup();
     for s in subs {
-        let name = s.split('/').next_back().unwrap_or(&s);
-        out.push_str(&format!("{pad}- {}\n", humanize(name)));
+        // The parent item must be a real hyperlink (mdBook 0.5): the folder's
+        // native index page, else the generated `_section.md` landing page.
+        let parent = ["index.md", "_index.md", "_section.md"]
+            .iter()
+            .find_map(|n| kids.iter().find(|e| e.rel == format!("{s}/{n}")));
+        match parent {
+            Some(p) => out.push_str(&format!("{pad}- [{}]({})\n", p.title, p.rel)),
+            None => out.push_str(&format!(
+                "{pad}- {}\n",
+                humanize(s.split('/').next_back().unwrap_or(&s))
+            )),
+        }
         let subkids: Vec<&PageEntry> = kids
             .iter()
             .copied()
-            .filter(|e| e.rel.starts_with(&s))
+            .filter(|e| {
+                e.rel.starts_with(&s) && Some(e.rel.as_str()) != parent.map(|p| p.rel.as_str())
+            })
             .collect();
         render_children(out, &format!("{s}/"), &subkids, indent + 1);
     }
 }
 
 /// Folder name → section title: capitalize, hyphens to spaces.
-fn humanize(dir: &str) -> String {
+pub fn humanize(dir: &str) -> String {
     let spaced = dir.replace('-', " ");
     let mut chars = spaced.chars();
     match chars.next() {
@@ -129,9 +141,14 @@ fn humanize(dir: &str) -> String {
 
 /// Generate `book.toml` for the converted vault (AD-2: mdBook upstream +
 /// our injected stylesheet, no fork).
+///
+/// Only fields valid across mdBook 0.4 AND 0.5: `multilingual` was REMOVED in
+/// 0.5 (caught by the real-binary oracle — `mdbook build` on the corpus fails
+/// on unknown fields now). Omitting it is valid everywhere; the default is
+/// already single-language.
 pub fn book_toml(vault_name: &str) -> String {
     format!(
-        "[book]\ntitle = \"{}\"\nlanguage = \"en\"\nmultilingual = false\nsrc = \"src\"\n\n[output.html]\nadditional-css = [\"theme/morinet.css\"]\n",
+        "[book]\ntitle = \"{}\"\nlanguage = \"en\"\nsrc = \"src\"\n\n[output.html]\nadditional-css = [\"theme/morinet.css\"]\n",
         vault_name.replace('\\', "\\\\").replace('"', "\\\"")
     )
 }
@@ -179,6 +196,32 @@ pub fn meta_block(fm: &Frontmatter) -> String {
 /// via `additional-css` — styles the meta block and inert wikilinks.
 pub const MORINET_CSS: &str = ".note-meta{display:flex;flex-wrap:wrap;gap:.5rem;font-size:.8rem;opacity:.85;margin-bottom:1rem}\n.note-meta span{border-radius:999px;padding:.1rem .6rem;border:1px solid rgba(128,128,128,.4)}\n.note-type{font-style:italic}\n.note-contested{color:#d33;border-color:#d33}\n.wikilink-missing{opacity:.55;border-bottom:1px dotted currentColor;cursor:help}\n";
 
+/// Landing page for a sub-folder that has no native index — mdBook requires
+/// nested SUMMARY chapters to hang under a real hyperlink (measured with
+/// mdbook 0.5: a draft parent with children fails `Summary parsing`).
+pub fn folder_note(
+    dir_name: &str,
+    pages: &[(String, String)],
+    subs: &[(String, String)],
+) -> String {
+    let mut out = format!("# {}\n\n", humanize(dir_name));
+    if !pages.is_empty() {
+        out.push_str("Pages in this section:\n\n");
+        for (title, href) in pages {
+            out.push_str(&format!("- [{title}]({href})\n"));
+        }
+        out.push('\n');
+    }
+    if !subs.is_empty() {
+        out.push_str("Subsections:\n\n");
+        for (title, href) in subs {
+            out.push_str(&format!("- [{title}]({href})\n"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,12 +236,16 @@ mod tests {
 
     #[test]
     fn summary_is_a_folder_tree_home_first_alphabetical() {
+        // Sub-folders nest under a LINKED parent (mdBook 0.5 rejects draft
+        // parents with children — caught by the real-binary oracle).
         let entries = [
             e("index.md", "Home"),
             e("log.md", "Log"),
             e("concepts/suite.md", "Suite"),
             e("concepts/zeuhl.md", "Zeuhl"),
+            e("entities/bands/_section.md", "Bands"),
             e("entities/bands/yes.md", "Yes"),
+            e("entities/instruments/_section.md", "Instruments"),
             e("entities/instruments/mellotron.md", "Mellotron"),
         ];
         let want = "# Summary\n\n\
@@ -208,8 +255,8 @@ mod tests {
              - [Suite](concepts/suite.md)\n\
              - [Zeuhl](concepts/zeuhl.md)\n\n\
              # Entities\n\n\
-             - Bands\n  - [Yes](entities/bands/yes.md)\n\
-             - Instruments\n  - [Mellotron](entities/instruments/mellotron.md)\n";
+             - [Bands](entities/bands/_section.md)\n  - [Yes](entities/bands/yes.md)\n\
+             - [Instruments](entities/instruments/_section.md)\n  - [Mellotron](entities/instruments/mellotron.md)\n";
         assert_eq!(summary_md(&entries), want);
     }
 
