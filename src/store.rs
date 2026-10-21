@@ -431,6 +431,16 @@ impl Store {
     }
 
     /// Set the display name shown in the UI (Phase 9, REQ-ACC-002).
+    /// The display name for the account menu (falls back to None → email).
+    pub async fn display_name_for(&self, email: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT display_name FROM users WHERE email = ?")
+                .bind(email)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(n,)| n))
+    }
+
     pub async fn set_display_name(&self, email: &str, name: &str) -> anyhow::Result<()> {
         let trimmed = name.trim();
         let value = if trimmed.is_empty() {
