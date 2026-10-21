@@ -54,9 +54,10 @@ morinet serve --config ./config.toml
 | 05 email | SMTP + invitations + reset | ✅ |
 | 06 webdav | WebDAV exposure | ✅ |
 | 07 vault-ux | server-side folder picker for local vaults | ⬜ next |
-| 08 fusion | per-user merged book, sidebar by vault | ⬜ |
-| 09 mcp | MCP StreamableHttp | ⬜ |
-| 10 polish | installer + README + release v1.0 | ⬜ |
+| 08 access-model | groups + personal vaults | ⬜ |
+| 09 ux-nav | new shell: my vaults, account menu | ⬜ |
+| 10 mcp | MCP StreamableHttp | ⬜ |
+| 11 polish | installer + README + release v1.0 | ⬜ |
 
 **Live**: https://morinet.treklair.fr — public demo instance (no real data; credentials not in this repo). **Handoff notes for agents**: [`.planning/HANDOFF.md`](.planning/HANDOFF.md).
 

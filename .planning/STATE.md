@@ -15,8 +15,10 @@
 - **Auto-scaffold of raw wikis REVERTED** (`2b924f3`): vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The B3Wiki/ProgWiki import was a format-validation test, not a feature — see HANDOFF.md before re-attempting
 - **Deploy quirks**: staging + atomic `mv` (ETXTBSY), re-dispatch may be needed right after a release finishes (tag-push deploy races the release and falls back to "latest release")
 - **Planning refreshed (2026-10-21)**: a new **Phase 7 — vault-ux** was inserted BEFORE MCP (MCP → 08, polish → 09). User-driven: adding a local vault should not require typing a server path.
-- **New Phase 8 — fusion** (user decision 2026-10-21): vaults stay independently managed BUT each user sees ONE merged mdbook of the vaults they may access, sidebar grouped by vault. Chosen approach: rebuild per user, cache on disk (`data/books/<user>/`). REQ-FUSE-001..008.
-- **Next**: Phase 7 (vault-ux: browse + import) → Phase 8 (fusion) → Phase 9 (MCP) → Phase 10 (polish v1.0)
+- **Phase 8 — access-model** (user decision 2026-10-21): the merged-book idea is ABANDONED. Replaced by groups + personal vaults: `groups`/`group_members`, `vaults.scope` (global|personal) + `owner_id`, `vault_group_acl(vault, group, role)`. A personal vault is strictly solo (owner always has write). REQ-GRP-001..004, REQ-VLT-001..007.
+- **Phase 9 — ux-nav**: new shell — My vaults landing, account menu top-right (name/email/logout), discreet close button on mdbook pages, Admin menu only for role=admin.
+- **Email change requires confirmation** at the new address (`pending_emails`); unconfirmed changes never break the existing login.
+- **Next**: Phase 7 (vault-ux: browse + import) → Phase 8 (access-model) → Phase 9 (ux-nav) → Phase 10 (MCP) → Phase 11 (polish v1.0)
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
 ## Architectural Decisions (AD)
