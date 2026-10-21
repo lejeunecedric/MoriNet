@@ -1,62 +1,63 @@
-/* Zoom bar for mdBook pages — ported from oscbrain (oscbrain.hollitech.fr). */
+/* Vault chrome for mdBook pages (REQ-NAV-003 + zoom).
+ * ONE toolbar at the top right — zoom controls + "Close vault" — placed
+ * BELOW mdBook's print button (which sits at y≈14–36): top 44px clears it
+ * at every viewport width, whatever the sidebar does. */
 #km-zoom-bar {
     position: fixed;
+    top: 44px;
     right: 10px;
-    bottom: 10px;
     z-index: 9999;
     display: flex;
     align-items: center;
-    gap: 1px;
-    padding: 2px;
-    border-radius: 6px;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 8px;
     background: var(--theme-popup-bg, #ffffff);
     border: 1px solid var(--theme-popup-border, #c0c0c0);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
     font-family: inherit;
     line-height: 1;
 }
 #km-zoom-bar button {
-    width: 22px;
-    height: 20px;
+    width: 30px;
+    height: 28px;
     padding: 0;
     border: 0;
-    border-radius: 4px;
+    border-radius: 6px;
     background: transparent;
     color: var(--fg, inherit);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
     line-height: 1;
     cursor: pointer;
 }
 #km-zoom-bar button:hover { background: rgba(128, 128, 128, 0.25); }
-#km-zoom-bar #km-zoom-reset { font-size: 11px; font-weight: 400; width: auto; padding: 0 3px; }
+#km-zoom-bar #km-zoom-reset { font-size: 13px; font-weight: 400; }
 #km-zoom-bar #km-zoom-val {
-    min-width: 32px;
+    min-width: 44px;
     text-align: center;
-    font-size: 10px;
+    font-size: 12px;
+    font-weight: 600;
     color: var(--fg, inherit);
     user-select: none;
 }
 
-/* "Close vault" button — back to MoriNet's vault list (REQ-NAV-003). */
+/* "Close vault" pill inside the same toolbar — back to My vaults. */
 #morinet-close-vault {
-    position: fixed;
-    top: 10px;
-    right: 10px;
-    z-index: 9999;
     display: inline-flex;
     align-items: center;
-    gap: .35rem;
-    padding: .25rem .6rem;
+    height: 28px;
+    padding: 0 12px;
+    margin-left: 4px;
     border-radius: 6px;
-    background: var(--theme-popup-bg, #fff);
-    border: 1px solid var(--theme-popup-border, #c0c0c0);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, .2);
+    background: rgba(128, 128, 128, 0.14);
     color: var(--fg, inherit);
     font-family: inherit;
-    font-size: .8rem;
+    font-size: 13px;
+    font-weight: 600;
     text-decoration: none;
-    opacity: .75;
-    transition: opacity .15s ease;
+    white-space: nowrap;
+    opacity: .9;
+    transition: opacity .15s ease, background .15s ease;
 }
-#morinet-close-vault:hover { opacity: 1; }
+#morinet-close-vault:hover { opacity: 1; background: rgba(128, 128, 128, 0.28); }
