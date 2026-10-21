@@ -156,6 +156,15 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 - Admins still see everything
 - Existing behavior of the current admin pages keeps working
 
+**Quota par groupe (user decision 2026-10-21, feedback UX admin)**:
+- `groups.personal_vault_limit` (NULL = illimité) — REQ-GRP-005
+- Builtin au bootstrap : `free` (limit **2**), `admin` (illimité) — REQ-GRP-006
+- **`demo` devient un `reader` membre de `free`** (plus admin) — REQ-GRP-007 ; l'admin
+  du bootstrap est membre de `admin`. C'est CE qui fait disparaître le bouton Admin
+  pour demo (le code index/`require_admin` était déjà correct — demo était admin en base).
+- La limite compte les vaults **personnels créés**, pas les partages ni la visibilité — REQ-VLT-008
+- Limite effective = la plus permissive des groupes du user — REQ-GRP-008
+
 ---
 
 ## Phase 9 — ux-nav
