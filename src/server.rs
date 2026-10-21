@@ -169,6 +169,7 @@ pub fn build_router_with_email(
         .route("/admin/about", get(admin_about))
         .route("/admin/users", get(admin_users))
         .route("/admin/users/invite", post(admin_invite))
+        .route("/admin/users/role", post(admin_user_role))
         .route("/admin/vaults", get(admin_vaults))
         .route("/admin/browse", get(admin_browse))
         .route("/admin/groups", get(admin_groups).post(admin_create_group))
@@ -176,6 +177,7 @@ pub fn build_router_with_email(
         .route("/admin/groups/{id}/delete", post(admin_delete_group))
         .route("/admin/groups/{id}/members", post(admin_group_members))
         .route("/admin/groups/{id}/rename", post(admin_rename_group))
+        .route("/admin/groups/{id}/limit", post(admin_group_limit))
         .route("/admin/vaults/{slug}/groups", post(admin_vault_groups))
         .route("/admin/vaults/create", post(admin_create_vault))
         .route("/admin/vaults/{slug}/perms", get(admin_perms))
@@ -736,18 +738,49 @@ async fn admin_dashboard(State(state): State<SharedState>) -> Response {
     admin_page("Dashboard", body).await
 }
 
+/// `POST /admin/users/role` — switch a user between reader and admin
+/// (REQ-GRP-007). The store also fixes the plan group (`free` / `admin`).
+async fn admin_user_role(
+    State(state): State<SharedState>,
+    Form(p): Form<UserRoleParams>,
+) -> Response {
+    match state
+        .store
+        .set_user_role(p.email.trim(), p.role.trim())
+        .await
+    {
+        Ok(()) => Redirect::to("/admin/users").into_response(),
+        Err(e) => {
+            let body = format!(
+                r#"<p style="color:red">Could not set the role: {}</p>
+<p><a href="/admin/users">Back</a></p>"#,
+                html_escape(&e.to_string())
+            );
+            (StatusCode::BAD_REQUEST, Html(body)).into_response()
+        }
+    }
+}
+
 async fn admin_users(State(state): State<SharedState>) -> Response {
     let users = state.store.list_users().await.unwrap_or_default();
     let mut rows = String::new();
     for u in &users {
+        let reader_sel = if u.role != "admin" { " selected" } else { "" };
+        let admin_sel = if u.role == "admin" { " selected" } else { "" };
         rows.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td></tr>\n",
-            html_escape(&u.email),
-            html_escape(&u.role)
+            r#"<tr><td>{email}</td><td>{role}</td><td>
+<form method="post" action="/admin/users/role" style="display:inline">
+  <input type="hidden" name="email" value="{email}">
+  <select name="role"><option value="reader"{reader_sel}>reader</option><option value="admin"{admin_sel}>admin</option></select>
+  <button type="submit">Set role</button>
+</form></td></tr>
+"#,
+            email = html_escape(&u.email),
+            role = html_escape(&u.role),
         ));
     }
     let body = format!(
-        r#"<table border="1" cellpadding="4"><tr><th>Email</th><th>Role</th></tr>
+        r#"<table border="1" cellpadding="4"><tr><th>Email</th><th>Role</th><th>Change role</th></tr>
 {rows}</table>
 <h3>Invite a user</h3>
 <form method="post" action="/admin/users/invite" novalidate>
@@ -1146,12 +1179,28 @@ struct GroupParams {
     action: String,
 }
 
+/// `POST /admin/groups/{id}/limit` — quota input (empty = unlimited).
+#[derive(Debug, Deserialize)]
+struct GroupLimitParams {
+    #[serde(default)]
+    limit: String,
+}
+
+/// `POST /admin/users/role` — role-switch input (REQ-GRP-007).
+#[derive(Debug, Deserialize)]
+struct UserRoleParams {
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    role: String,
+}
+
 async fn admin_groups(State(state): State<SharedState>) -> Response {
     let groups = state.store.list_groups().await.unwrap_or_default();
     let users = state.store.list_users().await.unwrap_or_default();
 
     let mut blocks = String::new();
-    for (gid, name, count) in &groups {
+    for (gid, name, count, limit) in &groups {
         let members = state.store.group_members(*gid).await.unwrap_or_default();
         let mut mlist = String::new();
         for m in &members {
@@ -1177,13 +1226,17 @@ async fn admin_groups(State(state): State<SharedState>) -> Response {
             ));
         }
         blocks.push_str(&format!(
-            r#"<h3>{name} <small>({count} member(s))</small></h3>
+            r#"<h3>{name} <small>({count} member(s), quota: {quota})</small></h3>
 <form method="post" action="/admin/groups/{gid}/rename" style="display:inline">
   <input type="text" name="name" value="{name}" aria-label="group name">
   <button type="submit">Rename</button>
 </form>
 <form method="post" action="/admin/groups/{gid}/delete" style="display:inline;margin-left:8px">
   <button type="submit">Delete group</button>
+</form>
+<form method="post" action="/admin/groups/{gid}/limit" style="display:inline;margin-left:8px">
+  <input type="number" name="limit" min="0" value="{limit_val}" style="width:5em" aria-label="personal vault limit">
+  <button type="submit">Set quota</button>
 </form>
 <p>Members:</p>
 <ul style="list-style:none;padding-left:0">{mlist}</ul>
@@ -1196,6 +1249,11 @@ async fn admin_groups(State(state): State<SharedState>) -> Response {
 "#,
             name = html_escape(name),
             count = count,
+            quota = match limit {
+                Some(n) => format!("{n} personal vault(s)"),
+                None => "unlimited".to_string(),
+            },
+            limit_val = limit.map(|n| n.to_string()).unwrap_or_default(),
             mlist = mlist,
             picker = picker,
         ));
@@ -1240,6 +1298,37 @@ async fn admin_create_group(
 async fn admin_delete_group(State(state): State<SharedState>, Path(id): Path<i64>) -> Response {
     // Members and vault assignments cascade (migration FKs).
     let _ = state.store.delete_group(id).await;
+    Redirect::to("/admin/groups").into_response()
+}
+
+/// `POST /admin/groups/{id}/limit` — set the personal-vault quota (REQ-GRP-005).
+/// Empty input = unlimited (NULL). A negative or non-numeric value is refused.
+async fn admin_group_limit(
+    State(state): State<SharedState>,
+    Path(id): Path<i64>,
+    Form(p): Form<GroupLimitParams>,
+) -> Response {
+    let raw = p.limit.trim();
+    let limit = if raw.is_empty() {
+        None
+    } else {
+        match raw.parse::<i64>() {
+            Ok(n) if n >= 0 => Some(n),
+            _ => {
+                let body = r#"<p style="color:red">Quota must be a number (or empty for unlimited).</p>
+<p><a href="/admin/groups">Back</a></p>"#;
+                return (StatusCode::BAD_REQUEST, Html(body.to_string())).into_response();
+            }
+        }
+    };
+    if let Err(e) = state.store.set_group_limit(id, limit).await {
+        let body = format!(
+            r#"<p style="color:red">Could not set the quota: {}</p>
+<p><a href="/admin/groups">Back</a></p>"#,
+            html_escape(&e.to_string())
+        );
+        return (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response();
+    }
     Redirect::to("/admin/groups").into_response()
 }
 
@@ -1414,7 +1503,7 @@ async fn admin_perms(State(state): State<SharedState>, Path(slug): Path<String>)
 
     let personal = vault.scope == "personal";
     let mut rows = String::new();
-    for (gid, name, _count) in &groups {
+    for (gid, name, _count, _limit) in &groups {
         let role = assigned
             .iter()
             .find(|(g, _, _)| g == gid)
@@ -1842,6 +1931,132 @@ mod tests {
             set_cookie.contains("Max-Age=0"),
             "cookie must be expired: {set_cookie}"
         );
+    }
+
+    #[tokio::test]
+    async fn admin_can_set_a_group_quota_from_the_ui() {
+        // REQ-GRP-005: the admin groups page edits the quota — a number pins it,
+        // an empty input restores unlimited, garbage is refused (pitfall #14:
+        // asserted at the route level, not just the store).
+        let (app, _) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+
+        // Create a group, then find its id in the form actions of the page.
+        let res = req(
+            app.clone(),
+            "POST",
+            "/admin/groups/create",
+            headers.clone(),
+            Some(Body::from("name=free")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(app.clone(), "GET", "/admin/groups", headers.clone(), None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(
+            html.contains("quota: unlimited"),
+            "fresh group is unlimited: {html}"
+        );
+        let gid = html
+            .split("/admin/groups/")
+            .filter_map(|chunk| chunk.split('/').next().unwrap().parse::<i64>().ok())
+            .next()
+            .expect("a group id in the page");
+
+        // Pin the quota at 5.
+        let res = req(
+            app.clone(),
+            "POST",
+            &format!("/admin/groups/{gid}/limit"),
+            headers.clone(),
+            Some(Body::from("limit=5")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(app.clone(), "GET", "/admin/groups", headers.clone(), None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("quota: 5 personal vault(s)"),
+            "quota shown after set"
+        );
+
+        // Garbage is refused.
+        let res = req(
+            app.clone(),
+            "POST",
+            &format!("/admin/groups/{gid}/limit"),
+            headers.clone(),
+            Some(Body::from("limit=abc")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Empty restores unlimited.
+        let res = req(
+            app.clone(),
+            "POST",
+            &format!("/admin/groups/{gid}/limit"),
+            headers.clone(),
+            Some(Body::from("limit=")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(app, "GET", "/admin/groups", headers, None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("quota: unlimited"));
+    }
+
+    #[tokio::test]
+    async fn admin_can_switch_a_user_role_from_the_ui() {
+        // REQ-GRP-007: POST /admin/users/role flips the role and the plan
+        // group (demoted users land in `free`), asserted at the route level.
+        let (app, _) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        // Invite a reader, then demote/switch through the route.
+        let res = req(
+            app.clone(),
+            "POST",
+            "/admin/users/invite",
+            headers.clone(),
+            Some(Body::from("email=demo%40example.com&role=reader")),
+        )
+        .await;
+        // No SMTP in tests → the temp-password flow answers 200 with the
+        // one-time password page (SMTP would 303 back to the list).
+        assert!(res.status().is_success() || res.status() == StatusCode::SEE_OTHER);
+        let res = req(
+            app.clone(),
+            "POST",
+            "/admin/users/role",
+            headers.clone(),
+            Some(Body::from("email=demo%40example.com&role=admin")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(app.clone(), "GET", "/admin/users", headers.clone(), None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("demo@example.com"));
+        // Unknown role is refused.
+        let res = req(
+            app,
+            "POST",
+            "/admin/users/role",
+            headers,
+            Some(Body::from("email=demo%40example.com&role=superuser")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

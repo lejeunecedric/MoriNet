@@ -85,6 +85,10 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
     store
         .ensure_admin(&rt.admin_email, &rt.admin_password)
         .await?;
+    // Plan groups + default memberships (REQ-GRP-006/007): `free` (quota 2) /
+    // `admin` (unlimited), every account in its default group at boot.
+    store.ensure_builtin_groups().await?;
+    store.ensure_default_memberships().await?;
 
     // Phase 3: resolve vault sources (local | github), sync + build + seed.
     use morinet::sources::{GitSource, LocalSource, VaultSource};
