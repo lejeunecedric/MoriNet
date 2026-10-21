@@ -6,6 +6,7 @@ pub mod server;
 pub mod session;
 pub mod sources;
 pub mod store;
+pub mod webdav;
 
 /// Current package version (compile-time from Cargo.toml).
 pub fn version() -> &'static str {
