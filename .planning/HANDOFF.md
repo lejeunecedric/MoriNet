@@ -103,7 +103,8 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 18. **The remote moves while you work.** Fetch and diff before merging — do not force-push. Several PRs landed mid-session (README description, credits, phase table, a deleted docs file).
 19. **Your model of a tool's schema can be out of date — the tool is the oracle.** `mdbook` 0.5 REMOVED `multilingual` from `[book]` ("unknown field") and REJECTS a draft SUMMARY parent that has children ("link items for nested chapters must only contain a hyperlink"). Both bugs passed my unit tests because my fixtures encoded my (wrong) model of mdBook. Only running the real binary on a real corpus found them. Same class of bug as the WebDAV date formatter (pitfall #13) — the fix is the same: an `#[ignore]`d oracle against the real tool + a real corpus.
 20. **The demo fixture can be a legitimately-flagged vault.** The `demo` test vault is a bare compiled-HTML dir → it matches NEITHER format, so the PRD-6 warning applies to it too. Don't write a test that assumes "the demo vault is never flagged" — assert per-row instead.
-21. **"The admin button shows for a non-admin" is usually a role-in-DB problem, not a nav bug.** `index` and `require_admin` both gate on `role_for(email) == "admin"` and are consistent. If a user sees Admin, they ARE admin in the DB — MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env, so on treklair the `demo` login is the admin. Check the role in the DB before touching the nav logic.
+21. **A title is not plain text.** Real wikis put markdown IN titles (`# [Rockasteria](http://…/)`); using a title as `[title](target)` link text then breaks mdBook's parser in ways unit tests with plain titles never see. Sanitize at the boundary (`tree::md_link_text`) and test with a bracketed/link title — same lesson as pitfall #19: the real corpus is the oracle.
+22. **"The admin button shows for a non-admin" is usually a role-in-DB problem, not a nav bug.** `index` and `require_admin` both gate on `role_for(email) == "admin"` and are consistent. If a user sees Admin, they ARE admin in the DB — MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env, so on treklair the `demo` login is the admin. Check the role in the DB before touching the nav logic.
 
 ## What's left (ROADMAP)
 
@@ -132,7 +133,7 @@ The two real-mdBook-0.5 bugs are recorded as pitfall #19.
 - The picker modal (list dirs, descend, up, breadcrumb) over the finished `/admin/browse`
 - Browser-side import that **creates a new vault** from a local folder (slug = folder name, scaffolds `book.toml` + `src/SUMMARY.md`)
 
-**Next step to resume — group quota (Phase 8, user decision 2026-10-21)** — **IMPLÉMENTÉ (non release)** :
+**Next step to resume — group quota (Phase 8, user decision 2026-10-21)** — **SHIPPED in v0.1.9/v0.1.10** :
 
 - `groups.personal_vault_limit` (NULL = unlimited) — REQ-GRP-005 → `migrations/0005_group_quota.sql`
 - Builtin groups at bootstrap: `free` (limit **2**), `admin` (unlimited) — REQ-GRP-006 → `Store::ensure_builtin_groups()` (called at boot in `main.rs`)
@@ -142,7 +143,12 @@ The two real-mdBook-0.5 bugs are recorded as pitfall #19.
 - Admin UI: quota form per group on `/admin/groups` (`POST /admin/groups/{id}/limit`, empty = unlimited), role switcher on `/admin/users`
 - Verified E2E in a real browser (AD-12): builtin groups seeded, quota form set/restore, role switch reader↔admin, demoted user lands in `free`. 177/177 tests.
 
-**Deploy-side leftover (vops, not code)**: on treklair, `demo` is currently role `admin` because the bootstrap admin env is `demo`. Demote it to `reader` (one click in `/admin/users`, or SQL) — the boot sweep then puts it in `free` with quota 2, and the Admin button disappears for that account. Longer term: set `MORINET_ADMIN_EMAIL` to a real admin address on the server.
+**Deploy-side leftover (vops, not code)**: `demo` has been demoted to `reader` on treklair (the user clicked the role switcher) and the Admin button is gone for it. The `admin`/`admin` fallback account appears at boot when no admin exists (v0.1.10) — use it, and longer term set `MORINET_ADMIN_EMAIL`/`MORINET_ADMIN_PASSWORD` to real admin credentials on the server.
+
+**v0.1.10 additions (2026-10-21, "demo cannot load B3Wiki")** — the two real causes were:
+1. **No reader-facing way to load a vault** → `POST /vaults/create` (session-gated) loads a GitHub vault into the user's PERSONAL space, quota-first (REQ-VLT-005/008), load form on the index. The real `github.com/lejeunecedric/B3Wiki` now loads and serves (verified E2E).
+2. **A mdBook-unsafe title crashed the generated SUMMARY**: pages whose H1 is itself a markdown link (`# [Rockasteria](http://…/)`) produced `- [[Rockasteria](url)](path)` → "Expected a start of a link". `tree::md_link_text()` now collapses `[text](url)` → `text` and escapes leftover `[`/`]`, applied everywhere a title becomes link text (summary + wikilink display).
+Also fixed: `mdbook` missing from PATH was a SILENT fallback (the vault "loaded" but 404'd later) — now a loud error; server handlers used a CWD-relative `data/` for clones — now `cfg.data_dir`; CI installs mdbook 0.5.4.
 
 **Why the Admin button showed for demo (NOT a code bug — do not re-diagnose):**
 `index` (`src/server.rs`) and `require_admin` both gate on `role_for(email) == "admin"`

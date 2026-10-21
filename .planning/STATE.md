@@ -4,9 +4,9 @@
 
 ---
 
-## Current position (2026-10-21 — Phase 8b obsidian-format SHIPPED v0.1.8, group quotas + logout/About SHIPPED v0.1.9)
+## Current position (2026-10-21 — v0.1.10: personal vault loading + fallback admin + SUMMARY fix)
 
-- **Latest release**: **v0.1.9** (per-group vault quotas + builtin plans + role switch + logout/About nav)
+- **Latest release**: **v0.1.10** (users load GitHub vaults into their personal space with the group quota; `admin`/`admin` anti-lockout fallback; mdBook-unsafe titles sanitized — the real B3Wiki loads and serves end-to-end)
 - **Live instance**: https://morinet.treklair.fr — public demo instance, admin-ui accessible via the **Admin** nav link on the index. Credentials live on the server, not in this repo
 - **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui, 05 email, 06 webdav, **08b obsidian-format** (08 access-model à 60 %)
 - **177/177 tests** (135 → 143 frontmatter+links → 157 tree → 161 convert → 165 wiring → 167 logout/About → **177 group quotas**), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
@@ -23,6 +23,7 @@
 - **Phase 9 pull-forward (2026-10-21, feedback user sur la page admin)**: `POST /logout` + bouton logout, nav admin clarifiée (My vaults vs Vaults mgmt — le lien "Vaults" ambigu), bouton **About** (version installée + repo GitHub, REQ-ADMIN-007). En cours d'implémentation.
 - **Not started**: no nav shell yet; no screen to create a personal vault (store method exists). `/logout` now EXISTS (Phase 9 pull-forward, 2026-10-21).
 - **Quota par groupe (IMPLÉMENTÉ 2026-10-21, pas encore release)**: migration `0005_group_quota.sql` (`groups.personal_vault_limit`), `create_personal_vault` refuse au-delà de la limite (REQ-VLT-008), groupes builtin `free`(2)/`admin`(∞) semés au boot + auto-join (`create_user`) + sweep `ensure_default_memberships` + bascule `set_user_role` (UI `/admin/users`, formulaire quota `/admin/groups`). **Diagnostic posé** : le bouton Admin visible pour demo n'est PAS un bug de code — `index` et `require_admin` testent bien `role_for(...)=="admin"` (`src/server.rs`). C'est que **demo a le rôle `admin` en base** (le bootstrap MoriNet crée l'admin avec l'env `ADMIN_EMAIL` ; sur treklair cet email est `demo`). **Reste côté deploy** : dégrader demo en reader (UI ou SQL) — la bascule le met automatiquement dans `free` (quota 2). REQ-GRP-005..008 + REQ-VLT-008. 177 tests.
+- **v0.1.10 (2026-10-21)**: `POST /vaults/create` (session) loads a GitHub vault as a PERSONAL vault (REQ-VLT-005/008) — quota checked before cloning, slug from the name, llm-wiki conversion shared with the admin path. Load form on the index ("My vaults"). `ensure_fallback_admin()` creates/promotes `admin`/`admin` at boot when NO admin exists (demoting the only admin used to lock the instance out of /admin forever — the treklair incident). `md_link_text()` sanitizes titles used as `[..](..)` link text: `[Rockasteria](http://x/)` H1s crashed the SUMMARY parse on the real B3Wiki ("Expected a start of a link"). `mdbook` missing from PATH is now a LOUD failure (was a silent fallback → undebuggable 404). Server handlers use `cfg.data_dir` (was a CWD-relative "data"). CI installs mdbook 0.5.4. 185 tests.
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
 ## Architectural Decisions (AD)

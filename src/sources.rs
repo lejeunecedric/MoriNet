@@ -37,26 +37,32 @@ pub trait VaultSource: Send + Sync {
         if matches!(format, VaultFormat::Native) && book.join("index.html").is_file() {
             return Ok(book);
         }
-        match std::process::Command::new("mdbook")
+        let build_result: anyhow::Result<()> = match std::process::Command::new("mdbook")
             .arg("build")
             .arg(&build_dir)
             .output()
         {
-            Ok(out) if out.status.success() => Ok(book),
+            Ok(out) if out.status.success() => Ok(()),
             Ok(out) => anyhow::bail!(
                 "mdbook build failed ({}): {}",
                 out.status,
                 String::from_utf8_lossy(&out.stderr)
             ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                eprintln!(
-                    "warning: `mdbook` not found in PATH; serving last compiled book at {}",
-                    book.display()
-                );
-                Ok(book)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(
+                "`mdbook` not found in PATH — install it (and in the morinet service PATH) to compile vaults"
+            ),
             Err(e) => anyhow::bail!("failed to run mdbook: {e}"),
+        };
+        build_result?;
+        // A book that never compiled must fail LOUDLY here: a silent fallback
+        // surfaces later as an undebuggable 404 on /vault/<slug>/.
+        if !book.join("index.html").is_file() {
+            anyhow::bail!(
+                "book not compiled at {} — `mdbook` ran but produced no index.html",
+                book.display()
+            );
         }
+        Ok(book)
     }
 }
 
