@@ -106,6 +106,8 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 21. **A title is not plain text.** Real wikis put markdown IN titles (`# [Rockasteria](http://…/)`); using a title as `[title](target)` link text then breaks mdBook's parser in ways unit tests with plain titles never see. Sanitize at the boundary (`tree::md_link_text`) and test with a bracketed/link title — same lesson as pitfall #19: the real corpus is the oracle.
 22. **"The admin button shows for a non-admin" is usually a role-in-DB problem, not a nav bug.** `index` and `require_admin` both gate on `role_for(email) == "admin"` and are consistent. If a user sees Admin, they ARE admin in the DB — MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env, so on treklair the `demo` login is the admin. Check the role in the DB before touching the nav logic.
 
+23. **Shared temp dirs + parallel tests = flaky clone races.** Several route tests deriving the same vault slug (`b3wiki`) into ONE shared `data_dir` clobbered each other's git clones (pitfall #16 family). Give each test its own vault NAME (the slug derives from it) so the clone dirs differ.
+
 ## What's left (ROADMAP)
 
 **Phase 8b (obsidian-format) — DONE, shipped in v0.1.8.** The vault contract
