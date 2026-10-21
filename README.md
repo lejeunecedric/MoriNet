@@ -80,5 +80,10 @@ MIT OR Apache-2.0 — see [LICENSE](LICENSE).
 
 ## Credits
 Inspired by the works of Andrej Karpathy on LLM-Wiki
-Early phase development during the FRAMES IBC Accelerator project
-Inputs from the Reseau Intelligence de la Complexité AI workrgoup
+https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
+Early phase development during the FRAMES IBC Accelerator project 
+https://show.ibc.org/ibc2026/accelerator-frames-federated-retrieval-agentic-media-environment-and-software-defined-workflows
+Inputs from the Reseau Intelligence de la Complexité AI workgroup
+https://www.intelligence-complexite.org
+
+
