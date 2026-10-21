@@ -4,12 +4,12 @@
 
 ---
 
-## Current position (2026-10-21 — Phase 8b obsidian-format SHIPPED, v0.1.8 releasing)
+## Current position (2026-10-21 — Phase 8b obsidian-format SHIPPED v0.1.8, group quotas + logout/About SHIPPED v0.1.9)
 
-- **Latest release**: **v0.1.8** (Phase 8b obsidian-format — llm-wiki/Obsidian vaults converted & served natively)
+- **Latest release**: **v0.1.9** (per-group vault quotas + builtin plans + role switch + logout/About nav)
 - **Live instance**: https://morinet.treklair.fr — public demo instance, admin-ui accessible via the **Admin** nav link on the index. Credentials live on the server, not in this repo
 - **Phases done**: 00 bootstrap, 01 core-serve, 02 multi-vault, 03 vault-sources, 04 admin-ui, 05 email, 06 webdav, **08b obsidian-format** (08 access-model à 60 %)
-- **165/165 tests** (135 → 143 frontmatter+links → 157 tree → 161 convert → **165 wiring**), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
+- **177/177 tests** (135 → 143 frontmatter+links → 157 tree → 161 convert → 165 wiring → 167 logout/About → **177 group quotas**), clippy `-D warnings`, fmt clean — every push of a tag auto-releases and auto-deploys
 - **Phase 6 (WebDAV) shipped**: PROPFIND (depth 0/1) + GET + admin PUT on `/webdav/<slug>/…`. Exposes the vault **source** (`book.toml` + `src/`), not the compiled `book/` — PUT markdown then `mdbook build`. HTTP Basic against the same bcrypt users + the same per-vault ACL
 - **Phase 5 (email) shipped**: `EmailSender` trait + lettre SMTP + `InMemorySender` mock, `[smtp]` in config, invitation links (24h, single-use, sha256-hashed) and password reset (1h), all UI pages styled. Admin invite falls back to the old temp-password flow when SMTP is absent/invalid
 - **Vault contract (superseded)**: mdBook-native (`book.toml` + `src/SUMMARY.md`) was the v1 contract. **Phase 8b (v0.1.8) replaced it**: MoriNet now loads **llm-wiki/Obsidian** vaults (bare `[[wikilinks]]` + YAML frontmatter, no `book.toml`) and converts them in-pipeline into a generated mdBook tree under `<src>/.morinet-build/` (AD-14). mdBook-native repos still work untouched. The old raw-wiki auto-scaffold stays reverted (`2b924f3`) — the conversion is the proper feature, not a scaffold hack.
