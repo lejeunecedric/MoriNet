@@ -1,19 +1,39 @@
-/* MoriNet UI — served from the binary (include_str!), applies to app pages only. */
+/* MoriNet UI — served from the binary (include_str!), app pages only.
+ *
+ * Design system (Impeccable /extract + /polish pass, Linear-inspired):
+ * - one accent, used only for interactive emphasis
+ * - elevation by surface luminance + whisper-thin borders (no heavy shadows)
+ * - radius + spacing scales instead of one-off values
+ * - every fill that carries text uses --on-accent (one rule, not three)
+ * - forms inside panels are flat: no card inside a card
+ */
 :root {
   color-scheme: light dark;
+
+  /* surfaces + ink */
   --bg: #f4f5f7;
   --card: #ffffff;
   --card-2: #f8f9fb;
   --border: #dfe1e6;
   --text: #1c1e21;
-  --muted: #6b7280;
+  --muted: #5f6672;
+
+  /* one accent */
   --accent: #0b57d0;
-  --accent-strong: #0847ab;
-  --accent-soft: rgba(11, 87, 208, .12);
-  --danger: #d93025;
-  --radius: 10px;
-  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 12px rgba(16, 24, 40, .06);
+  --accent-hover: #0847ab;
+  --accent-soft: rgba(11, 87, 208, .11);
+  --on-accent: #ffffff;
+  --danger: #c5221f;
+
+  /* scales (8px rhythm) */
+  --r-1: 6px;
+  --r-2: 8px;
+  --r-3: 12px;
+  --r-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, .05);
+  --shadow-2: 0 8px 24px rgba(16, 24, 40, .12);
 }
+
 * { box-sizing: border-box; }
 body {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -24,165 +44,173 @@ body {
   color: var(--text);
   background: var(--bg);
 }
-h1 { font-size: 1.55rem; margin: 0 0 10px; letter-spacing: -.01em; }
-h2 { font-size: 1.12rem; margin: 0 0 10px; letter-spacing: -.005em; }
-h3 { font-size: 1rem; margin: 1.1rem 0 6px; }
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+
+/* ---------- type ---------- */
+h1 { font-size: 1.5rem; margin: 0 0 12px; letter-spacing: -.012em; font-weight: 700; }
+h2 { font-size: 1.05rem; margin: 0 0 10px; letter-spacing: -.005em; font-weight: 650; }
+h3 { font-size: .95rem; margin: 14px 0 6px; font-weight: 650; }
 p { margin: 10px 0; }
 em { color: var(--muted); }
 small { color: var(--muted); font-weight: 400; }
-.empty { color: var(--muted); font-style: italic; margin: 6px 0 14px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.empty { color: var(--muted); margin: 4px 0 12px; }
 
-/* ---------- header + nav shell ---------- */
+/* ---------- shared surfaces ---------- */
+.panel, .menu-body, table, #dir-picker {
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+.panel {
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-1);
+  padding: 18px;
+  margin: 0 0 16px;
+}
+.page-title { margin: 0 0 12px; }
+
+/* ---------- header ---------- */
 .mori-nav {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: .55rem .75rem;
+  gap: 12px;
+  padding: 8px 10px;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  margin: 0 0 22px;
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-1);
+  margin: 0 0 20px;
 }
 .mori-nav .brand {
   display: inline-flex;
   align-items: center;
-  gap: .45rem;
-  font-weight: 800;
-  font-size: 1.02rem;
-  letter-spacing: -.01em;
+  gap: 8px;
+  font-weight: 750;
+  font-size: 1rem;
+  letter-spacing: -.012em;
   color: var(--text);
 }
 .mori-nav .brand:hover { text-decoration: none; }
 .brand-mark {
   display: inline-grid;
   place-items: center;
-  width: 1.55rem;
-  height: 1.55rem;
-  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-2);
   background: var(--accent);
-  color: #fff;
-  font-size: .85rem;
+  color: var(--on-accent);
+  font-size: .82rem;
 }
-.mori-nav nav { display: flex; align-items: center; gap: .5rem; margin-left: auto; }
+.mori-nav nav { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
-.subnav { display: flex; flex-wrap: wrap; gap: .45rem; margin: 0 0 18px; padding: 0; border: 0; }
-.subnav a {
-  padding: .32rem .8rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--card);
-  font-weight: 600;
-  font-size: .9rem;
-}
-.subnav a:hover { background: var(--accent-soft); text-decoration: none; }
-
-/* ---------- dropdown menus (native <details>) ---------- */
-.menu { position: relative; }
+/* pill controls (admin entry, account trigger) */
 .menu-btn {
   display: inline-flex;
   align-items: center;
-  gap: .45rem;
+  gap: 7px;
   cursor: pointer;
   list-style: none;
-  padding: .3rem .7rem;
+  padding: 5px 11px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--card);
+  border-radius: var(--r-pill);
+  background: transparent;
   font-weight: 600;
-  font-size: .9rem;
+  font-size: .86rem;
   color: var(--text);
   user-select: none;
 }
-.menu-btn:hover { background: var(--card-2); }
+a.menu-btn { text-decoration: none; }
+.menu-btn:hover { background: var(--accent-soft); text-decoration: none; }
 .menu-btn::-webkit-details-marker { display: none; }
-.menu-btn .caret { font-size: .7rem; color: var(--muted); }
-.menu-admin {
-  color: var(--accent);
-  border-color: var(--accent-soft);
-  background: var(--accent-soft);
-}
-.menu-admin:hover { background: var(--accent-soft); }
+.menu-btn .caret { font-size: .68rem; color: var(--muted); }
+.menu-admin { color: var(--accent); border-color: transparent; background: var(--accent-soft); }
 .avatar {
   display: inline-grid;
   place-items: center;
-  width: 1.35rem;
-  height: 1.35rem;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
-  font-size: .72rem;
+  color: var(--on-accent);
+  font-size: .7rem;
   font-weight: 700;
 }
+
+/* ---------- the account menu (the only dropdown) ---------- */
+.menu { position: relative; }
 .menu-body {
   position: absolute;
   right: 0;
   top: calc(100% + 6px);
   z-index: 50;
-  min-width: 15rem;
+  width: 16.5rem;
+  padding: 6px;
+  border-radius: var(--r-2);
+  box-shadow: var(--shadow-2);
+}
+.menu-identity {
   display: flex;
   flex-direction: column;
-  gap: .55rem;
-  padding: .75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--card);
-  box-shadow: 0 8px 28px rgba(16, 24, 40, .18);
+  gap: 2px;
+  padding: 8px 10px 10px;
 }
-.menu-body a {
+.menu-identity strong { font-size: .92rem; }
+.menu-email { font-size: .78rem; color: var(--muted); word-break: break-all; }
+.menu-sep { border: 0; border-top: 1px solid var(--border); margin: 4px -6px; }
+.menu-label {
   display: block;
-  padding: .32rem .5rem;
-  border-radius: 8px;
-  font-weight: 500;
+  font-size: .72rem;
+  font-weight: 650;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin: 0 0 4px;
 }
-.menu-body a:hover { background: var(--accent-soft); text-decoration: none; }
-.menu-email { font-size: .8rem; color: var(--muted); word-break: break-all; }
-.menu-label { font-size: .78rem; font-weight: 600; color: var(--muted); margin: 0; }
-.menu-body form {
-  display: flex;
-  flex-direction: column;
-  gap: .4rem;
-  margin: 0;
-  padding: 0;
-  background: transparent;
-  border: 0;
-}
-.menu-body input { width: 100%; }
+.menu-body form { padding: 8px 10px; margin: 0; border: 0; background: transparent; }
+.menu-row { display: flex; gap: 6px; }
+.menu-row input { flex: 1; min-width: 0; }
+.menu-body button { padding: 6px 12px; font-size: .86rem; }
 
-/* ---------- panels (cards) ---------- */
-.panel {
-  background: var(--card);
+/* ---------- tab bar (admin sections) ---------- */
+.subnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px; padding: 0; border: 0; }
+.subnav a {
+  padding: 6px 13px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: 16px 18px;
-  margin: 0 0 16px;
+  border-radius: var(--r-pill);
+  background: transparent;
+  font-weight: 600;
+  font-size: .88rem;
 }
-.page-title { margin: 0 0 12px; }
+.subnav a:hover { background: var(--accent-soft); text-decoration: none; }
+.subnav a.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
 
 /* ---------- lists ---------- */
-ul { margin: 8px 0; padding-left: 1.1rem; }
-li { margin: 5px 0; }
-li small { opacity: .8; }
+ul { margin: 8px 0; padding-left: 1.15rem; }
+li { margin: 6px 0; }
+li small { opacity: .85; }
 
 /* ---------- forms ---------- */
 form {
-  margin: 10px 0;
+  margin: 12px 0;
   padding: 14px 16px;
   background: var(--card-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--r-2);
 }
+/* inside a panel the form is flat — no card in a card */
+.panel form { background: transparent; border: 0; padding: 0; margin: 0; }
 form.stacked { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
-.field { display: flex; flex-direction: column; gap: 4px; min-width: 11rem; }
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 11rem; }
 .field-wide { flex: 1 1 20rem; }
-label { font-size: .85rem; font-weight: 600; color: var(--muted); }
+label { font-size: .82rem; font-weight: 650; color: var(--muted); }
 input, select {
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-1);
   background: var(--card);
   color: inherit;
   font: inherit;
@@ -191,43 +219,43 @@ input:focus, select:focus {
   outline: 2px solid var(--accent);
   border-color: var(--accent);
 }
+
+/* ---------- buttons ---------- */
 button {
-  padding: 9px 16px;
+  padding: 8px 15px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-1);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   cursor: pointer;
   font: inherit;
   font-weight: 600;
 }
-button:hover { background: var(--accent-strong); }
+button:hover { background: var(--accent-hover); }
 .btn-quiet {
   background: transparent;
   color: var(--danger);
   border: 1px solid var(--border);
 }
-.btn-quiet:hover { background: rgba(217, 48, 37, .1); }
+.btn-quiet:hover { background: rgba(197, 34, 31, .09); }
 
 /* ---------- tables ---------- */
 table {
-  border-collapse: collapse;
   width: 100%;
   margin: 12px 0 20px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--r-2);
   overflow: hidden;
+  border-collapse: collapse;
 }
 th, td { border-bottom: 1px solid var(--border); padding: 9px 12px; text-align: left; }
-th { background: var(--card-2); font-size: .85rem; color: var(--muted); }
+th { background: var(--card-2); font-size: .82rem; color: var(--muted); font-weight: 650; }
 tr:last-child td { border-bottom: 0; }
 
 code {
   background: var(--card-2);
   border: 1px solid var(--border);
   padding: 2px 7px;
-  border-radius: 6px;
+  border-radius: var(--r-1);
   font-size: .92em;
   word-break: break-all;
 }
@@ -237,18 +265,16 @@ code {
 #dir-picker {
   min-width: 26rem;
   max-height: 72vh;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1rem;
-  background: var(--card);
+  border-radius: var(--r-3);
+  padding: 16px;
   color: var(--text);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .3);
+  box-shadow: var(--shadow-2);
 }
 #dir-picker::backdrop { background: rgba(10, 12, 16, .55); }
-.picker-bar { display: flex; align-items: center; gap: .55rem; margin-bottom: .65rem; }
+.picker-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 #picker-path {
   font-family: ui-monospace, monospace;
-  font-size: .82rem;
+  font-size: .8rem;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -257,49 +283,43 @@ code {
 #picker-list {
   list-style: none;
   padding: 0;
-  margin: 0 0 .65rem;
+  margin: 0 0 10px;
   max-height: 52vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: .2rem;
+  gap: 2px;
 }
-#picker-list li { display: flex; align-items: center; gap: .4rem; margin: 0; }
+#picker-list li { display: flex; align-items: center; gap: 6px; margin: 0; }
 .picker-descend {
   flex: 1;
   text-align: left;
   background: transparent;
   border: 0;
-  padding: .35rem .5rem;
+  padding: 7px 9px;
   cursor: pointer;
-  border-radius: 8px;
-  font-weight: 500;
+  border-radius: var(--r-1);
+  font-weight: 550;
 }
 .picker-descend:hover { background: var(--accent-soft); }
-.picker-select { cursor: pointer; padding: .3rem .85rem; }
+.picker-select { cursor: pointer; padding: 6px 13px; }
 
-/* ---------- dark mode ---------- */
+/* ---------- dark: luminance stepping, whisper borders ---------- */
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0e1116;
-    --card: #171b22;
-    --card-2: #1c212a;
-    --border: #2a3038;
-    --text: #e6e8ec;
-    --muted: #9aa4b2;
+    --card: #161b22;
+    --card-2: #1c222b;
+    --border: #2b323b;
+    --text: #e7eaee;
+    --muted: #a3adba;
     --accent: #4dabf7;
-    --accent-strong: #74c0fc;
-    --accent-soft: rgba(77, 171, 247, .14);
+    --accent-hover: #74c0fc;
+    --accent-soft: rgba(77, 171, 247, .13);
+    --on-accent: #0b1220;
     --danger: #f28b82;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 18px rgba(0, 0, 0, .28);
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-2: 0 12px 32px rgba(0, 0, 0, .45);
   }
-  /* Buttons and chips keep dark ink on their bright fills. */
-  button { color: #0b1220; }
-  .btn-quiet { color: var(--danger); background: transparent; }
-  .avatar { color: #0b1220; }
-  .brand-mark { color: #0b1220; }
+  .btn-quiet:hover { background: rgba(242, 139, 130, .12); }
 }
-
-/* Current section in the pill nav. */
-.subnav a.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-@media (prefers-color-scheme: dark) { .subnav a.active { color: #0b1220; } }
