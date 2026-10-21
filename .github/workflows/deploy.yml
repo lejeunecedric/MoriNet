@@ -82,13 +82,15 @@ jobs:
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          for i in $(seq 1 90); do
+          # 25 min: a release that needs a job re-run (a flaky runner) can
+          # exceed 15 min; the waiter is cheap, the give-up is not.
+          for i in $(seq 1 150); do
             count=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets | length' 2>/dev/null || echo 0)
             if [ "$count" -gt 0 ]; then
               echo "release ${TAG} is published with ${count} asset(s)"
               exit 0
             fi
-            echo "waiting for release ${TAG} to publish (${i}/90)..."
+            echo "waiting for release ${TAG} to publish (${i}/150)..."
             sleep 10
           done
           echo "::error::release ${TAG} was never published with assets"
