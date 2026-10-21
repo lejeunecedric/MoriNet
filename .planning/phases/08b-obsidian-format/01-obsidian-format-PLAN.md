@@ -46,6 +46,16 @@ proper feature.
 
 ## Bites (TDD, strict)
 
+> **Status**: bite 1 (frontmatter) ✅ `c2e6270` — 8 tests + corpus oracle 127/127.
+> bite 2 (links) ✅ `d242e4d` — 9 tests + corpus oracle: 0 `[[` left outside code,
+> 809 resolved, 4 inert-missing on ProgWiki. Lesson captured: assets must resolve
+> by bare filename too (Obsidian), pages win ties.
+> bite 3 (tree) ✅ `76aad86` — SUMMARY/book.toml/meta-block generators, 5 golden tests.
+> bite 4 (convert+detect) ✅ — mirror into `.morinet-build/`, source untouched;
+> **real mdbook 0.5.4 oracle caught 2 generator bugs** (`multilingual` removed in
+> 0.5; SUMMARY draft-parents illegal → generated `_section.md` folder notes).
+> Built corpus: 139 HTML, 0 broken links. 161 tests.
+
 | Bite | Deliverable | Acceptance |
 |------|-------------|------------|
 | 1 | `obsidian/frontmatter.rs` — `split_frontmatter` + getters (`title`, `type`, `tags`, dates, `confidence`) | unit tests on corpus-shaped samples: flat, quoted, inline list, block list, absent, unterminated, CRLF, body `---` untouched |
