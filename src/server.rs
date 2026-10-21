@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Extension, Form, Path, Request, State};
+use axum::extract::{Extension, Form, Path, Query, Request, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -13,7 +13,9 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
+use serde_json::json;
 
+use crate::browse;
 use crate::config::RuntimeConfig;
 use crate::email::{invitation_email, reset_email, EmailSender, InMemorySender, SmtpSender};
 use crate::session::{Claims, SessionCodec, DEFAULT_TTL_SECS};
@@ -163,6 +165,7 @@ pub fn build_router_with_email(
         .route("/admin/users", get(admin_users))
         .route("/admin/users/invite", post(admin_invite))
         .route("/admin/vaults", get(admin_vaults))
+        .route("/admin/browse", get(admin_browse))
         .route("/admin/vaults/create", post(admin_create_vault))
         .route("/admin/vaults/{slug}/perms", get(admin_perms))
         .route("/admin/vaults/{slug}/acl", post(admin_update_acl))
@@ -996,6 +999,49 @@ async fn invalid_token_page() -> Response {
     (StatusCode::BAD_REQUEST, app_page("Link expired", body)).into_response()
 }
 
+/// `GET /admin/browse?path=/…` → JSON listing of server directories (REQ-UX-002).
+/// Confined to the configured data dir: the admin picks where a vault lives on
+/// THIS host, so browsing `/etc` is refused (403), not merely hidden.
+async fn admin_browse(State(state): State<SharedState>, Query(q): Query<BrowseQuery>) -> Response {
+    let root = state.cfg.data_dir.clone();
+    // Default to the root when the admin opens the picker with no path.
+    let raw = q.path.unwrap_or_else(|| "/".to_string());
+
+    match browse::browse(&root, &raw) {
+        Ok(listing) => Json(json!({
+            "current": listing.current,
+            "parent": listing.parent,
+            "dirs": listing.dirs.iter().map(|d| json!({
+                "name": d.name,
+                "path": d.path,
+                "is_vault": d.is_vault,
+            })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(e) => {
+            let status =
+                StatusCode::from_u16(e.as_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            if e == browse::BrowseError::OutsideRoot {
+                eprintln!("admin browse refused an out-of-root path: {raw}");
+            }
+            (
+                status,
+                Json(json!({ "error": match e {
+                    browse::BrowseError::OutsideRoot => "outside the allowed root",
+                    browse::BrowseError::NotADirectory => "no such directory",
+                    browse::BrowseError::Unreadable => "cannot read this directory",
+                }})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowseQuery {
+    path: Option<String>,
+}
+
 async fn admin_vaults(State(state): State<SharedState>) -> Response {
     let vaults = state.store.list_all_vaults().await.unwrap_or_default();
     let mut rows = String::new();
@@ -1169,7 +1215,8 @@ mod tests {
             admin_email: "admin@example.com".to_string(),
             admin_password: "[REDACTED-DEV-PASSWORD]".to_string(),
             smtp: Default::default(), // Phase 5: no SMTP in tests unless asked
-            vault_book_dir: None,     // Phase 2: book dirs live in the vaults table
+            data_dir: std::env::temp_dir().join("morinet-test-data"),
+            vault_book_dir: None, // Phase 2: book dirs live in the vaults table
         }
     }
 
@@ -2237,6 +2284,207 @@ mod tests {
         assert_ne!(res.status(), StatusCode::CREATED, "traversal write refused");
         assert!(!root.parent().unwrap().join("escaped.md").exists());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ---------- Phase 7: directory picker (REQ-UX-001..007) ----------
+
+    /// Build a router whose data_dir is a throwaway tree with subdirs.
+    ///
+    /// `name` must be unique per test: cargo runs tests in parallel and a
+    /// shared fixture path lets one test delete another's directory.
+    async fn browse_router_named(name: &str) -> (Router, SharedState, std::path::PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("morinet-browse-http-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("vaults/notes/src")).unwrap();
+        std::fs::create_dir_all(root.join("repos")).unwrap();
+        std::fs::write(root.join("vaults/notes/book.toml"), "[book]").unwrap();
+
+        let mut cfg = test_config();
+        cfg.data_dir = root.clone();
+        let store = fixture_store().await;
+        let state: SharedState = Arc::new(AppState {
+            codec: SessionCodec::new(cfg.cookie_secret.clone()),
+            cfg,
+            store,
+            email: Arc::new(InMemorySender::new()),
+        });
+        (
+            build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),
+            state,
+            root,
+        )
+    }
+
+    async fn get_json(app: Router, uri: &str, headers: HeaderMap) -> (StatusCode, String) {
+        let res = req(app, "GET", uri, headers, None).await;
+        let status = res.status();
+        let body = to_bytes(res.into_body(), 32768).await.unwrap();
+        (status, String::from_utf8_lossy(&body).to_string())
+    }
+
+    #[tokio::test]
+    async fn browse_requires_admin() {
+        let (app, _state, root) = browse_router_named("auth").await;
+        // Anonymous -> admin gate rejects.
+        let (status, _) = get_json(app.clone(), "/admin/browse", HeaderMap::new()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // A reader is authenticated but not an admin.
+        let cookie = reader_cookie(&app, &_state).await;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, cookie.parse().unwrap());
+        let (status, _) = get_json(app, "/admin/browse", h).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "readers never browse the fs");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn browse_lists_the_data_root_for_an_admin() {
+        let (app, state, root) = browse_router_named("root").await;
+        let cookie = admin_cookie(&app).await;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, cookie.parse().unwrap());
+        let (status, body) = get_json(app, "/admin/browse", h).await;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(v["current"], "/");
+        assert!(v["parent"].is_null(), "root has no parent");
+        let names: Vec<&str> = v["dirs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"vaults"), "vaults listed: {body}");
+        assert!(names.contains(&"repos"), "repos listed: {body}");
+        let _ = state;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn browse_descends_and_reports_the_parent() {
+        let (app, _state, root) = browse_router_named("descend").await;
+        let cookie = admin_cookie(&app).await;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, cookie.parse().unwrap());
+
+        let (status, body) =
+            get_json(app.clone(), "/admin/browse?path=/vaults/notes", h.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(v["current"], "/vaults/notes");
+        assert_eq!(v["parent"], "/vaults");
+        let dirs = v["dirs"].as_array().unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0]["name"], "src");
+        assert_eq!(dirs[0]["path"], "/vaults/notes/src");
+
+        // A directory holding book.toml is flagged as a vault.
+        let (_, body) = get_json(app.clone(), "/admin/browse?path=/vaults", h.clone()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let notes = v["dirs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == "notes")
+            .unwrap();
+        assert_eq!(notes["is_vault"], true, "book.toml detected: {body}");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn browse_refuses_to_escape_the_data_root() {
+        let (app, _state, root) = browse_router_named("escape").await;
+        let cookie = admin_cookie(&app).await;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, cookie.parse().unwrap());
+        for attack in [
+            "/../../etc",
+            "/vaults/../../../etc",
+            "/%2e%2e%2f%2e%2e%2fetc",
+            "/..",
+        ] {
+            let (status, _) = get_json(
+                app.clone(),
+                &format!("/admin/browse?path={attack}"),
+                h.clone(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "escape {attack} refused");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn browse_reports_a_missing_directory() {
+        let (app, _state, root) = browse_router_named("missing").await;
+        let cookie = admin_cookie(&app).await;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, cookie.parse().unwrap());
+        let (status, body) = get_json(app, "/admin/browse?path=/nope", h).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("no such directory"), "message: {body}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn browse_survives_percent_encoded_query_values() {
+        // Regression: a raw request target containing '%' made the server close
+        // the connection instead of answering. A legitimate client sending
+        // %20 (a folder named "my notes") hit the same path.
+        let (app, _state, root) = browse_router_named("pct-query").await;
+        // The dir must exist BEFORE the first request so it is listed.
+        std::fs::create_dir_all(root.join("my notes/sub")).unwrap();
+        let cookie = admin_cookie(&app).await;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, cookie.parse().unwrap());
+
+        let cases = [
+            "/admin/browse?path=%2e%2e%2fetc",
+            "/admin/browse?path=..%2f..%2fetc",
+            "/admin/browse?path=/my%20notes",
+            "/admin/browse?path=%2f..%2fetc",
+        ];
+        for uri in cases {
+            let res = req(app.clone(), "GET", uri, h.clone(), None).await;
+            assert!(
+                res.status().is_success() || res.status().is_client_error(),
+                "{uri} must get an HTTP answer, got {}",
+                res.status()
+            );
+        }
+
+        // The escaped folder is reachable, and `current` comes back ENCODED —
+        // it is meant to be pasted straight back into ?path=, so it has to be
+        // URL-safe. The filesystem lookup used the decoded form.
+        let (status, body) = get_json(app, "/admin/browse?path=/my%20notes", h).await;
+        assert_eq!(status, StatusCode::OK, "%20 decoded: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["current"], "/my%20notes", "current is URL-safe");
+        // It really walked INTO the decoded folder: the child shows up and its
+        // path is encoded so it can be clicked straight back.
+        let dirs = v["dirs"].as_array().unwrap();
+        assert_eq!(dirs.len(), 1, "descended into the decoded folder: {body}");
+        assert_eq!(dirs[0]["name"], "sub");
+        assert_eq!(dirs[0]["path"], "/my%20notes/sub");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn browse_percent_encodes_its_output_paths() {
+        // A directory whose name needs escaping must come back encoded.
+        let (app, _state, root) = browse_router_named("encoding").await;
+        std::fs::create_dir_all(root.join("my notes")).unwrap();
+        let cookie = admin_cookie(&app).await;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, cookie.parse().unwrap());
+        let (status, body) = get_json(app, "/admin/browse", h).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("my notes"), "name intact: {body}");
+        assert!(body.contains("%20"), "path is percent-encoded: {body}");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
