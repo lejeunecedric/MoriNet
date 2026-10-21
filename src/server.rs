@@ -1224,6 +1224,10 @@ async fn admin_browse(State(state): State<SharedState>, Query(q): Query<BrowseQu
             "dirs": listing.dirs.iter().map(|d| json!({
                 "name": d.name,
                 "path": d.path,
+                // The vault form wants an ABSOLUTE server path; `path` above is
+                // root-relative but starts with `/`, which would REPLACE the
+                // base in `join` — strip it first.
+                "abs": root.join(d.path.trim_start_matches('/')).display().to_string(),
                 "is_vault": d.is_vault,
             })).collect::<Vec<_>>(),
         }))
@@ -1411,6 +1415,63 @@ async fn admin_delete_group(State(state): State<SharedState>, Path(id): Path<i64
     let _ = state.store.delete_group(id).await;
     Redirect::to("/admin/groups").into_response()
 }
+
+/// The server-side directory picker (Phase 7 / REQ-UX-001): a native
+/// `<dialog>` that lists the allowed root via /admin/browse, descends into
+/// dirs and fills the vault form on selection. No framework, no build step.
+const PICKER_JS: &str = r#"(function () {
+  function slugify(s) {
+    return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  function loadPicker(path) {
+    fetch("/admin/browse?path=" + encodeURIComponent(path))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) { alert(d.error); return; }
+        document.getElementById("picker-path").textContent = d.current;
+        var ul = document.getElementById("picker-list");
+        ul.innerHTML = "";
+        (d.dirs || []).forEach(function (dir) {
+          var li = document.createElement("li");
+          var desc = document.createElement("button");
+          desc.type = "button";
+          desc.textContent = dir.name + " \u25B8";
+          desc.className = "picker-descend";
+          desc.addEventListener("click", function () { loadPicker(dir.path); });
+          var sel = document.createElement("button");
+          sel.type = "button";
+          sel.textContent = "Select";
+          sel.className = "picker-select";
+          sel.addEventListener("click", function () {
+            // Scope to the vault form: a bare [name="name"] would hit the
+            // account menu's rename input in the shared header (pitfall).
+            var form = document.querySelector('form[action="/admin/vaults/create"]');
+            document.getElementById("lo-path").value = dir.abs || dir.path;
+            var slug = form.querySelector('[name="slug"]');
+            var name = form.querySelector('[name="name"]');
+            if (slug && !slug.value) slug.value = slugify(dir.name);
+            if (name && !name.value) name.value = dir.name;
+            document.getElementById("dir-picker").close();
+          });
+          li.appendChild(desc);
+          li.appendChild(sel);
+          if (dir.is_vault) {
+            var tag = document.createElement("small");
+            tag.textContent = " (already a vault)";
+            li.appendChild(tag);
+          }
+          ul.appendChild(li);
+        });
+        var up = document.getElementById("picker-up");
+        up.style.display = d.parent === null || d.parent === undefined ? "none" : "";
+        up.onclick = function () { loadPicker(d.parent); };
+      });
+  }
+  window.openPicker = function () {
+    loadPicker("/");
+    document.getElementById("dir-picker").showModal();
+  };
+})();"#;
 
 /// Inline script on the index: the "Name" field defaults to the repository
 /// directory name, live as the URL is typed or pasted. A name typed by hand is
@@ -1724,11 +1785,21 @@ async fn admin_vaults(
   <label>Slug <input type="text" name="slug" required></label>
   <label>Name <input type="text" name="name" required></label>
   <label>Kind <select name="kind" onchange="document.getElementById('gh-fields').style.display = this.value==='github'?'block':'none'; document.getElementById('lo-fields').style.display = this.value==='local'?'block':'none';"><option value="local">local</option><option value="github">github</option></select></label>
-  <span id="lo-fields"><label>Book dir path <input type="text" name="path"></label></span>
+  <span id="lo-fields"><label>Book dir path <input type="text" name="path" id="lo-path"></label> <button type="button" onclick="openPicker()">Browse…</button></span>
   <span id="gh-fields" style="display:none"><label>Git URL <input type="text" name="url"></label><label>Token <input type="text" name="token"></label></span>
   <button type="submit">Add</button>
 </form>
-<p><em>Note:</em> a vault is an <strong>llm-wiki / Obsidian</strong> directory (wikilinks + frontmatter) — a local path or a git repo; MoriNet converts and builds it automatically, re-syncing every 5 min. mdBook-native repos keep working. A directory matching neither format is flagged.</p>"#
+<p><em>Note:</em> a vault is an <strong>llm-wiki / Obsidian</strong> directory (wikilinks + frontmatter) — a local path or a git repo; MoriNet converts and builds it automatically, re-syncing every 5 min. mdBook-native repos keep working. A directory matching neither format is flagged.</p>
+<dialog id="dir-picker">
+  <div class="picker-bar">
+    <button type="button" id="picker-up">\u2191 Up</button>
+    <span id="picker-path">/</span>
+  </div>
+  <ul id="picker-list"></ul>
+  <button type="button" onclick="document.getElementById('dir-picker').close()">Cancel</button>
+</dialog>
+<script>{picker}</script>"#,
+        picker = PICKER_JS,
     );
     admin_page(&state, &claims, "Vaults", body).await
 }
@@ -2654,6 +2725,30 @@ mod tests {
         let res = req(app, "GET", "/", headers, None).await;
         let body = to_bytes(res.into_body(), 65536).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("Vaults mgmt"));
+    }
+
+    // ---------- Phase 7: server-side directory picker (REQ-UX-001) ----------
+
+    #[tokio::test]
+    async fn the_vaults_page_carries_the_directory_picker() {
+        // REQ-UX-001: adding a local vault no longer requires typing a server
+        // path — the picker lists the allowed root and fills the form.
+        let (app, _) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        let res = req(app.clone(), "GET", "/admin/vaults", headers.clone(), None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("id=\"dir-picker\""), "picker dialog: {text}");
+        assert!(text.contains("openPicker()"), "browse button wired: {text}");
+        // And the listing API answers for the admin.
+        let res = req(app, "GET", "/admin/browse?path=/", headers, None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("\"dirs\""), "json listing: {text}");
+        assert!(text.contains("\"current\""), "json current path: {text}");
+        assert!(text.contains("\"abs\""), "json absolute path: {text}");
     }
 
     #[tokio::test]

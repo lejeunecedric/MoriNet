@@ -116,3 +116,34 @@ em { color: #666; }
 .menu-email { font-size: .8rem; opacity: .75; word-break: break-all; }
 .menu-body form { display: flex; gap: .35rem; }
 .menu-body input { flex: 1; min-width: 0; }
+
+/* Phase 7: server-side directory picker (REQ-UX-001). */
+#dir-picker {
+  min-width: 24rem;
+  max-height: 70vh;
+  border: 1px solid rgba(128, 128, 128, .35);
+  border-radius: 8px;
+  padding: .75rem;
+}
+#dir-picker::backdrop { background: rgba(0, 0, 0, .35); }
+.picker-bar {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .5rem;
+}
+#picker-path { font-family: monospace; font-size: .85rem; opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#picker-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 .5rem;
+  max-height: 50vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+}
+#picker-list li { display: flex; align-items: center; gap: .35rem; }
+.picker-descend { flex: 1; text-align: left; background: transparent; border: 0; padding: .15rem .25rem; cursor: pointer; border-radius: 4px; }
+.picker-descend:hover { background: rgba(128, 128, 128, .18); }
+.picker-select { cursor: pointer; }
