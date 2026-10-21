@@ -17,6 +17,10 @@ pub struct Vault {
     pub slug: String,
     pub name: String,
     pub book_path: String,
+    /// `global` (shared through groups) or `personal` (solo, owner only).
+    pub scope: String,
+    /// Owner email for a personal vault; None for a global one.
+    pub owner_email: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,24 +179,28 @@ impl Store {
             None => Ok(vec![]),
             Some((r,)) if r == "admin" => self.list_all_vaults().await,
             Some(_) => {
-                let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
-                    "SELECT v.id, v.slug, v.name, v.book_path \
+                let rows: Vec<(i64, String, String, String, String, Option<String>)> =
+                    sqlx::query_as(
+                        "SELECT v.id, v.slug, v.name, v.book_path, v.scope, owner.email \
                      FROM vaults v \
                      JOIN vault_acl a ON a.vault_id = v.id \
                      JOIN users u ON u.id = a.user_id \
+                     LEFT JOIN users owner ON owner.id = v.owner_id \
                      WHERE u.email = ? \
                      ORDER BY v.slug",
-                )
-                .bind(email)
-                .fetch_all(&self.pool)
-                .await?;
+                    )
+                    .bind(email)
+                    .fetch_all(&self.pool)
+                    .await?;
                 Ok(rows
                     .into_iter()
-                    .map(|(id, slug, name, book_path)| Vault {
+                    .map(|(id, slug, name, book_path, scope, owner_email)| Vault {
                         id,
                         slug,
                         name,
                         book_path,
+                        scope,
+                        owner_email,
                     })
                     .collect())
             }
@@ -200,17 +208,22 @@ impl Store {
     }
 
     pub async fn list_all_vaults(&self) -> anyhow::Result<Vec<Vault>> {
-        let rows: Vec<(i64, String, String, String)> =
-            sqlx::query_as("SELECT id, slug, name, book_path FROM vaults ORDER BY slug")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<(i64, String, String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT v.id, v.slug, v.name, v.book_path, v.scope, u.email
+             FROM vaults v LEFT JOIN users u ON u.id = v.owner_id
+             ORDER BY v.scope, v.slug",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, slug, name, book_path)| Vault {
+            .map(|(id, slug, name, book_path, scope, owner_email)| Vault {
                 id,
                 slug,
                 name,
                 book_path,
+                scope,
+                owner_email,
             })
             .collect())
     }
@@ -543,6 +556,8 @@ impl Store {
                         slug,
                         name,
                         book_path,
+                        scope: scope.clone(),
+                        owner_email: None,
                     },
                     role: "write".to_string(),
                     personal: scope == "personal",
@@ -553,21 +568,24 @@ impl Store {
         let mut out: Vec<AccessibleVault> = Vec::new();
 
         // Personal vaults owned by this user.
-        let own: Vec<(i64, String, String, String)> = sqlx::query_as(
-            "SELECT id, slug, name, book_path FROM vaults
-             WHERE scope = 'personal' AND owner_id = ?
-             ORDER BY slug",
+        let own: Vec<(i64, String, String, String, String)> = sqlx::query_as(
+            "SELECT v.id, v.slug, v.name, v.book_path, u.email
+             FROM vaults v JOIN users u ON u.id = v.owner_id
+             WHERE v.scope = 'personal' AND v.owner_id = ?
+             ORDER BY v.slug",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
-        for (id, slug, name, book_path) in own {
+        for (id, slug, name, book_path, email) in own {
             out.push(AccessibleVault {
                 vault: Vault {
                     id,
                     slug,
                     name,
                     book_path,
+                    scope: "personal".to_string(),
+                    owner_email: Some(email),
                 },
                 role: "write".to_string(),
                 personal: true,
@@ -597,6 +615,8 @@ impl Store {
                     slug,
                     name,
                     book_path,
+                    scope: "global".to_string(),
+                    owner_email: None,
                 },
                 role,
                 personal: false,

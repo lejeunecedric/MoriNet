@@ -166,9 +166,14 @@ pub fn build_router_with_email(
         .route("/admin/users/invite", post(admin_invite))
         .route("/admin/vaults", get(admin_vaults))
         .route("/admin/browse", get(admin_browse))
+        .route("/admin/groups", get(admin_groups).post(admin_create_group))
+        .route("/admin/groups/create", post(admin_create_group))
+        .route("/admin/groups/{id}/delete", post(admin_delete_group))
+        .route("/admin/groups/{id}/members", post(admin_group_members))
+        .route("/admin/groups/{id}/rename", post(admin_rename_group))
+        .route("/admin/vaults/{slug}/groups", post(admin_vault_groups))
         .route("/admin/vaults/create", post(admin_create_vault))
         .route("/admin/vaults/{slug}/perms", get(admin_perms))
-        .route("/admin/vaults/{slug}/acl", post(admin_update_acl))
         .route("/admin/vaults/{slug}/delete", post(admin_delete_vault))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin))
         .with_state(state.clone());
@@ -331,18 +336,31 @@ async fn vault_root_redirect() -> Redirect {
 }
 
 async fn index(State(state): State<SharedState>, Extension(claims): Extension<Claims>) -> Response {
-    let vaults = state
+    // Phase 8: the listing uses the group model, so a user sees their own
+    // personal vaults plus the global ones their groups are granted.
+    let accessible = state
         .store
-        .list_vaults_for(&claims.email)
+        .accessible_vaults(&claims.email)
         .await
         .unwrap_or_default();
-    let mut items = String::new();
-    for v in &vaults {
-        items.push_str(&format!(
-            r#"<li><a href="/vault/{}/">{}</a></li>"#,
-            html_escape(&v.slug),
-            html_escape(&v.name)
-        ));
+    let mut personal_items = String::new();
+    let mut global_items = String::new();
+    for a in &accessible {
+        let line = format!(
+            r#"<li><a href="/vault/{}/">{}</a> <small>({})</small></li>"#,
+            html_escape(&a.vault.slug),
+            html_escape(&a.vault.name),
+            if a.personal {
+                "private"
+            } else {
+                a.role.as_str()
+            },
+        );
+        if a.personal {
+            personal_items.push_str(&line);
+        } else {
+            global_items.push_str(&line);
+        }
     }
     // Admin nav (only for admins).
     let is_admin = state
@@ -358,6 +376,17 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     } else {
         ""
     };
+    let personal_section = if personal_items.is_empty() {
+        String::new()
+    } else {
+        format!("<h2>My vaults</h2>\n<ul>{personal_items}</ul>")
+    };
+    let global_section = if global_items.is_empty() {
+        "<p><em>No shared vault yet.</em></p>".to_string()
+    } else {
+        format!("<h2>Shared with me</h2>\n<ul>{global_items}</ul>")
+    };
+
     let html = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -367,7 +396,8 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
   <h1>MoriNet</h1>
   <p>Signed in as {}</p>
   {admin_nav}
-  <ul>{items}</ul>
+  {personal_section}
+  {global_section}
 </body>
 </html>"#,
         html_escape(&claims.email)
@@ -393,22 +423,27 @@ async fn vault_file(
 
 /// ACL check + safe file serving from the vault's compiled book directory.
 async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str) -> Response {
-    // ACL gate (REQ-VAULT-004).
-    match state.store.acl_allows(email, slug).await {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::FORBIDDEN.into_response(),
+    // Access gate (REQ-VAULT-004): admin, owner of a personal vault, or a group
+    // grant. Reading only needs read; writing (WebDAV PUT) needs write.
+    match state.store.access_for(email, slug).await {
+        Ok(a) if a.can_read() => {}
+        Ok(_) => return StatusCode::FORBIDDEN.into_response(),
         Err(e) => {
-            eprintln!("acl_allows failed: {e}");
+            eprintln!("access_for failed: {e}");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
 
-    // Resolve book dir for this slug.
-    let vaults = state.store.list_vaults_for(email).await.unwrap_or_default();
-    let Some(vault) = vaults.iter().find(|v| v.slug == slug) else {
+    // Resolve book dir for this slug, from the same model that granted access.
+    let accessible = state
+        .store
+        .accessible_vaults(email)
+        .await
+        .unwrap_or_default();
+    let Some(vault) = accessible.iter().find(|a| a.vault.slug == slug) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let book_dir = std::path::PathBuf::from(&vault.book_path);
+    let book_dir = std::path::PathBuf::from(&vault.vault.book_path);
 
     // Normalize the requested path and reject traversal (`..` escapes).
     let rel = rest.trim_start_matches('/');
@@ -447,11 +482,15 @@ async fn dav_resolve(
     email: &str,
     slug: &str,
 ) -> Result<(PathBuf, bool, PathBuf), StatusCode> {
-    let vaults = state.store.list_vaults_for(email).await.unwrap_or_default();
-    let Some(vault) = vaults.iter().find(|v| v.slug == slug) else {
+    let accessible = state
+        .store
+        .accessible_vaults(email)
+        .await
+        .unwrap_or_default();
+    let Some(entry) = accessible.iter().find(|a| a.vault.slug == slug) else {
         return Err(StatusCode::NOT_FOUND);
     };
-    let book_dir = PathBuf::from(&vault.book_path);
+    let book_dir = PathBuf::from(&entry.vault.book_path);
     let Some(src) = webdav::source_dir_of(&book_dir) else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -489,12 +528,17 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
         .unwrap_or("")
         .to_string();
     let body = req.into_body();
-    // The Basic-auth middleware verified the user; we still re-check the ACL
-    // per vault (admins pass list_vaults_for, readers need a grant).
-    if let Ok(false) = state.store.acl_allows(&claims.email, &slug).await {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let (src_dir, is_admin, book_dir) = match dav_resolve(&state, &claims.email, &slug).await {
+    // The Basic-auth middleware verified the user; we still re-check access per
+    // vault, and remember whether it includes write (PUT needs it).
+    let access = match state.store.access_for(&claims.email, &slug).await {
+        Ok(a) if a.can_read() => a,
+        Ok(_) => return StatusCode::FORBIDDEN.into_response(),
+        Err(e) => {
+            eprintln!("dav access_for failed: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let (src_dir, _is_admin, book_dir) = match dav_resolve(&state, &claims.email, &slug).await {
         Ok(v) => v,
         Err(code) => return code.into_response(),
     };
@@ -541,8 +585,9 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
             }
         }
         Method::PUT => {
-            // REQ-WEBDAV: writes are admin-only.
-            if !is_admin {
+            // Writing needs the write role: admins, the owner of a personal
+            // vault, or a group granted write.
+            if !access.can_write() {
                 return StatusCode::FORBIDDEN.into_response();
             }
             if rel.is_empty() {
@@ -633,7 +678,7 @@ async fn admin_page(title: &str, body: String) -> Response {
 <link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   <h1>MoriNet admin</h1>
-  <nav><a href="/">Vaults</a> | <a href="/admin/users">Users</a> | <a href="/admin/vaults">Vaults mgmt</a></nav>
+  <nav><a href="/">Vaults</a> | <a href="/admin/users">Users</a> | <a href="/admin/groups">Groups</a> | <a href="/admin/vaults">Vaults mgmt</a></nav>
   <h2>{title}</h2>
   {body}
 </body>
@@ -1042,6 +1087,171 @@ struct BrowseQuery {
     path: Option<String>,
 }
 
+// ---------- groups (Phase 8) ----------
+
+/// One form action; the pages are simple server-rendered forms with no JS.
+#[derive(Debug, Deserialize)]
+struct GroupParams {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    group_id: Option<i64>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    action: String,
+}
+
+async fn admin_groups(State(state): State<SharedState>) -> Response {
+    let groups = state.store.list_groups().await.unwrap_or_default();
+    let users = state.store.list_users().await.unwrap_or_default();
+
+    let mut blocks = String::new();
+    for (gid, name, count) in &groups {
+        let members = state.store.group_members(*gid).await.unwrap_or_default();
+        let mut mlist = String::new();
+        for m in &members {
+            mlist.push_str(&format!(
+                r#"<li>{} <form method="post" action="/admin/groups/{gid}/members" style="display:inline">
+<input type="hidden" name="email" value="{me}"><input type="hidden" name="action" value="remove">
+<button type="submit">remove</button></form></li>
+"#,
+                html_escape(m),
+                me = html_escape(m)
+            ));
+        }
+        // Every user gets a row so adding is a single click, no free-text.
+        let mut picker = String::new();
+        for u in &users {
+            if members.iter().any(|m| m == &u.email) {
+                continue;
+            }
+            picker.push_str(&format!(
+                r#"<option value="{}">{}</option>"#,
+                html_escape(&u.email),
+                html_escape(&u.email)
+            ));
+        }
+        blocks.push_str(&format!(
+            r#"<h3>{name} <small>({count} member(s))</small></h3>
+<form method="post" action="/admin/groups/{gid}/rename" style="display:inline">
+  <input type="text" name="name" value="{name}" aria-label="group name">
+  <button type="submit">Rename</button>
+</form>
+<form method="post" action="/admin/groups/{gid}/delete" style="display:inline;margin-left:8px">
+  <button type="submit">Delete group</button>
+</form>
+<p>Members:</p>
+<ul style="list-style:none;padding-left:0">{mlist}</ul>
+<form method="post" action="/admin/groups/{gid}/members">
+  <select name="email"><option value="">— add a user —</option>{picker}</select>
+  <input type="hidden" name="action" value="add">
+  <button type="submit">Add to group</button>
+</form>
+<hr>
+"#,
+            name = html_escape(name),
+            count = count,
+            mlist = mlist,
+            picker = picker,
+        ));
+    }
+
+    let body = format!(
+        r#"<p>Groups decide who sees which global vault. A group can hold
+<b>read</b> or <b>write</b> on each vault, assigned per vault.</p>
+{blocks}
+<h3>Create a group</h3>
+<form method="post" action="/admin/groups/create" novalidate>
+  <label>Name <input type="text" name="name" required></label>
+  <button type="submit">Create</button>
+</form>"#
+    );
+    admin_page("Groups", body).await
+}
+
+async fn admin_create_group(
+    State(state): State<SharedState>,
+    Form(p): Form<GroupParams>,
+) -> Response {
+    let name = p.name.trim();
+    if name.is_empty() {
+        let body = "<p>Group name required.</p>";
+        return (StatusCode::BAD_REQUEST, Html(body.to_string())).into_response();
+    }
+    match state.store.create_group(name).await {
+        Ok(_) => Redirect::to("/admin/groups").into_response(),
+        Err(e) => {
+            let body = format!(
+                r#"<p style="color:red">Could not create the group: {}</p>
+<p><em>A group with that name may already exist.</em></p>
+<p><a href="/admin/groups">Back</a></p>"#,
+                html_escape(&e.to_string())
+            );
+            (StatusCode::BAD_REQUEST, Html(body)).into_response()
+        }
+    }
+}
+
+async fn admin_delete_group(State(state): State<SharedState>, Path(id): Path<i64>) -> Response {
+    // Members and vault assignments cascade (migration FKs).
+    let _ = state.store.delete_group(id).await;
+    Redirect::to("/admin/groups").into_response()
+}
+
+async fn admin_rename_group(
+    State(state): State<SharedState>,
+    Path(id): Path<i64>,
+    Form(p): Form<GroupParams>,
+) -> Response {
+    let name = p.name.trim();
+    if !name.is_empty() {
+        let _ = state.store.rename_group(id, name).await;
+    }
+    Redirect::to("/admin/groups").into_response()
+}
+
+async fn admin_group_members(
+    State(state): State<SharedState>,
+    Path(id): Path<i64>,
+    Form(p): Form<GroupParams>,
+) -> Response {
+    let email = p.email.trim();
+    if !email.is_empty() {
+        if p.action == "remove" {
+            let _ = state.store.remove_group_member(id, email).await;
+        } else {
+            let _ = state.store.add_group_member(id, email).await;
+        }
+    }
+    Redirect::to("/admin/groups").into_response()
+}
+
+/// Assign groups a role on one global vault (REQ-VLT-004).
+async fn admin_vault_groups(
+    State(state): State<SharedState>,
+    Path(slug): Path<String>,
+    Form(p): Form<GroupParams>,
+) -> Response {
+    if let Some(gid) = p.group_id {
+        match p.role.as_deref() {
+            Some("none") | Some("") => {
+                let _ = state.store.clear_vault_group_role(&slug, gid).await;
+            }
+            Some("read") => {
+                let _ = state.store.set_vault_group_role(&slug, gid, "read").await;
+            }
+            Some("write") => {
+                let _ = state.store.set_vault_group_role(&slug, gid, "write").await;
+            }
+            _ => {}
+        }
+    }
+    Redirect::to(&format!("/admin/vaults/{}/perms", slug)).into_response()
+}
+
 async fn admin_vaults(State(state): State<SharedState>) -> Response {
     let vaults = state.store.list_all_vaults().await.unwrap_or_default();
     let mut rows = String::new();
@@ -1132,59 +1342,74 @@ fn error_page(msg: &str) -> Response {
 }
 
 async fn admin_perms(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
-    let users = state.store.list_users().await.unwrap_or_default();
+    let groups = state.store.list_groups().await.unwrap_or_default();
+    let assigned = state
+        .store
+        .vault_group_roles(&slug)
+        .await
+        .unwrap_or_default();
+    let vault = state
+        .store
+        .list_all_vaults()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|v| v.slug == slug);
+
+    let Some(vault) = vault else {
+        let body =
+            r#"<p style="color:red">No such vault.</p><p><a href="/admin/vaults">Back</a></p>"#;
+        return (StatusCode::NOT_FOUND, Html(body.to_string())).into_response();
+    };
+
+    let personal = vault.scope == "personal";
     let mut rows = String::new();
-    for u in &users {
-        let allowed = state
-            .store
-            .acl_allows(&u.email, &slug)
-            .await
-            .unwrap_or(false);
-        let action = if allowed { "revoke" } else { "grant" };
-        rows.push_str(&format!(
-            r#"<tr><td>{}</td><td>{}</td><td><form method="post" action="/admin/vaults/{}/acl" style="display:inline">
-<input type="hidden" name="user_email" value="{}">
-<input type="hidden" name="action" value="{action}">
-<button type="submit">{action}</button></form></td></tr>
+    for (gid, name, _count) in &groups {
+        let role = assigned
+            .iter()
+            .find(|(g, _, _)| g == gid)
+            .map(|(_, _, r)| r.as_str())
+            .unwrap_or("none");
+        let row = format!(
+            r#"<tr><td>{}</td>
+<td><form method="post" action="/admin/vaults/{slug}/groups">
+  <input type="hidden" name="group_id" value="{gid}">
+  <select name="role">
+    <option value="none"{nsel}>no access</option>
+    <option value="read"{rsel}>read</option>
+    <option value="write"{wsel}>write</option>
+  </select>
+  <button type="submit">Apply</button>
+</form></td></tr>
 "#,
-            html_escape(&u.email),
-            if allowed { "granted" } else { "denied" },
-            html_escape(&slug),
-            html_escape(&u.email)
-        ));
+            html_escape(name),
+            nsel = if role == "none" { " selected" } else { "" },
+            rsel = if role == "read" { " selected" } else { "" },
+            wsel = if role == "write" { " selected" } else { "" },
+        );
+        rows.push_str(&row);
     }
+
+    let note = if personal {
+        format!(
+            "<p style=\"color:#b45309\"><strong>Personal vault</strong> — it belongs to \
+             <strong>{}</strong> and stays private. Groups do not apply.</p>",
+            html_escape(vault.owner_email.as_deref().unwrap_or("its owner"))
+        )
+    } else {
+        "<p>Global vault — groups below decide who can read or write it.</p>".to_string()
+    };
+
     let body = format!(
-        r#"<p>Vault: <strong>{}</strong></p>
-<table border="1" cellpadding="4"><tr><th>User</th><th>Access</th><th>Action</th></tr>
+        r#"<p>Vault: <strong>{name}</strong> <code>{slug}</code></p>
+{note}
+<table border="1" cellpadding="4"><tr><th>Group</th><th>Role</th></tr>
 {rows}</table>
-<p><a href="/admin/vaults">Back to vaults</a></p>"#,
-        html_escape(&slug)
+<p><a href="/admin/vaults">Back to vaults</a> · <a href="/admin/groups">Manage groups</a></p>"#,
+        name = html_escape(&vault.name),
+        slug = html_escape(&slug),
     );
     admin_page("Vault permissions", body).await
-}
-
-#[derive(Debug, Deserialize)]
-struct AclParams {
-    user_email: String,
-    action: String,
-}
-
-async fn admin_update_acl(
-    State(state): State<SharedState>,
-    Path(slug): Path<String>,
-    Form(p): Form<AclParams>,
-) -> Response {
-    let result = match p.action.as_str() {
-        "grant" => state.store.grant_acl(&p.user_email, &slug).await,
-        "revoke" => state.store.revoke_acl(&p.user_email, &slug).await,
-        _ => return error_page(&format!("unknown action '{}'", p.action)),
-    };
-    match result {
-        Ok(()) => {
-            Redirect::to(&format!("/admin/vaults/{}/perms", html_escape(&slug))).into_response()
-        }
-        Err(e) => error_page(&format!("ACL update failed: {e}")),
-    }
 }
 
 async fn admin_delete_vault(
@@ -1601,48 +1826,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_can_grant_and_revoke_acl() {
+    async fn admin_assigns_a_group_read_on_a_vault() {
         let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "admin-assigns-a-group-read-on-a-vault").await;
         state
             .store
-            .create_user("reader@example.com", "pw", "reader")
+            .create_user("reader@example.com", "Read!pw123", "reader")
             .await
             .unwrap();
         let cookie = admin_cookie(&app).await;
 
-        // Grant via the admin endpoint.
-        let mut headers = login_headers();
-        headers.insert(COOKIE, cookie.parse().unwrap());
-        let res = req(
-            app.clone(),
-            "POST",
-            "/admin/vaults/demo/acl",
-            headers.clone(),
-            Some(Body::from("user_email=reader@example.com&action=grant")),
-        )
-        .await;
-        assert_eq!(res.status(), StatusCode::SEE_OTHER);
-        assert!(state
-            .store
-            .acl_allows("reader@example.com", "demo")
-            .await
-            .unwrap());
+        // Before any assignment the reader is refused on the WebDAV surface.
+        assert_eq!(
+            state
+                .store
+                .access_for("reader@example.com", "dav")
+                .await
+                .unwrap(),
+            crate::store::Access::None
+        );
 
-        // Revoke.
+        // Create a group, put the reader in it, grant it 'read'.
+        let gid = state.store.create_group("Readers").await.unwrap();
+        state
+            .store
+            .add_group_member(gid, "reader@example.com")
+            .await
+            .unwrap();
         let res = req(
             app.clone(),
             "POST",
-            "/admin/vaults/demo/acl",
-            headers,
-            Some(Body::from("user_email=reader@example.com&action=revoke")),
+            "/admin/vaults/dav/groups",
+            {
+                let mut h = login_headers();
+                h.insert(COOKIE, cookie.parse().unwrap());
+                h
+            },
+            Some(Body::from(format!("group_id={gid}&role=read"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER, "assignment redirects");
+        assert_eq!(
+            state
+                .store
+                .access_for("reader@example.com", "dav")
+                .await
+                .unwrap(),
+            crate::store::Access::Read,
+            "the group grant now grants access"
+        );
+
+        // Revoke it.
+        let res = req(
+            app,
+            "POST",
+            "/admin/vaults/dav/groups",
+            {
+                let mut h = login_headers();
+                h.insert(COOKIE, cookie.parse().unwrap());
+                h
+            },
+            Some(Body::from(format!("group_id={gid}&role=none"))),
         )
         .await;
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
-        assert!(!state
-            .store
-            .acl_allows("reader@example.com", "demo")
-            .await
-            .unwrap());
+        assert_eq!(
+            state
+                .store
+                .access_for("reader@example.com", "dav")
+                .await
+                .unwrap(),
+            crate::store::Access::None,
+            "revoked immediately"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     // ---------- Phase 5: invitation + reset over HTTP ----------
@@ -2007,8 +2264,12 @@ mod tests {
     }
 
     /// A vault whose stored path is `<src>/book`, with real mdbook sources.
-    async fn seed_dav_vault(state: &SharedState) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("morinet-dav-vault-{}", std::process::id()));
+    ///
+    /// `name` must be unique per test: cargo runs them in parallel and a shared
+    /// fixture path lets one test delete another's directory.
+    async fn seed_dav_vault_named(state: &SharedState, name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("morinet-dav-vault-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("book.toml"), "[book]\ntitle = \"T\"\n").unwrap();
@@ -2045,7 +2306,7 @@ mod tests {
     #[tokio::test]
     async fn webdav_requires_authentication() {
         let (app, state) = test_router().await;
-        seed_dav_vault(&state).await;
+        seed_dav_vault_named(&state, "webdav-requires-authentication").await;
         let res = dav_request(app, "PROPFIND", "/webdav/dav", HeaderMap::new(), None).await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         let challenge = res
@@ -2063,7 +2324,7 @@ mod tests {
     #[tokio::test]
     async fn webdav_rejects_bad_credentials() {
         let (app, state) = test_router().await;
-        seed_dav_vault(&state).await;
+        seed_dav_vault_named(&state, "webdav-rejects-bad-credentials").await;
         let res = dav_request(
             app,
             "PROPFIND",
@@ -2078,7 +2339,7 @@ mod tests {
     #[tokio::test]
     async fn propfind_lists_the_vault_source_depth1() {
         let (app, state) = test_router().await;
-        let root = seed_dav_vault(&state).await;
+        let root = seed_dav_vault_named(&state, "propfind-lists-the-vault-source-depth1").await;
         let res = dav_request(
             app,
             "PROPFIND",
@@ -2104,7 +2365,7 @@ mod tests {
     #[tokio::test]
     async fn propfind_depth0_returns_only_the_collection() {
         let (app, state) = test_router().await;
-        seed_dav_vault(&state).await;
+        seed_dav_vault_named(&state, "propfind-depth0-returns-only-the-collection").await;
         // No Depth header at all => depth 0 (RFC 4918 default).
         let mut b = Request::builder().method("PROPFIND").uri("/webdav/dav");
         for (k, v) in basic("admin@example.com", "Passw0rd!").iter() {
@@ -2124,7 +2385,7 @@ mod tests {
     #[tokio::test]
     async fn webdav_get_returns_raw_markdown() {
         let (app, state) = test_router().await;
-        seed_dav_vault(&state).await;
+        seed_dav_vault_named(&state, "webdav-get-returns-raw-markdown").await;
         let res = dav_request(
             app,
             "GET",
@@ -2147,7 +2408,7 @@ mod tests {
     #[tokio::test]
     async fn webdav_rejects_path_traversal() {
         let (app, state) = test_router().await;
-        seed_dav_vault(&state).await;
+        seed_dav_vault_named(&state, "webdav-rejects-path-traversal").await;
         for uri in [
             "/webdav/dav/../../etc/passwd",
             "/webdav/dav/src/../../../etc/passwd",
@@ -2171,7 +2432,7 @@ mod tests {
     #[tokio::test]
     async fn reader_without_acl_is_denied_on_webdav() {
         let (app, state) = test_router().await;
-        seed_dav_vault(&state).await;
+        seed_dav_vault_named(&state, "reader-without-acl-is-denied-on-webdav").await;
         state
             .store
             .create_user("reader@example.com", "Read!pw123", "reader")
@@ -2191,7 +2452,7 @@ mod tests {
     #[tokio::test]
     async fn reader_put_is_forbidden_even_with_acl() {
         let (app, state) = test_router().await;
-        let root = seed_dav_vault(&state).await;
+        let root = seed_dav_vault_named(&state, "reader-put-is-forbidden-even-with-acl").await;
         state
             .store
             .create_user("reader@example.com", "Read!pw123", "reader")
@@ -2218,7 +2479,7 @@ mod tests {
     #[tokio::test]
     async fn admin_put_writes_the_source_file() {
         let (app, state) = test_router().await;
-        let root = seed_dav_vault(&state).await;
+        let root = seed_dav_vault_named(&state, "admin-put-writes-the-source-file").await;
         let res = dav_request(
             app,
             "PUT",
@@ -2242,7 +2503,8 @@ mod tests {
         // created a literal file named "..%2fescaped.md" in the vault root.
         // The path is now percent-decoded before the traversal check.
         let (app, state) = test_router().await;
-        let root = seed_dav_vault(&state).await;
+        let root =
+            seed_dav_vault_named(&state, "admin-put-percent-encoded-traversal-is-refused").await;
         for uri in [
             "/webdav/dav/..%2fescaped.md",
             "/webdav/dav/%2e%2e%2fescaped2.md",
@@ -2272,7 +2534,7 @@ mod tests {
     #[tokio::test]
     async fn admin_put_traversal_is_refused() {
         let (app, state) = test_router().await;
-        let root = seed_dav_vault(&state).await;
+        let root = seed_dav_vault_named(&state, "admin-put-traversal-is-refused").await;
         let res = dav_request(
             app,
             "PUT",
