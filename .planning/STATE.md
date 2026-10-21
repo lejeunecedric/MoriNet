@@ -4,7 +4,7 @@
 
 ---
 
-## Current position (2026-10-20, Phase 4 done — handoff to next agent)
+## Current position (2026-10-21 — session resumed; Phase 8b obsidian-format started)
 
 - **Latest release**: v0.1.6 (embedded stylesheet + admin nav on index) — releasing at handoff time; if holldemo lags behind, re-dispatch Deploy with `inputs.tag=v0.1.6`
 - **Live instance**: https://morinet.treklair.fr — public demo instance, admin-ui accessible via the **Admin** nav link on the index. Credentials live on the server, not in this repo
@@ -18,8 +18,8 @@
 - **Phase 8 — access-model** (user decision 2026-10-21): the merged-book idea is ABANDONED. Replaced by groups + personal vaults: `groups`/`group_members`, `vaults.scope` (global|personal) + `owner_id`, `vault_group_acl(vault, group, role)`. A personal vault is strictly solo (owner always has write). REQ-GRP-001..004, REQ-VLT-001..007.
 - **Phase 9 — ux-nav**: new shell — My vaults landing, account menu top-right (name/email/logout), discreet close button on mdbook pages, Admin menu only for role=admin.
 - **Email change requires confirmation** at the new address (`pending_emails`); unconfirmed changes never break the existing login.
-- **Blocker**: the real vault input is an **Obsidian wiki**, not an mdBook. B3Wiki has 0 `book.toml`, 641 `[[wikilinks]]` (with `|alias`), and frontmatter on every page. mdBook renders `[[…]]` literally. Needs wikilink resolution + frontmatter support as a proper feature — the earlier raw-wiki import was reverted on purpose (`2b924f3`).
-- **Next**: resolve the Obsidian format blocker → Phase 7 bites 2..5 (picker modal, import) → Phase 8 personal-vault UI → Phase 9 ux-nav → Phase 10 (MCP) → Phase 11 (polish v1.0)
+- **Obsidian format blocker RESOLVED by design (2026-10-21)**: in-pipeline converter (AD-14/PRD-6) — llm-wiki vault → generated mdBook tree in `.morinet-build/`, wikilinks à l'Obsidian, frontmatter consommé, SUMMARY régénéré à chaque sync. Corpus réel mesuré en local (ProgWiki) : 131 .md, 812 wikilinks, 542 aliases, 0 book.toml.
+- **Next**: Phase 8b bites 1→6 (`.planning/phases/08b-obsidian-format/01-obsidian-format-PLAN.md`) → Phase 8 personal-vault UI → Phase 7 bites 2..5 → Phase 9 ux-nav → Phase 10 (MCP) → Phase 11 (polish v1.0)
 - **Not started**: `/logout` does not exist; no nav shell yet; no screen to create a personal vault (store method exists)
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
@@ -56,6 +56,9 @@
 - **AD-13** *(2026-10-20)* — **WebDAV exposes the vault SOURCE, not the compiled book**, and the handler takes a single `Request` extractor instead of stacked extractors.
   - Rationale: (1) the useful direction is PUT-markdown-then-render, so serving `book/` HTML would be pointless; the store keeps `<src>/book` so the source is its parent. (2) `.route(..., get(h))` matches GET only — PROPFIND/PUT fell through to the router's 405. (3) stacking `Method`/`Uri`/`HeaderMap`/`Body`/`Path` extractors made axum return 500 *before* the handler ran; one `Request` + manual extraction is robust and easier to read.
 
+- **AD-14** *(2026-10-21)* — **Obsidian/llm-wiki support = in-pipeline converter**, not an mdBook preprocessor, not a custom renderer.
+  - Rationale: mdBook preprocessors receive the book AFTER `SUMMARY.md` is parsed, so they can never fix the missing structure — and the missing structure IS the problem. The converter (`sync → .morinet-build/` mirror with generated `book.toml` + `SUMMARY.md` + rewritten wikilinks + consumed frontmatter) keeps mdBook upstream (`AD-2` respected), is pure Rust and unit-testable, and never writes into the user's source vault. A real-corpus oracle (`MORINET_CORPUS=… cargo test -- --ignored`) validates the parser against 127 living pages.
+
 ## Product Decisions (PRD)
 
 - **PRD-5** *(2026-10-20)* — Staging target = `morinet.treklair.fr` on holldemo, DNS A record set by user. Host/IP kept out of this public repo.
@@ -69,6 +72,8 @@
   - User decided. No sidebar switcher (possible later).
 - **PRD-4** *(2026-10-20)* — SMTP = generic configurable adapter (no Brevo integration).
   - User decided. We code a generic `lettre` adapter with host/port/user/pass.
+
+- **PRD-6** *(2026-10-21)* — **MoriNet only loads llm-wiki (Obsidian-format) vaults.** Detection is inverted: the absence of `book.toml`/`src/SUMMARY.md` selects the llm-wiki pipeline; a vault matching *neither* format is flagged in admin with `LLM-Wiki not detected: this vault might not work as expected`. User decided (wording theirs).
 
 ## Notable errors & learnings
 

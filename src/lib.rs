@@ -3,6 +3,7 @@
 pub mod browse;
 pub mod config;
 pub mod email;
+pub mod obsidian;
 pub mod server;
 pub mod session;
 pub mod sources;

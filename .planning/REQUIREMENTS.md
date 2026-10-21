@@ -169,6 +169,17 @@
 
 ---
 
+## OBSFMT — llm-wiki / Obsidian format (Phase 8b)
+
+| REQ-ID           | Description                                                                                       | Verification              |
+|------------------|-----------------------------------------------------------------------------------|---------------------------|
+| REQ-OBSFMT-001   | Détection llm-wiki : pas de `book.toml`/`src/SUMMARY.md` → pipeline Obsidian ; ni l'un ni l'autre → warning admin « LLM-Wiki not detected: this vault might not work as expected » | route e2e + page admin    |
+| REQ-OBSFMT-002   | `[[slug]]` résolu à l'Obsidian (racine d'abord, le plus proche gagne, alias `[[t\|Texte]]`, `#section`) → lien md relatif que mdBook honore | unit + corpus             |
+| REQ-OBSFMT-003   | Wikilink cassé → texte inerte `<span class="wikilink-missing">`, jamais de 404 ; `![[embed]]` → image | unit + snapshot HTML      |
+| REQ-OBSFMT-004   | Frontmatter consommé : title → SUMMARY ; type/tags/created/updated → bloc méta en tête de page rendue | golden + snapshot         |
+| REQ-OBSFMT-005   | SUMMARY.md + book.toml régénérés à chaque sync depuis l'arborescence (index.md = Home) ; source jamais modifié (output dans `.morinet-build/`) | unit + convert tempdir    |
+| REQ-OBSFMT-006   | WebDAV PUT + rebuild passent par la conversion sur le source ; la nouvelle note apparaît | e2e route + curl          |
+
 ## Breakdown per phase
 
 - Phase 0: REQ-INFRA-001, 002, 003, 005, 006, REQ-OPS-001
@@ -182,3 +193,4 @@
 - Phase 7: REQ-UX-001..007 (vault management UX — inserted before MCP)
 - Phase 8: REQ-MCP-001..007 (renumbered)
 - Phase 9: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
+- Phase 8b: REQ-OBSFMT-001..006 (converter llm-wiki/Obsidian → mdBook)
