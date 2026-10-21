@@ -15,7 +15,8 @@
 - **Auto-scaffold of raw wikis REVERTED** (`2b924f3`): vault contract is mdBook-native (`book.toml` + `src/SUMMARY.md`). The B3Wiki/ProgWiki import was a format-validation test, not a feature — see HANDOFF.md before re-attempting
 - **Deploy quirks**: staging + atomic `mv` (ETXTBSY), re-dispatch may be needed right after a release finishes (tag-push deploy races the release and falls back to "latest release")
 - **Planning refreshed (2026-10-21)**: a new **Phase 7 — vault-ux** was inserted BEFORE MCP (MCP → 08, polish → 09). User-driven: adding a local vault should not require typing a server path.
-- **Next**: Phase 7 (vault-ux: server-side directory picker) → Phase 8 (MCP) → Phase 9 (polish v1.0)
+- **New Phase 8 — fusion** (user decision 2026-10-21): vaults stay independently managed BUT each user sees ONE merged mdbook of the vaults they may access, sidebar grouped by vault. Chosen approach: rebuild per user, cache on disk (`data/books/<user>/`). REQ-FUSE-001..008.
+- **Next**: Phase 7 (vault-ux: browse + import) → Phase 8 (fusion) → Phase 9 (MCP) → Phase 10 (polish v1.0)
 - **Agent handoff notes**: `.planning/HANDOFF.md` (pitfalls, conventions, open items)
 
 ## Architectural Decisions (AD)

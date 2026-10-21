@@ -78,8 +78,9 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 ## What's left (ROADMAP)
 
 - **Phase 7** — vault-ux: Browse button + server-side directory picker for local vaults; URL field for GitHub. (inserted 2026-10-21)
-- **Phase 8** — MCP: StreamableHttp + `list_vaults`/`list_notes`/`read_note`/`search_notes` (crate `rmcp`).
-- **Phase 9** — polish: crates.io publish, README final, v1.0.0.
+- **Phase 8** — fusion: per-user merged mdbook (sidebar grouped by vault). Biggest change so far — the current `vaults.book_path` model (one compiled book per vault, served at `/vault/<slug>/`) does not fit it.
+- **Phase 9** — MCP: StreamableHttp + `list_vaults`/`list_notes`/`read_note`/`search_notes` (crate `rmcp`).
+- **Phase 10** — polish: crates.io publish, README final, v1.0.0.
 
 Ops open items: vops owns holldemo provisioning (systemd unit with env creds, nginx, TLS, sudoers `/etc/sudoers.d/morinet-deploy` — verify it's installed, it gates the auto-restart).
 
