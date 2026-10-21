@@ -402,16 +402,16 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     // "My vaults" is always rendered: the load form is how a user with no
     // vault yet (e.g. the demo account) loads one (REQ-VLT-005).
     let personal_section = format!(
-        "<h2>My vaults</h2>\n{list}\n<h3>Load a vault</h3>\n<form method=\"post\" action=\"/vaults/create\">\n  <label>Name <input type=\"text\" name=\"name\" required placeholder=\"B3Wiki\"></label>\n  <label>GitHub URL <input type=\"url\" name=\"url\" required placeholder=\"https://github.com/owner/repo\"></label>\n  <label>Token <input type=\"text\" name=\"token\" placeholder=\"optional, private repo\"></label>\n  <button type=\"submit\">Load vault</button>\n</form>\n{autofill}\n",
+        "<section class=\"panel\">\n<h2>My vaults</h2>\n{list}\n</section>\n<section class=\"panel\">\n<h2>Load a vault</h2>\n<form method=\"post\" action=\"/vaults/create\" class=\"stacked\">\n  <div class=\"field\"><label for=\"lv-name\">Name</label><input id=\"lv-name\" type=\"text\" name=\"name\" placeholder=\"e.g. My Wiki\"></div>\n  <div class=\"field field-wide\"><label for=\"lv-url\">GitHub URL</label><input id=\"lv-url\" type=\"url\" name=\"url\" required placeholder=\"https://github.com/owner/repo\"></div>\n  <div class=\"field\"><label for=\"lv-token\">Token <small>(optional)</small></label><input id=\"lv-token\" type=\"text\" name=\"token\" placeholder=\"private repos only\"></div>\n  <button type=\"submit\">Load vault</button>\n</form>\n{autofill}\n</section>\n",
         list = if personal_items.is_empty() {
-            "<p><em>No personal vault yet.</em></p>".to_string()
+            "<p class=\"empty\">No personal vaults yet.</p>".to_string()
         } else {
             format!("<ul>{personal_items}</ul>")
         },
         autofill = AUTOFILL_NAME_JS,
     );
     let global_section = if global_items.is_empty() {
-        "<p><em>No shared vault yet.</em></p>".to_string()
+        "<p class=\"empty\">No shared vaults yet.</p>".to_string()
     } else {
         format!("<h2>Shared with me</h2>\n<ul>{global_items}</ul>")
     };
@@ -731,7 +731,7 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
         .as_deref()
         == Some("admin");
     let admin_menu = if is_admin {
-        r#"<details class="menu"><summary>Admin</summary><div class="menu-body">
+        r#"<details class="menu"><summary class="menu-btn menu-admin">&#9881; Admin <span class="caret">&#9662;</span></summary><div class="menu-body">
 <a href="/admin">Dashboard</a>
 <a href="/admin/users">Users</a>
 <a href="/admin/groups">Groups</a>
@@ -741,23 +741,30 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
     } else {
         ""
     };
+    // First letter of the display name for the avatar chip.
+    let initial = label
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
     format!(
         r#"<header class="mori-nav">
-  <a class="brand" href="/">MoriNet</a>
+  <a class="brand" href="/"><span class="brand-mark">&#9638;</span> MoriNet</a>
   <nav>
-    <a href="/">My vaults</a>
     {admin_menu}
-    <details class="menu"><summary>{label}</summary><div class="menu-body">
+    <details class="menu"><summary class="menu-btn"><span class="avatar">{initial}</span> {label} <span class="caret">&#9662;</span></summary><div class="menu-body">
 <span class="menu-email">{email}</span>
 <form method="post" action="/account/name">
+  <label class="menu-label">Display name</label>
   <input type="text" name="name" value="{label}" placeholder="display name" aria-label="display name">
   <button type="submit">Save</button>
 </form>
-<form method="post" action="/logout"><button type="submit">Logout</button></form>
+<form method="post" action="/logout"><button type="submit" class="btn-quiet">Log out</button></form>
 </div></details>
   </nav>
 </header>"#,
         admin_menu = admin_menu,
+        initial = html_escape(&initial),
         label = html_escape(&label),
         email = html_escape(&claims.email),
     )
@@ -778,6 +785,14 @@ async fn set_account_name(
 
 async fn admin_page(state: &SharedState, claims: &Claims, title: &str, body: String) -> Response {
     let header = account_menu(state, claims).await;
+    // Mark the current section in the pill nav ("Vault permissions" → Vaults).
+    let active = |pill: &str| {
+        if title == pill || title.starts_with(pill.trim_end_matches('s')) {
+            " class=\"active\""
+        } else {
+            ""
+        }
+    };
     Html(format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -785,12 +800,16 @@ async fn admin_page(state: &SharedState, claims: &Claims, title: &str, body: Str
 <link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   {header}
-  <h1>MoriNet admin</h1>
-  <nav><a href="/admin/users">Users</a> | <a href="/admin/groups">Groups</a> | <a href="/admin/vaults">Vaults mgmt</a> | <a href="/admin/about">About</a></nav>
+  <h1 class="page-title">Admin</h1>
+  <nav class="subnav"><a{users} href="/admin/users">Users</a><a{groups} href="/admin/groups">Groups</a><a{vaults} href="/admin/vaults">Vaults</a><a{about} href="/admin/about">About</a></nav>
   <h2>{title}</h2>
   {body}
 </body>
-</html>"#
+</html>"#,
+        users = active("Users"),
+        groups = active("Groups"),
+        vaults = active("Vaults"),
+        about = active("About"),
     ))
     .into_response()
 }
