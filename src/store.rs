@@ -1070,6 +1070,15 @@ impl Store {
             .collect())
     }
 
+    /// The user id behind an email (claims carry the email, tokens key on id).
+    pub async fn user_id_for(&self, email: &str) -> anyhow::Result<Option<i64>> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
     /// Revoke one of the user's own tokens. `false` if the id is unknown OR
     /// belongs to another user (no cross-user revoke).
     pub async fn revoke_api_token(&self, user_id: i64, id: i64) -> anyhow::Result<bool> {

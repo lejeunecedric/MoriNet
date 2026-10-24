@@ -155,6 +155,8 @@ pub fn build_router_with_email(
         .route("/logout", post(logout))
         .route("/account", get(account_page))
         .route("/account/name", post(set_account_name))
+        .route("/account/tokens", post(create_account_token))
+        .route("/account/tokens/revoke", post(revoke_account_token))
         .route("/vaults/create", post(load_personal_vault))
         .route("/vaults/{slug}/delete", post(delete_my_vault))
         .route("/vaults/{slug}/refresh", post(refresh_my_vault))
@@ -788,13 +790,36 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
     )
 }
 
+/// UTC YYYY-MM-DD from unix seconds — civil-from-days algorithm, no chrono
+/// (hand-rolled weekday math bit us once; this one is the reference algorithm).
+fn fmt_date(unix: i64) -> String {
+    let z = unix.div_euclid(86_400) + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_097 + 1 }) / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 146);
+    let mp = (5 * doy + 2) / 153;
+    let d = doe - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe as i64 + era * 400;
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// `GET /account` — the account page: identity + display-name editing
-/// (REQ-NAV-002). The rename form lives here, not inside the header dropdown:
-/// a menu is for navigation, a form is editing (anti-clutter).
+/// (REQ-NAV-002) + API token management (Phase 10). The rename form lives
+/// here, not inside the header dropdown: a menu is for navigation, a form is
+/// editing (anti-clutter).
 async fn account_page(
     State(state): State<SharedState>,
     Extension(claims): Extension<Claims>,
 ) -> Response {
+    Html(account_html(&state, &claims, None).await).into_response()
+}
+
+/// Renders the account page. `banner` is the one-time plaintext token shown
+/// right after creation — it is NEVER rendered again for any later request.
+async fn account_html(state: &SharedState, claims: &Claims, banner: Option<&str>) -> String {
     let display = state
         .store
         .display_name_for(&claims.email)
@@ -802,8 +827,37 @@ async fn account_page(
         .ok()
         .flatten();
     let label = display.unwrap_or_else(|| claims.email.clone());
-    let header = account_menu(&state, &claims).await;
-    Html(format!(
+    let header = account_menu(state, claims).await;
+    let uid = state.store.user_id_for(&claims.email).await.ok().flatten();
+    let tokens = match uid {
+        Some(uid) => state.store.list_api_tokens(uid).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let rows: String = tokens
+        .iter()
+        .map(|t| {
+            let used = match t.last_used_at {
+                Some(ts) => fmt_date(ts),
+                None => "never".to_string(),
+            };
+            format!(
+                "<tr><td>{name}</td><td>{created}</td><td>{used}</td><td><form method=\"post\" action=\"/account/tokens/revoke\"><input type=\"hidden\" name=\"id\" value=\"{id}\"><button type=\"submit\">Revoke</button></form></td></tr>",
+                name = html_escape(&t.name),
+                created = fmt_date(t.created_at),
+                used = used,
+                id = t.id,
+            )
+        })
+        .collect();
+    let banner_html = match banner {
+        Some(plain) => format!(
+            "<p class=\"banner\">New token <strong>{name}</strong> — copy it now, it is shown only once:<br><code>{plain}</code></p>",
+            name = "token",
+            plain = html_escape(plain),
+        ),
+        None => String::new(),
+    };
+    format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>MoriNet — Account</title>
@@ -819,12 +873,67 @@ async fn account_page(
       <button type="submit">Save</button>
     </form>
   </section>
+  <section class="panel">
+    <h2>API tokens</h2>
+    {banner_html}
+    <p>Tokens authenticate the MCP endpoint (<code>/mcp</code>) with <code>Authorization: Bearer …</code>. Shown once, revocable.</p>
+    <table>
+      <thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+    <form method="post" action="/account/tokens" class="stacked">
+      <div class="field field-wide"><label for="token-name">New token name</label><input id="token-name" type="text" name="name" placeholder="e.g. laptop" required></div>
+      <button type="submit">Add token</button>
+    </form>
+  </section>
 </body>
 </html>"#,
         label = html_escape(&label),
         email = html_escape(&claims.email),
-    ))
-    .into_response()
+    )
+}
+
+#[derive(serde::Deserialize)]
+struct TokenParams {
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct TokenRevokeParams {
+    id: i64,
+}
+
+/// `POST /account/tokens` — mint a named API token; the plaintext is rendered
+/// exactly once in the response, only its sha256 lives in the DB.
+async fn create_account_token(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Form(p): Form<TokenParams>,
+) -> Response {
+    let name = p.name.trim();
+    if name.is_empty() {
+        return error_page("the token needs a name");
+    }
+    let uid = match state.store.user_id_for(&claims.email).await.ok().flatten() {
+        Some(uid) => uid,
+        None => return error_page("account not found"),
+    };
+    match state.store.create_api_token(uid, name).await {
+        Ok((_id, plain)) => Html(account_html(&state, &claims, Some(&plain)).await).into_response(),
+        Err(e) => error_page(&format!("could not create the token: {e}")),
+    }
+}
+
+/// `POST /account/tokens/revoke` — delete one of the user's own tokens.
+async fn revoke_account_token(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Form(p): Form<TokenRevokeParams>,
+) -> Response {
+    if let Some(uid) = state.store.user_id_for(&claims.email).await.ok().flatten() {
+        let _ = state.store.revoke_api_token(uid, p.id).await;
+    }
+    Redirect::to("/account").into_response()
 }
 
 /// `POST /account/name` — the signed-in user renames themselves (REQ-NAV-002).
@@ -4181,5 +4290,106 @@ mod tests {
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
         let vaults = state.store.list_all_vaults().await.unwrap();
         assert!(vaults.is_empty(), "demo vault deleted");
+    }
+
+    // ---------- Phase 10 / PLAN 10-01: API tokens on /account ----------
+
+    #[tokio::test]
+    async fn api_token_creation_shows_the_plaintext_once() {
+        let (app, state) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/account/tokens",
+            headers.clone(),
+            Some(Body::from("name=ci")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        let pos = text
+            .find("mn_")
+            .expect("plaintext token shown once after creation");
+        let plain: String = text[pos..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        assert!(state
+            .store
+            .user_for_api_token(&plain)
+            .await
+            .unwrap()
+            .is_some());
+
+        // The listing shows the NAME but never replays the plaintext.
+        let res = req(app.clone(), "GET", "/account", headers, None).await;
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains(">ci<") || text.contains(">ci</td>") || text.contains("ci</td>"),
+            "token name listed: {text}"
+        );
+        assert!(!text.contains(&plain), "plaintext never replayed");
+    }
+
+    #[tokio::test]
+    async fn api_token_routes_require_a_session() {
+        let (app, _state) = test_router().await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/account/tokens",
+            HeaderMap::new(),
+            Some(Body::from("name=x")),
+        )
+        .await;
+        // Same convention as every protected POST: anonymous → /login.
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(res.headers().get("location").unwrap(), "/login");
+    }
+
+    #[tokio::test]
+    async fn api_token_can_be_revoked_from_the_account_page() {
+        let (app, state) = test_router().await;
+        let cookie = admin_cookie(&app).await;
+        let uid = state
+            .store
+            .verify_login("admin@example.com", "[REDACTED-DEV-PASSWORD]")
+            .await
+            .unwrap()
+            .expect("admin logs in")
+            .id;
+        let (id, plain) = state.store.create_api_token(uid, "doomed").await.unwrap();
+
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/account/tokens/revoke",
+            headers,
+            Some(Body::from(format!("id={id}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(
+            state
+                .store
+                .user_for_api_token(&plain)
+                .await
+                .unwrap()
+                .is_none(),
+            "revoked from the UI stops resolving"
+        );
     }
 }
