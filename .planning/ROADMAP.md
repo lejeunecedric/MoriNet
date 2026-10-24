@@ -8,6 +8,34 @@
 
 ---
 
+## Phases
+
+<!-- GSD-parseable checklist. Details for each phase live in the sections below. -->
+
+- [x] **Phase 00: bootstrap** - Repo + Cargo + CI + first release (v0.1.0)
+- [x] **Phase 01: core-serve** - Serve ONE static vault behind login (v0.1.1)
+- [x] **Phase 02: multi-vault** - Sub-paths, index, per-vault perms (v0.1.1)
+- [x] **Phase 03: vault-sources** - Local folder OR GitHub repo (clone + sync)
+- [x] **Phase 04: admin-ui** - Invite users, reset passwords, manage vaults (v0.1.4+)
+- [x] **Phase 05: email** - SMTP + invitations + password reset
+- [x] **Phase 06: webdav** - PROPFIND/GET/PUT on vault sources (HTTP Basic + ACL)
+- [x] **Phase 07: vault-ux** - Dir picker, browser import, GitHub URL field (v0.1.10..15)
+- [x] **Phase 08: access-model** - Groups + personal vaults + quotas (v0.1.9/11/12)
+- [x] **Phase 08.1: obsidian-format** - In-pipeline llm-wiki → mdBook converter (v0.1.8)
+- [x] **Phase 09: ux-nav** - Nav shell + design system (v0.1.14..20)
+- [ ] **Phase 10: mcp** - MCP StreamableHttp on `/mcp`, list/read/search tools
+- [ ] **Phase 11: polish** - Installer, README, `morinet init`, release v1.0.0
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 00–09 (incl. 08.1, 09.1) | pre-GSD | Complete | v0.1.0 → v0.1.20 |
+| 10. mcp | 0/TBD | Not started | - |
+| 11. polish | 0/TBD | Not started | - |
+
+---
+
 ## Overview (10 phases)
 
 | #    | Phase             | Goal                                                                                     | Key REQ-IDs            | Status |
@@ -21,7 +49,7 @@
 | 06   | **webdav**        | WebDAV endpoints on vaults (same creds), browse + read                                    | REQ-WEBDAV-*           | ✅ done |
 | 07   | **vault-ux**      | Vault management UX: server-side dir picker, browser-side import, URL field for GitHub   | REQ-UX-*               | ✅ done (v0.1.10..v0.1.15 — URL GitHub, picker, import) |
 | 08   | **access-model**  | Groups + personal vaults: `group_members`, `vault_group_acl`, `scope`/`owner_id`          | REQ-GRP-*, REQ-VLT-*   | ✅ done (v0.1.9/v0.1.11/v0.1.12 — quotas, plans, load/refresh/delete) |
-| 08b  | **obsidian-format** | In-pipeline converter : vault llm-wiki/Obsidian → arbre mdBook (SUMMARY + wikilinks + frontmatter) | REQ-OBSFMT-001..006 | ✅ done (v0.1.8) |
+| 08.1 | **obsidian-format** | In-pipeline converter : vault llm-wiki/Obsidian → arbre mdBook (SUMMARY + wikilinks + frontmatter) | REQ-OBSFMT-001..006 | ✅ done (v0.1.8) |
 | 09   | **ux-nav**        | New shell: My vaults landing, account menu top-right, mdbook close button, admin menu    | REQ-ACC-*, REQ-NAV-*   | ✅ done (v0.1.12/v0.1.14) |
 | 10   | **mcp**           | MCP StreamableHttp on `/mcp`, list/read/search tools                                      | REQ-MCP-*              | ⬜ |
 | +11  | **polish**        | Clean one-line installer, full README, badges, Release v1.0                              | REQ-OPS-*              | ⬜ |
@@ -30,7 +58,7 @@
 
 ---
 
-## Phase 0 — bootstrap
+## Phase 00: bootstrap
 
 **Status**: ✅ done — released as v0.1.0 (16 assets, CI green, cargo-dist pipeline).
 
@@ -47,7 +75,7 @@
 
 ---
 
-## Phase 1 — core-serve
+## Phase 01: core-serve
 
 **Goal**: a single hardcoded admin (via env var at boot) can log in and see ONE compiled vault at `data/vaults/demo/book/`.
 
@@ -57,7 +85,7 @@
 - `POST /login` with `admin@example.com / [REDACTED-DEV-PASSWORD]` (env `MORINET_ADMIN_*`) sets a signed HttpOnly cookie
 - `GET /vault/*` serves the compiled mdbook files, gated by the cookie
 
-## Phase 2 — multi-vault
+## Phase 02: multi-vault
 
 **Goal**: the admin can register N vaults (`name`, `slug`, local `path`) and each user sees `/vault/<slug>/` for the vaults they have access to.
 
@@ -67,7 +95,7 @@
 - `GET /` (logged in) lists the user's accessible vaults with links
 - `/vault/<slug>/*` returns 403 if not in the ACL, otherwise serves files
 
-## Phase 3 — vault-sources
+## Phase 03: vault-sources
 
 **Goal**: add a `GithubVaultSource` plugin (clone private/public git + periodic sync).
 
@@ -78,7 +106,7 @@
 - mdbook rebuild triggered after a successful sync
 - Tests: use a fixture test repo
 
-## Phase 4 — admin-ui
+## Phase 04: admin-ui
 
 **Goal**: HTML pages served by axum (no SPA) to manage users + vaults + perms.
 
@@ -89,7 +117,7 @@
 - `GET /admin/vaults/<slug>/perms`: ACL editor (user checkboxes)
 - Templates via Askama or Maud, minimal hand-written CSS
 
-## Phase 5 — email
+## Phase 05: email
 
 **Goal**: configurable generic SMTP, send invitations and password reset emails.
 
@@ -99,7 +127,7 @@
 - Templates: `invitation.html.tera`, `reset_password.html.tera`
 - Tests: `MockSmtpServer` trait, impl `InMemoryMock`
 
-## Phase 6 — webdav
+## Phase 06: webdav
 
 **Goal**: WebDAV exposure at `/webdav/<vault-slug>/*` with PROPFIND/GET/PUT, Basic auth (mdbook email + password).
 
@@ -110,7 +138,7 @@
 - `MKCOL` / `DELETE`: out of scope v1 (read-only-ish)
 - Tests: curl WebDAV + a `cadaver` walkthrough
 
-## Phase 7 — vault-ux ✅ DONE (v0.1.15)
+## Phase 07: vault-ux ✅ DONE (v0.1.15)
 
 **Goal**: adding a local vault must not require typing a path on the server. An admin clicks **Browse**, walks the server's directories, and picks one.
 
@@ -132,7 +160,7 @@
 
 ---
 
-## Phase 8 — access-model ✅ DONE (v0.1.9 → v0.1.13)
+## Phase 08: access-model ✅ DONE (v0.1.9 → v0.1.13)
 
 **Status**: livré. Groups + personal vaults + quotas (v0.1.9), load GitHub vault en espace personnel (v0.1.10), delete owner-only + refresh (v0.1.11), autofill name (v0.1.12), `source_url` retrouvé depuis le remote git (v0.1.13).
 
@@ -171,12 +199,20 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 
 ---
 
-## Phase 9 — ux-nav ✅ DONE (v0.1.14 → v0.1.20)
+## Phase 08.1: obsidian-format ✅ DONE (v0.1.8)
+
+**Goal**: charger des vaults llm-wiki / Obsidian (bare `[[wikilinks]]` + YAML frontmatter, sans `book.toml`).
+
+**Delivered**: convertisseur in-pipeline (AD-14/PRD-6) — sync → miroir `.morinet-build/` (frontmatter consommé, wikilinks résolus, SUMMARY.md + book.toml générés, folder landing pages) → `mdbook build`. Corpus réel validé (ProgWiki : 131 .md, 812 wikilinks, 542 aliases) + oracle `MORINET_CORPUS=… cargo test -- --ignored`. E2E vérifié en navigateur, WebDAV PUT → re-conversion live. REQ-OBSFMT-001..006.
+
+---
+
+## Phase 09: ux-nav ✅ DONE (v0.1.14 → v0.1.20)
 
 **Goal**: the new shell.
 
 **Status**: livré. Nav shell (v0.1.14) → restyle (v0.1.16) → passes design
-Impeccable/Linear (v0.1.17-v0.1.20, voir « Phase 9b — design system »).
+Impeccable/Linear (v0.1.17-v0.1.20, voir « Phase 09.1: design system »).
 Le header porte **un seul contrôle** (menu compte : identité → `/account`,
 entrée Admin, logout) ; la tab bar admin est la seule nav des sections ;
 les pages mdBook portent la barre zoom + « Close vault » en haut à droite
@@ -194,7 +230,7 @@ les pages mdBook portent la barre zoom + « Close vault » en haut à droite
 
 ---
 
-## Phase 9b — design system ✅ DONE (v0.1.16 → v0.1.20)
+## Phase 09.1: design system ✅ DONE (v0.1.16 → v0.1.20)
 
 **Goal**: un UI sans slop, mesuré et vérifiable.
 
@@ -222,7 +258,7 @@ surface parente.
 
 ---
 
-## Phase 10 — mcp
+## Phase 10: mcp
 
 **Goal**: MCP StreamableHttp on `/mcp`, Bearer auth (token derived from password), tools on accessible vaults.
 
@@ -235,7 +271,7 @@ surface parente.
 
 ---
 
-## Phase 11 — polish (v1.0)
+## Phase 11: polish (v1.0)
 
 **Goal**: ready to ship.
 
