@@ -23,7 +23,7 @@
 - [x] **Phase 08: access-model** - Groups + personal vaults + quotas (v0.1.9/11/12)
 - [x] **Phase 08.1: obsidian-format** - In-pipeline llm-wiki → mdBook converter (v0.1.8)
 - [x] **Phase 09: ux-nav** - Nav shell + design system (v0.1.14..20)
-- [ ] **Phase 10: mcp** - MCP StreamableHttp on `/mcp`, list/read/search tools
+- [x] **Phase 10: mcp** - MCP StreamableHttp on `/mcp`, list/read/search tools (2026-10-25)
 - [ ] **Phase 11: polish** - Installer, README, `morinet init`, release v1.0.0
 
 ## Progress
@@ -31,7 +31,7 @@
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 00–09 (incl. 08.1, 09.1) | pre-GSD | Complete | v0.1.0 → v0.1.20 |
-| 10. mcp | 0/TBD | Not started | - |
+| 10. mcp | 2/2 | Complete | 2026-10-25 |
 | 11. polish | 0/TBD | Not started | - |
 
 ---
@@ -258,7 +258,7 @@ surface parente.
 
 ---
 
-## Phase 10: mcp
+## Phase 10: mcp ✅ DONE (2026-10-25)
 
 **Goal**: MCP StreamableHttp on `/mcp`, Bearer auth (token derived from password), tools on accessible vaults.
 

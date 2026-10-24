@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Charger un vault Obsidian/llm-wiki et le servir instantanément en site mdBook navigable, multi-utilisateurs et sécurisé.
-**Current focus:** Phase 10 — MCP
+**Current focus:** Phase 11 — polish v1.0
 
 ## Current Position
 
-Phase: 10 of 11 (mcp)
-Plan: 10-01 (API tokens) — ready to execute
-Status: Planning done (10-01, 10-02 written 2026-10-25)
-Last activity: 2026-10-25 — discuss tranché : auth MCP = token API dédié (page /account, révocable, hash sha256) ; rmcp 3.7 StreamableHttp stateless
+Phase: 11 of 11 (polish v1.0)
+Plan: none yet — Phase 10 shipped same-day
+Status: Phase 10 COMPLETE (10-01 + 10-02, 2026-10-25)
+Last activity: 2026-10-25 — Phase 10 livré : API tokens (/account) + MCP StreamableHttp sur /mcp (rmcp 3.7, Bearer, 4 tools ACL-scoped). 213 tests verts
 
-Progress: [█████████░] 86% (12/14 phases)
+Progress: [█████████░] 93% (13/14 phases)
 
 ## Performance Metrics
 
@@ -60,7 +60,7 @@ None yet.
 
 Last session: 2026-10-25
 Stopped at: bootstrap GSD terminé (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modifié en attente de commit (user edit).
-Resume file: None — next: `/gsd:plan-phase 10` (MCP)
+Resume file: None — next: `/gsd:plan-phase 11` (polish v1.0)
 
 ## Useful links
 

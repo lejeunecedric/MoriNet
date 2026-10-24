@@ -203,7 +203,60 @@ pub fn build_router_with_email(
         ))
         .with_state(state.clone());
 
-    public.merge(protected).merge(admin).merge(webdav)
+    // MCP (Phase 10): Bearer API token, stateless StreamableHttp (rmcp).
+    let mcp = Router::new()
+        .route("/mcp", any(mcp_entry))
+        .with_state(state.store.clone());
+
+    public
+        .merge(protected)
+        .merge(admin)
+        .merge(webdav)
+        .merge(mcp)
+}
+
+/// `ANY /mcp` — MCP StreamableHttp endpoint (Phase 10). Auth is a dedicated
+/// Bearer API token (never the password, never the session cookie). The rmcp
+/// service is stateless: one fresh server instance per request, bound to the
+/// user behind the token, so tools can never cross users.
+async fn mcp_entry(State(store): State<Store>, req: Request) -> Response {
+    let bearer = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.trim().to_string());
+    let user = match bearer {
+        Some(token) => store.user_for_api_token(&token).await.ok().flatten(),
+        None => None,
+    };
+    let Some(user) = user else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(axum::http::header::WWW_AUTHENTICATE, "Bearer")],
+            axum::Json(serde_json::json!({
+                "error": "a valid Bearer API token is required (create one on /account)"
+            })),
+        )
+            .into_response();
+    };
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    };
+    use tower::ServiceExt;
+    let store2 = store.clone();
+    let email = user.email.clone();
+    let service = StreamableHttpService::new(
+        move || Ok(crate::mcp::MoriMcp::new(store2.clone(), email.clone())),
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default()
+            .with_legacy_session_mode(false) // stateless for legacy versions too
+            .with_json_response(true),
+    );
+    match service.oneshot(req).await {
+        Ok(resp) => resp.into_response(),
+        Err(e) => error_page(&format!("mcp transport error: {e}")),
+    }
 }
 
 /// WebDAV gate: HTTP Basic against the same bcrypt users table, then the
@@ -4290,6 +4343,120 @@ mod tests {
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
         let vaults = state.store.list_all_vaults().await.unwrap();
         assert!(vaults.is_empty(), "demo vault deleted");
+    }
+
+    // ---------- Phase 10 / PLAN 10-02: MCP endpoint on /mcp ----------
+
+    async fn mcp_jsonrpc(app: &Router, bearer: Option<&str>, body: &str) -> (StatusCode, String) {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
+        headers.insert(
+            axum::http::header::ACCEPT,
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        // rmcp validates Host (DNS-rebinding protection) — real clients send it.
+        headers.insert(axum::http::header::HOST, "localhost".parse().unwrap());
+        headers.insert("MCP-Protocol-Version", "2025-06-18".parse().unwrap());
+        if let Some(b) = bearer {
+            headers.insert(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {b}").parse().unwrap(),
+            );
+        }
+        let res = req(
+            app.clone(),
+            "POST",
+            "/mcp",
+            headers,
+            Some(Body::from(body.to_string())),
+        )
+        .await;
+        let status = res.status();
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        (status, String::from_utf8_lossy(&body).to_string())
+    }
+
+    const TOOLS_LIST: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+
+    #[tokio::test]
+    async fn mcp_endpoint_requires_a_bearer_token() {
+        let (app, _state) = test_router().await;
+        let (status, _) = mcp_jsonrpc(&app, None, TOOLS_LIST).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "no Bearer → 401");
+    }
+
+    #[tokio::test]
+    async fn mcp_rejects_an_unknown_or_revoked_token() {
+        let (app, state) = test_router().await;
+        let (status, _) = mcp_jsonrpc(&app, Some("mn_forged"), TOOLS_LIST).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "forged token → 401");
+
+        let uid = state
+            .store
+            .verify_login("admin@example.com", "[REDACTED-DEV-PASSWORD]")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let (id, plain) = state.store.create_api_token(uid, "doomed").await.unwrap();
+        let (status, _) = mcp_jsonrpc(&app, Some(&plain), TOOLS_LIST).await;
+        assert_eq!(status, StatusCode::OK, "live token works");
+        state.store.revoke_api_token(uid, id).await.unwrap();
+        let (status, _) = mcp_jsonrpc(&app, Some(&plain), TOOLS_LIST).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "revoked token → 401");
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_is_bound_to_the_bearer_user() {
+        // The per-request factory must bind the tool to the token's user:
+        // a reader with no grants gets an empty vault list, never the demo.
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("plain@mcp.test", "[REDACTED-DEV-PASSWORD]", "reader")
+            .await
+            .unwrap();
+        let uid = state
+            .store
+            .verify_login("plain@mcp.test", "[REDACTED-DEV-PASSWORD]")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let (_, plain) = state.store.create_api_token(uid, "reader").await.unwrap();
+        let (status, body) = mcp_jsonrpc(
+            &app,
+            Some(&plain),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_vaults","arguments":{}}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(
+            body.contains("[]"),
+            "reader with no grants sees no vaults: {body}"
+        );
+        assert!(!body.contains("demo"), "no leak of the demo vault: {body}");
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_list_exposes_the_four_tools() {
+        let (app, state) = test_router().await;
+        let uid = state
+            .store
+            .verify_login("admin@example.com", "[REDACTED-DEV-PASSWORD]")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let (_, plain) = state.store.create_api_token(uid, "e2e").await.unwrap();
+        let (status, body) = mcp_jsonrpc(&app, Some(&plain), TOOLS_LIST).await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        for tool in ["list_vaults", "list_notes", "read_note", "search_notes"] {
+            assert!(body.contains(tool), "tools/list must expose {tool}: {body}");
+        }
     }
 
     // ---------- Phase 10 / PLAN 10-01: API tokens on /account ----------
