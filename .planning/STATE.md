@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 10 of 11 (mcp)
-Plan: none yet — phase not planned
-Status: Ready to plan
-Last activity: 2026-10-25 — adoption GSD ; v0.1.20 déployé (phases 00→09.1 livrées)
+Plan: 10-01 (API tokens) — ready to execute
+Status: Planning done (10-01, 10-02 written 2026-10-25)
+Last activity: 2026-10-25 — discuss tranché : auth MCP = token API dédié (page /account, révocable, hash sha256) ; rmcp 3.7 StreamableHttp stateless
 
 Progress: [█████████░] 86% (12/14 phases)
 
@@ -47,7 +47,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 10 : le schéma d'auth MCP (« Bearer token derived from password ») n'est pas encore arrêté — à trancher en discuss-phase (Bearer dédié vs session cookie vs mot de passe direct)
+- ~~Auth MCP non tranchée~~ → RÉSOLU 2026-10-25 : token API dédié (`.planning/phases/10-mcp/CONTEXT.md`)
 - `mdbook` CLI requis dans le PATH de prod (échec LOUD si absent) — à documenter dans le README (Phase 11)
 
 ## Deferred Items
