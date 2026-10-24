@@ -33,6 +33,15 @@ pub struct User {
     pub display_name: Option<String>,
 }
 
+/// An API token row for the `/account` listing — the hash is never exposed.
+#[derive(Debug, Clone)]
+pub struct ApiToken {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+}
+
 /// A vault as seen by a user, with the role they hold on it.
 #[derive(Debug, Clone)]
 pub struct AccessibleVault {
@@ -1014,6 +1023,98 @@ impl Store {
             .expect("system clock after epoch")
             .as_secs()
     }
+
+    // ─── API tokens (Phase 10, PLAN 10-01) ───────────────────────────────
+
+    /// Create a named API token for `user_id`. Returns `(id, plaintext)` —
+    /// the plaintext is the ONLY copy (sha256 hex is what lands in the DB),
+    /// same convention as invitations/reset_tokens.
+    pub async fn create_api_token(
+        &self,
+        user_id: i64,
+        name: &str,
+    ) -> anyhow::Result<(i64, String)> {
+        use sha2::{Digest, Sha256};
+        let plain = format!("mn_{}", uuid::Uuid::new_v4().simple());
+        let mut h = Sha256::new();
+        h.update(plain.as_bytes());
+        let hash = hex::encode(h.finalize());
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO api_tokens(user_id, name, token_hash, created_at) VALUES (?, ?, ?, ?) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(&hash)
+        .bind(self.unix_now() as i64)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((id, plain))
+    }
+
+    /// The user's tokens, newest first — never exposes the hash.
+    pub async fn list_api_tokens(&self, user_id: i64) -> anyhow::Result<Vec<ApiToken>> {
+        let rows: Vec<(i64, String, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT id, name, created_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC, id DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, created_at, last_used_at)| ApiToken {
+                id,
+                name,
+                created_at,
+                last_used_at,
+            })
+            .collect())
+    }
+
+    /// Revoke one of the user's own tokens. `false` if the id is unknown OR
+    /// belongs to another user (no cross-user revoke).
+    pub async fn revoke_api_token(&self, user_id: i64, id: i64) -> anyhow::Result<bool> {
+        let res = sqlx::query("DELETE FROM api_tokens WHERE id = ? AND user_id = ?")
+            .bind(id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    /// Resolve a plaintext bearer token to its user, stamping `last_used_at`.
+    /// `None` for unknown/revoked tokens.
+    pub async fn user_for_api_token(&self, plain: &str) -> anyhow::Result<Option<User>> {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(plain.as_bytes());
+        let hash = hex::encode(h.finalize());
+        let row: Option<(i64, i64)> =
+            sqlx::query_as("SELECT id, user_id FROM api_tokens WHERE token_hash = ?")
+                .bind(&hash)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((token_id, user_id)) = row else {
+            return Ok(None);
+        };
+        let now = self.unix_now() as i64;
+        sqlx::query("UPDATE api_tokens SET last_used_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(token_id)
+            .execute(&self.pool)
+            .await?;
+        let user = sqlx::query_as::<_, (i64, String, String, Option<String>)>(
+            "SELECT id, email, role, display_name FROM users WHERE id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(user.map(|(id, email, role, display_name)| User {
+            id,
+            email,
+            role,
+            display_name,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -1869,5 +1970,106 @@ mod access_tests {
         s.set_display_name("admin@x.fr", "   ").await.unwrap();
         let u = s.verify_login("admin@x.fr", "pw").await.unwrap().unwrap();
         assert_eq!(u.display_name, None, "blank clears the name");
+    }
+
+    // ─── Phase 10 / PLAN 10-01: API tokens ────────────────────────────────
+
+    async fn user_id(s: &Store, email: &str) -> i64 {
+        let (id,): (i64,) = sqlx::query_as("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn api_token_is_returned_once_and_stored_hashed() {
+        let s = st("api-token").await;
+        s.create_user("tok@x.fr", "pw", "reader").await.unwrap();
+        let uid = user_id(&s, "tok@x.fr").await;
+
+        let (id, plain) = s.create_api_token(uid, "laptop").await.unwrap();
+        assert!(plain.starts_with("mn_"), "plaintext carries the mn_ prefix");
+
+        // The DB holds ONLY the sha256 hex of the plaintext — never the plaintext.
+        let (stored_hash,): (String,) =
+            sqlx::query_as("SELECT token_hash FROM api_tokens WHERE id = ?")
+                .bind(id)
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(plain.as_bytes());
+        assert_eq!(stored_hash, hex::encode(h.finalize()));
+        assert!(!stored_hash.contains(&plain));
+
+        // A second token for the same user is distinct.
+        let (_, plain2) = s.create_api_token(uid, "phone").await.unwrap();
+        assert_ne!(plain, plain2);
+    }
+
+    #[tokio::test]
+    async fn api_token_resolves_user_and_records_last_used() {
+        let s = st("api-token").await;
+        s.create_user("tok@x.fr", "pw", "reader").await.unwrap();
+        let uid = user_id(&s, "tok@x.fr").await;
+        let (_, plain) = s.create_api_token(uid, "ci").await.unwrap();
+
+        let u = s
+            .user_for_api_token(&plain)
+            .await
+            .unwrap()
+            .expect("valid token resolves");
+        assert_eq!(u.email, "tok@x.fr");
+
+        let (last_used,): (Option<i64>,) =
+            sqlx::query_as("SELECT last_used_at FROM api_tokens WHERE user_id = ?")
+                .bind(uid)
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert!(last_used.is_some(), "usage is recorded");
+    }
+
+    #[tokio::test]
+    async fn unknown_or_revoked_api_token_is_rejected() {
+        let s = st("api-token").await;
+        s.create_user("tok@x.fr", "pw", "reader").await.unwrap();
+        let uid = user_id(&s, "tok@x.fr").await;
+
+        assert!(s
+            .user_for_api_token("mn_never-issued")
+            .await
+            .unwrap()
+            .is_none());
+
+        let (id, plain) = s.create_api_token(uid, "doomed").await.unwrap();
+        assert!(s.user_for_api_token(&plain).await.unwrap().is_some());
+        assert!(
+            s.revoke_api_token(uid, id).await.unwrap(),
+            "owner can revoke"
+        );
+        assert!(
+            s.user_for_api_token(&plain).await.unwrap().is_none(),
+            "revoked token stops resolving"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_is_scoped_to_the_owner() {
+        let s = st("api-token").await;
+        s.create_user("alice@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("bob@x.fr", "pw", "reader").await.unwrap();
+        let alice = user_id(&s, "alice@x.fr").await;
+        let bob = user_id(&s, "bob@x.fr").await;
+
+        let (id, _) = s.create_api_token(alice, "mine").await.unwrap();
+        assert!(
+            !s.revoke_api_token(bob, id).await.unwrap(),
+            "bob cannot revoke alice's token"
+        );
+        assert_eq!(s.list_api_tokens(alice).await.unwrap().len(), 1);
     }
 }

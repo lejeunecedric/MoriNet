@@ -1,1 +1,1 @@
-We develop Morinet, a superb cognitive management system
+On développe MoriNet, un Knowledge System
