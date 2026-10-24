@@ -10,8 +10,8 @@
 | REQ-ID          | Description                                                              | Verification                                   |
 |-----------------|--------------------------------------------------------------------------|------------------------------------------------|
 | REQ-INFRA-001   | Binary installs via `cargo install morinet`                              | `cargo install --path .` then `morinet --version` |
-| REQ-INFRA-002   | GitHub Actions CI is green (fmt + lint + test + build)                   | push → GH Actions run success                  |
-| REQ-INFRA-003   | GitHub release with cross-platform binary                                | `gh release list` shows vX.Y.Z                 |
+| REQ-INFRA-002   | Quality gate runs locally (fmt + clippy + test + release build)          | `scripts/check.sh` exits 0                     |
+| REQ-INFRA-003   | GitHub release with the Linux binary, built locally                      | `scripts/release.sh vX.Y.Z` → release + asset  |
 | REQ-INFRA-004   | SQLite DB by default                                                     | `data/morinet.db` created at boot, schema migrated |
 | REQ-INFRA-005   | Config via `config.toml`                                                 | `--config path/to/config.toml`                 |
 | REQ-INFRA-006   | Structured logs via `tracing`                                            | `RUST_LOG=morinet=debug morinet serve`         |

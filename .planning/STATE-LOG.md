@@ -98,6 +98,8 @@
 
 - **2026-10-20**: cargo-dist's generated tag pattern `**[0-9]+.[0-9]+.[0-9]+*` doesn't match `v0.1.0` because GitHub tag patterns treat `+` as a literal character (fnmatch-style, no quantifier). The release workflow never auto-triggered on the tag push. Fix: changed pattern to `'v[0-9]*.[0-9]*.[0-9]*'` and added `workflow_dispatch:` so we can manually trigger via API. Lesson: when using tool generators, always sanity-check the trigger pattern with a real test push.
 
+- **2026-10-25 (delivery)** — **Compilation retirée de GitHub, tout est local** (decision user). `ci.yml` et `release.yml` supprimés ; remplacés par `scripts/check.sh` (fmt+clippy+test+build), `scripts/release.sh` (gate → bump → tag → GitHub release draft → upload asset `morinet-x86_64-unknown-linux-gnu.tar.xz` + `.sha256` → publish ; GITHUB_TOKEN requis) et `scripts/deploy.sh` (build + scp staging + mv atomique + restart + /health ; DEPLOY_HOST requis). `deploy.yml` est CONSERVÉ inchangé (déclenché par release:published, mêmes noms d'assets que cargo-dist). Le piège de la course tag↔release disparu : les assets sont attachés avant la publication.
+
 ## Stats
 
 - Planning files: 5 (ROADMAP, REQUIREMENTS, STATE, index, Phase 0 PLAN)

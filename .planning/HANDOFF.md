@@ -16,7 +16,7 @@ A Rust server that exposes Obsidian second brains as mdBook sites with multi-use
 | Multi-vault: local dirs + GitHub repos (git2 clone/sync, mdbook build) | `/vault/<slug>/` |
 | ACL per vault (admin sees all, readers need grant) | enforced on every `/vault/<slug>/` |
 | Admin UI: invite users, add/delete vaults (local+github), grant/revoke ACL | `/admin/*` (gate: role=admin) |
-| CI → Release (cargo-dist, 16 assets, 5 platforms) → Deploy → restart + healthcheck | every `git push origin v0.1.x` |
+| Qualité + release en LOCAL (`scripts/check.sh`, `scripts/release.sh`) → Deploy GitHub ou `scripts/deploy.sh` → restart + healthcheck | à la demande |
 | Styled UI (embedded CSS, dark mode) | `/assets/style.css` |
 | Email invitations (24h, single-use) + password reset (1h) — SMTP via `[smtp]`, degrades to temp-password flow when unset | `/invite/{token}`, `/reset`, `/reset/{token}` |
 | WebDAV: PROPFIND (depth 0/1) + GET + admin PUT on the vault **source** (markdown in, `mdbook build` out) | `/webdav/<slug>/` (HTTP Basic + same ACL) |
@@ -27,13 +27,13 @@ A Rust server that exposes Obsidian second brains as mdBook sites with multi-use
 | mdBook pages: zoom toolbar + "Close vault" (top right, below the print button), book formatting (1.65 line-height, full-contrast wikilinks) | `/vault/<slug>/` |
 | Account page (display-name editing — NOT inside the dropdown) | `/account` |
 
-**Deploy pipeline** (`.github/workflows/`): `ci.yml` (fmt+clippy+test+build), `release.yml` (cargo-dist — **NEVER hand-edit it**, drift check), `deploy.yml` (staging scp + atomic mv + `sudo systemctl restart morinet` + `/health`).
+**Delivery pipeline (depuis 2026-10-25 : TOUT compile ICI, plus de CI GitHub)** : `scripts/check.sh` (fmt+clippy+test+build release), `scripts/release.sh vX.Y.Z` (gate + bump + tag + GitHub release avec l'asset `morinet-x86_64-unknown-linux-gnu.tar.xz` + `.sha256`, draft→assets→publish), `scripts/deploy.sh` (build local + scp staging + atomic mv + restart + /health, env `DEPLOY_HOST`). Seul workflow GitHub restant : `deploy.yml` (inchangé — il consomme les assets du release créé localement, ou `workflow_dispatch`).
 
 ## Current state at handoff time
 
 - Latest release: **v0.1.20** (anti-clutter UI; design system shipped v0.1.16→v0.1.20). Live: **https://morinet.treklair.fr**.
 - `main` is clean and every phase through 09 (ux-nav + design system) is **shipped and deployed**. What is genuinely left: **Phase 10 (MCP)** and **Phase 11 (polish v1.0)** — see ROADMAP.
-- Deploy is automatic and race-free since v0.1.16 (Linux-only cargo-dist; the deploy waits for the published release assets). If a deploy ever falls back to "latest release" again, re-dispatch `gh workflow run deploy.yml -f tag=<v>`.
+- Le release local publie l'asset AVANT de publier le release (draft → assets → publish) : plus de course tag/deploy. Si un deploy tombe sur « latest release », re-déclencher `gh workflow run deploy.yml -f tag=<v>` ou `scripts/deploy.sh`.
 - treklair has B3Wiki loaded (demo's personal vault). **mdBook themes are written at build time** — after any change to `assets/zoom.*` or `MORINET_CSS`, existing vaults serve old assets until someone clicks **Refresh** (pitfall #24).
 
 ## Vault contract (IMPORTANT)
@@ -89,7 +89,7 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 
 ## Known pitfalls (all hit, all documented)
 
-1. **cargo-dist drift check**: NEVER hand-edit `.github/workflows/release.yml` — CI fails. Generate via `~/.cargo/bin/dist` (installed as `dist`, not a cargo subcommand). Put custom logic in separate workflows.
+1. **cargo-dist retiré (2026-10-25)** : `ci.yml`/`release.yml` supprimés, la compilation est locale (`scripts/`). L'asset du release DOIT garder le nom `morinet-x86_64-unknown-linux-gnu.tar.xz` (+ `.sha256`, format `sha256sum`) et l'arborescence `<dir>/morinet` (`--strip-components=1` côté deploy).
 2. **Tag must equal package version**: `dist` refuses to release otherwise. `src/lib.rs` has a test guard (`version_matches_cargo_pkg_version`) — bump both on every release.
 3. **ETXTBSY**: never scp/overwrite a running binary — deploy uses `/opt/morinet/staging/` + atomic `mv`.
 4. **Deploy can fall back to "latest release"**: if a tag-push deploy races the release, it deploys the previous version. Re-dispatch with `inputs.tag=<tag>` after the release completes.

@@ -57,7 +57,8 @@ Charger un vault Obsidian/llm-wiki et le servir instantanément en site mdBook n
 - **Dépendance externe** : `mdbook` CLI doit être dans le PATH (échec LOUD si absent, pas de fallback silencieux)
 - **Compat** : les vaults mdBook-natifs (`book.toml`) continuent de marcher tels quels à côté du format Obsidian
 - **Sécurité** : credentials de prod hors du repo (env systemd) ; `release.yml` cargo-dist ne jamais l'éditer à la main
-- **Déploiement** : staging + `mv` atomique (ETXTBSY) ; le deploy attend la release publiée avec ses assets
+- **Déploiement** : staging + `mv` atomique (ETXTBSY) ; le release local publie ses assets AVANT le release (draft→publish)
+- **Build** : plus de CI GitHub — `scripts/check.sh` fait le gate avant chaque release
 
 ## Key Decisions
 
@@ -68,6 +69,7 @@ Charger un vault Obsidian/llm-wiki et le servir instantanément en site mdBook n
 | Quotas par groupe (`free`=2, `admin`=∞), demo dégradé en reader | Empêcher l'épuisement de slots + bouton Admin fantôme | ✓ Bon |
 | CI Linux-only (dist 2 targets linux) | Runners Mac flaky = releases cassées | ✓ Bon (v0.1.16, plus de re-dispatch) |
 | `ensure_fallback_admin()` au boot | Le bootstrap ADMIN_EMAIL seul verrouillait /admin si l'unique admin était dégradé (incident treklair) | ✓ Bon |
+| Compilation 100 % locale, workflows ci/release GitHub supprimés (2026-10-25) | Runners GitHub inutiles/instables ; `scripts/check.sh` + `release.sh` (assets aux mêmes noms que cargo-dist) + `deploy.sh` ; `deploy.yml` conservé tel quel | — Pending |
 | GSD adopté comme mode de planification (2026-10-25) | Workflows plan/execute/verify outillés ; docs existants conservés (ROADMAP/REQUIREMENTS/HANDOFF/STATE-LOG) | — Pending |
 
 ---
