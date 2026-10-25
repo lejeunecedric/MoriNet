@@ -49,10 +49,14 @@ pub struct AccessibleVault {
     /// 'read' or 'write'. A personal vault always yields 'write' for its owner.
     pub role: String,
     pub personal: bool,
+    /// True only on share-derived rows: the vault reaches this user through a
+    /// direct email share, so the web layer can render "Remove from my view".
+    pub direct_share: bool,
 }
 
-/// What the user may do on a vault.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the user may do on a vault. Ordering matters: `None < Read < Write`,
+/// so `max()` picks the strongest grant when several sources overlap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Access {
     None,
     Read,
@@ -663,7 +667,23 @@ impl Store {
         .bind(slug)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(best.map(|(r,)| Access::parse(&r)).unwrap_or(Access::None))
+        let group_access = best.map(|(r,)| Access::parse(&r)).unwrap_or(Access::None);
+
+        // 4. a direct email share (not hidden): reader → Read, writer → Write.
+        //    The stronger of the group grant and the share wins.
+        let share: Option<(String,)> = sqlx::query_as(
+            "SELECT s.role FROM vault_shares s
+             WHERE s.email = ? AND s.hidden = 0
+               AND s.vault_id = (SELECT id FROM vaults WHERE slug = ?)",
+        )
+        .bind(email)
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await?;
+        let share_access = share
+            .map(|(r,)| Access::parse(if r == "writer" { "write" } else { "read" }))
+            .unwrap_or(Access::None);
+        Ok(group_access.max(share_access))
     }
 
     /// Vaults visible to `email`: their personal ones + the global ones their
@@ -700,6 +720,7 @@ impl Store {
                     },
                     role: "write".to_string(),
                     personal: scope == "personal",
+                    direct_share: false,
                 })
                 .collect());
         }
@@ -728,6 +749,7 @@ impl Store {
                 },
                 role: "write".to_string(),
                 personal: true,
+                direct_share: false,
             });
         }
 
@@ -759,6 +781,45 @@ impl Store {
                 },
                 role,
                 personal: false,
+                direct_share: false,
+            });
+        }
+
+        // Direct email shares (not hidden). A vault already present (personal
+        // or group-granted) is NOT duplicated — the stronger role wins; a
+        // share-only row carries direct_share=true for the web layer.
+        let shares: Vec<(i64, String, String, String, String, String, Option<String>)> =
+            sqlx::query_as(
+                "SELECT v.id, v.slug, v.name, v.book_path, v.scope, s.role, ou.email \
+                 FROM vault_shares s \
+                 JOIN vaults v ON v.id = s.vault_id \
+                 LEFT JOIN users ou ON ou.id = v.owner_id \
+                 WHERE s.email = ? AND s.hidden = 0 \
+                 ORDER BY v.slug",
+            )
+            .bind(email)
+            .fetch_all(&self.pool)
+            .await?;
+        for (id, slug, name, book_path, scope, share_role, owner_email) in shares {
+            let role = if share_role == "writer" { "write" } else { "read" };
+            if let Some(existing) = out.iter_mut().find(|av| av.vault.slug == slug) {
+                if role == "write" && existing.role != "write" {
+                    existing.role = "write".to_string();
+                }
+                continue;
+            }
+            out.push(AccessibleVault {
+                vault: Vault {
+                    id,
+                    slug,
+                    name,
+                    book_path,
+                    scope,
+                    owner_email,
+                },
+                role: role.to_string(),
+                personal: false,
+                direct_share: true,
             });
         }
         Ok(out)
@@ -2573,5 +2634,123 @@ mod share_tests {
         // Idempotent: running the sweep again changes nothing.
         s.grant_vault_to_all_groups("docs").await.unwrap();
         assert_eq!(s.vault_group_roles("docs").await.unwrap().len(), 3);
+    }
+
+    // ---------- Task 3: ACL union — shares feed access_for/accessible_vaults ----------
+
+    #[tokio::test]
+    async fn share_grants_read_and_writer_grants_write() {
+        let s = st("share-acl").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.create_user("owner@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("r@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("w@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault("owner@x.fr", "book", "Book", Path::new("/tmp/acl-rw/book"))
+            .await
+            .unwrap();
+        s.share_vault("book", "r@x.fr", "reader").await.unwrap();
+        s.share_vault("book", "w@x.fr", "writer").await.unwrap();
+
+        assert_eq!(s.access_for("r@x.fr", "book").await.unwrap(), Access::Read);
+        assert_eq!(s.access_for("w@x.fr", "book").await.unwrap(), Access::Write);
+
+        let r = s.accessible_vaults("r@x.fr").await.unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].vault.slug, "book");
+        assert_eq!(r[0].role, "read");
+        assert!(!r[0].personal);
+        assert!(r[0].direct_share, "share-derived rows carry direct_share");
+
+        let w = s.accessible_vaults("w@x.fr").await.unwrap();
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].role, "write");
+        assert!(w[0].direct_share);
+
+        // Non-share rows never carry the flag.
+        let owner = s.accessible_vaults("owner@x.fr").await.unwrap();
+        assert_eq!(owner.len(), 1);
+        assert!(!owner[0].direct_share, "own personal vault is not a share");
+        let admin = s.accessible_vaults("admin@x.fr").await.unwrap();
+        assert!(admin.iter().all(|av| !av.direct_share), "admin rows are not shares");
+    }
+
+    #[tokio::test]
+    async fn hidden_share_invisible_but_row_survives() {
+        let s = st("share-hidden").await;
+        s.create_user("owner@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("r@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault("owner@x.fr", "book", "Book", Path::new("/tmp/acl-hid/book"))
+            .await
+            .unwrap();
+        s.share_vault("book", "r@x.fr", "reader").await.unwrap();
+        assert_eq!(s.access_for("r@x.fr", "book").await.unwrap(), Access::Read);
+
+        assert!(s.hide_share("book", "r@x.fr").await.unwrap());
+        assert!(s.accessible_vaults("r@x.fr").await.unwrap().is_empty());
+        assert_eq!(s.access_for("r@x.fr", "book").await.unwrap(), Access::None);
+
+        // The owner's share list is unchanged — the row survives with hidden=1.
+        let shares = s.list_shares("book").await.unwrap();
+        assert_eq!(shares.len(), 1);
+        assert!(shares[0].2);
+    }
+
+    #[tokio::test]
+    async fn share_writer_yields_access_write_for_webdav_and_refresh() {
+        let s = st("share-write").await;
+        s.create_user("owner@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("w@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("r@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault("owner@x.fr", "book", "Book", Path::new("/tmp/acl-wd/book"))
+            .await
+            .unwrap();
+        s.share_vault("book", "w@x.fr", "writer").await.unwrap();
+        s.share_vault("book", "r@x.fr", "reader").await.unwrap();
+
+        // WebDAV PUT and Refresh gate on can_write() — a writer share passes.
+        assert!(s.access_for("w@x.fr", "book").await.unwrap().can_write());
+        assert!(s.access_for("w@x.fr", "book").await.unwrap().can_read());
+        // A reader share reads but never writes.
+        assert!(s.access_for("r@x.fr", "book").await.unwrap().can_read());
+        assert!(!s.access_for("r@x.fr", "book").await.unwrap().can_write());
+    }
+
+    #[tokio::test]
+    async fn accessible_vaults_union_dedupes_group_and_share() {
+        let s = st("share-union").await;
+        s.create_user("alice@x.fr", "pw", "reader").await.unwrap();
+        s.seed_vault("wiki", "Wiki", Path::new("/tmp/acl-union/book"))
+            .await
+            .unwrap();
+        let g = s.create_group("Readers").await.unwrap();
+        s.add_group_member(g, "alice@x.fr").await.unwrap();
+        s.set_vault_group_role("wiki", g, "read").await.unwrap();
+        // Same vault ALSO shared directly with the stronger writer role.
+        s.share_vault("wiki", "alice@x.fr", "writer").await.unwrap();
+
+        let alice = s.accessible_vaults("alice@x.fr").await.unwrap();
+        assert_eq!(alice.len(), 1, "granted both ways: appears exactly once");
+        assert_eq!(alice[0].role, "write", "strongest role wins");
+        assert_eq!(s.access_for("alice@x.fr", "wiki").await.unwrap(), Access::Write);
+    }
+
+    #[tokio::test]
+    async fn share_resolves_when_user_registers_later() {
+        let s = st("share-pending").await;
+        s.create_user("owner@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault("owner@x.fr", "book", "Book", Path::new("/tmp/acl-late/book"))
+            .await
+            .unwrap();
+        // Pending share: the email is not registered yet.
+        s.share_vault("book", "late@x.fr", "reader").await.unwrap();
+        assert!(s.accessible_vaults("late@x.fr").await.unwrap().is_empty());
+        assert_eq!(s.access_for("late@x.fr", "book").await.unwrap(), Access::None);
+
+        // Once the user exists, the share resolves with no further action.
+        s.create_user("late@x.fr", "pw", "reader").await.unwrap();
+        assert_eq!(s.access_for("late@x.fr", "book").await.unwrap(), Access::Read);
+        let late = s.accessible_vaults("late@x.fr").await.unwrap();
+        assert_eq!(late.len(), 1);
+        assert_eq!(late[0].vault.slug, "book");
     }
 }
