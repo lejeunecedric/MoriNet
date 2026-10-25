@@ -23,9 +23,11 @@ scripts/check.sh
 
 echo "==> bump version to $VERSION"
 sed -i "s/^version = \"[0-9.]*\"/version = \"$VERSION\"/" Cargo.toml
+# The lib.rs guard test hard-codes the version — bump it in the SAME commit.
+sed -i "s/assert_eq!(version(), \"[0-9.]*\")/assert_eq!(version(), \"$VERSION\")/" src/lib.rs
 cargo check -q            # refresh Cargo.lock
-git add Cargo.toml Cargo.lock
-git commit -m "release $TAG"
+git add Cargo.toml Cargo.lock src/lib.rs
+git diff --cached --quiet || git commit -m "release $TAG"
 git tag "$TAG"
 git push origin main --follow-tags
 
