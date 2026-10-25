@@ -92,6 +92,8 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
     // Anti-lockout: if the instance has no admin left (e.g. the only admin was
     // demoted), create/promote the fallback `admin`/`admin` account.
     store.ensure_fallback_admin().await?;
+    // REQ-VLT-011: 90-day retention sweep on the access log at every boot.
+    store.prune_access_log().await?;
 
     // Phase 3: resolve vault sources (local | github), sync + build + seed.
     use morinet::sources::{GitSource, LocalSource, VaultSource};

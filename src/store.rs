@@ -788,20 +788,24 @@ impl Store {
         // Direct email shares (not hidden). A vault already present (personal
         // or group-granted) is NOT duplicated — the stronger role wins; a
         // share-only row carries direct_share=true for the web layer.
-        let shares: Vec<(i64, String, String, String, String, String, Option<String>)> =
-            sqlx::query_as(
-                "SELECT v.id, v.slug, v.name, v.book_path, v.scope, s.role, ou.email \
+        type ShareRow = (i64, String, String, String, String, String, Option<String>);
+        let shares: Vec<ShareRow> = sqlx::query_as(
+            "SELECT v.id, v.slug, v.name, v.book_path, v.scope, s.role, ou.email \
                  FROM vault_shares s \
                  JOIN vaults v ON v.id = s.vault_id \
                  LEFT JOIN users ou ON ou.id = v.owner_id \
                  WHERE s.email = ? AND s.hidden = 0 \
                  ORDER BY v.slug",
-            )
-            .bind(email)
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(email)
+        .fetch_all(&self.pool)
+        .await?;
         for (id, slug, name, book_path, scope, share_role, owner_email) in shares {
-            let role = if share_role == "writer" { "write" } else { "read" };
+            let role = if share_role == "writer" {
+                "write"
+            } else {
+                "read"
+            };
             if let Some(existing) = out.iter_mut().find(|av| av.vault.slug == slug) {
                 if role == "write" && existing.role != "write" {
                     existing.role = "write".to_string();
@@ -1232,6 +1236,72 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    // ─── Access log (Phase 10.1, REQ-VLT-011) ────────────────────────────
+
+    /// Record one page view. Callers spawn this fire-and-forget and ignore
+    /// errors — stats must never break a request. `source` is 'web' or 'mcp'
+    /// (CHECK-enforced by migration 0008).
+    pub async fn log_access(
+        &self,
+        email: &str,
+        slug: &str,
+        source: &str,
+        path: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO access_log (vault_slug, email, source, path) VALUES (?, ?, ?, ?)")
+            .bind(slug)
+            .bind(email)
+            .bind(source)
+            .bind(path)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Per-day hit counts split by source, newest day first, capped at the
+    /// 90-day retention window (LIMIT 90).
+    pub async fn stats_per_day(&self, slug: &str) -> anyhow::Result<Vec<(String, String, i64)>> {
+        Ok(sqlx::query_as(
+            "SELECT date(ts) d, source, COUNT(*) FROM access_log \
+             WHERE vault_slug = ? GROUP BY d, source ORDER BY d DESC LIMIT 90",
+        )
+        .bind(slug)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Top 10 most-hit web paths for a vault (mcp hits excluded).
+    pub async fn stats_top_pages(&self, slug: &str) -> anyhow::Result<Vec<(String, i64)>> {
+        Ok(sqlx::query_as(
+            "SELECT path, COUNT(*) FROM access_log \
+             WHERE vault_slug = ? AND source = 'web' \
+             GROUP BY path ORDER BY COUNT(*) DESC LIMIT 10",
+        )
+        .bind(slug)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Total hits by one sharee on one vault, across all sources.
+    pub async fn stats_own_count(&self, slug: &str, email: &str) -> anyhow::Result<i64> {
+        let (n,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM access_log WHERE vault_slug = ? AND email = ?")
+                .bind(slug)
+                .bind(email)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(n)
+    }
+
+    /// 90-day retention sweep (REQ-VLT-011): delete rows older than 90 days,
+    /// return the deleted count. Called once at boot from `main::serve`.
+    pub async fn prune_access_log(&self) -> anyhow::Result<u64> {
+        let r = sqlx::query("DELETE FROM access_log WHERE ts < datetime('now', '-90 days')")
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
     }
 
     fn unix_now(&self) -> u64 {
@@ -2671,7 +2741,10 @@ mod share_tests {
         assert_eq!(owner.len(), 1);
         assert!(!owner[0].direct_share, "own personal vault is not a share");
         let admin = s.accessible_vaults("admin@x.fr").await.unwrap();
-        assert!(admin.iter().all(|av| !av.direct_share), "admin rows are not shares");
+        assert!(
+            admin.iter().all(|av| !av.direct_share),
+            "admin rows are not shares"
+        );
     }
 
     #[tokio::test]
@@ -2731,26 +2804,153 @@ mod share_tests {
         let alice = s.accessible_vaults("alice@x.fr").await.unwrap();
         assert_eq!(alice.len(), 1, "granted both ways: appears exactly once");
         assert_eq!(alice[0].role, "write", "strongest role wins");
-        assert_eq!(s.access_for("alice@x.fr", "wiki").await.unwrap(), Access::Write);
+        assert_eq!(
+            s.access_for("alice@x.fr", "wiki").await.unwrap(),
+            Access::Write
+        );
     }
 
     #[tokio::test]
     async fn share_resolves_when_user_registers_later() {
         let s = st("share-pending").await;
         s.create_user("owner@x.fr", "pw", "reader").await.unwrap();
-        s.create_personal_vault("owner@x.fr", "book", "Book", Path::new("/tmp/acl-late/book"))
-            .await
-            .unwrap();
+        s.create_personal_vault(
+            "owner@x.fr",
+            "book",
+            "Book",
+            Path::new("/tmp/acl-late/book"),
+        )
+        .await
+        .unwrap();
         // Pending share: the email is not registered yet.
         s.share_vault("book", "late@x.fr", "reader").await.unwrap();
         assert!(s.accessible_vaults("late@x.fr").await.unwrap().is_empty());
-        assert_eq!(s.access_for("late@x.fr", "book").await.unwrap(), Access::None);
+        assert_eq!(
+            s.access_for("late@x.fr", "book").await.unwrap(),
+            Access::None
+        );
 
         // Once the user exists, the share resolves with no further action.
         s.create_user("late@x.fr", "pw", "reader").await.unwrap();
-        assert_eq!(s.access_for("late@x.fr", "book").await.unwrap(), Access::Read);
+        assert_eq!(
+            s.access_for("late@x.fr", "book").await.unwrap(),
+            Access::Read
+        );
         let late = s.accessible_vaults("late@x.fr").await.unwrap();
         assert_eq!(late.len(), 1);
         assert_eq!(late[0].vault.slug, "book");
+    }
+}
+
+// ---------- Task 4: access_log insert, aggregation, 90-day prune ----------
+
+#[cfg(test)]
+mod access_log_tests {
+    use super::*;
+
+    async fn st(_name: &str) -> Store {
+        Store::connect_memory().await.expect("store")
+    }
+
+    #[tokio::test]
+    async fn access_log_roundtrip_and_aggregation() {
+        let s = st("access-log").await;
+
+        // Fresh rows via log_access (today, datetime('now') default).
+        s.log_access("a@x.fr", "wiki", "web", "/index.html")
+            .await
+            .unwrap();
+        s.log_access("a@x.fr", "wiki", "web", "/index.html")
+            .await
+            .unwrap();
+        s.log_access("a@x.fr", "wiki", "web", "/setup.html")
+            .await
+            .unwrap();
+        s.log_access("b@x.fr", "wiki", "mcp", "/index.html")
+            .await
+            .unwrap();
+
+        // Yesterday's rows inserted directly with an explicit ts.
+        for (email, source, path) in [
+            ("a@x.fr", "web", "/index.html"),
+            ("a@x.fr", "web", "/old.html"),
+            ("b@x.fr", "mcp", "/index.html"),
+        ] {
+            sqlx::query(
+                "INSERT INTO access_log (vault_slug, email, source, path, ts)  VALUES ('wiki', ?, ?, ?, datetime('now', '-1 day'))",
+            )
+            .bind(email)
+            .bind(source)
+            .bind(path)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        }
+
+        // Per-day grouping: two days, each split by source, newest first.
+        let per_day = s.stats_per_day("wiki").await.unwrap();
+        assert_eq!(per_day.len(), 4, "2 days x sources present, grouped");
+        let today: (String,) = sqlx::query_as("SELECT date('now')")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        let today = today.0;
+        assert_eq!(per_day[0].0, today, "newest day first");
+        let mut today_rows: Vec<(String, i64)> = per_day
+            .iter()
+            .filter(|r| r.0 == today)
+            .map(|r| (r.1.clone(), r.2))
+            .collect();
+        today_rows.sort();
+        assert_eq!(
+            today_rows,
+            vec![("mcp".to_string(), 1), ("web".to_string(), 3)]
+        );
+        let yesterday_rows: Vec<(String, i64)> = per_day
+            .iter()
+            .filter(|r| r.0 != today)
+            .map(|r| (r.1.clone(), r.2))
+            .collect();
+        assert_eq!(yesterday_rows.len(), 2, "yesterday: web + mcp groups");
+
+        // Top pages: web-only, most-hit first. /index.html has 3 web hits,
+        // /setup.html 1, /old.html 1 — the mcp /index.html hit must not count.
+        let top = s.stats_top_pages("wiki").await.unwrap();
+        assert_eq!(top[0], ("/index.html".to_string(), 3));
+        assert!(top.iter().all(|(p, _)| p != "/never.html"));
+        assert_eq!(top.iter().map(|(_, c)| c).sum::<i64>(), 5);
+
+        // Own count: all sources for (slug, email).
+        assert_eq!(s.stats_own_count("wiki", "a@x.fr").await.unwrap(), 5);
+        assert_eq!(s.stats_own_count("wiki", "b@x.fr").await.unwrap(), 2);
+        assert_eq!(s.stats_own_count("wiki", "z@x.fr").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn prune_access_log_removes_only_old_rows() {
+        let s = st("access-prune").await;
+        s.log_access("a@x.fr", "wiki", "web", "/fresh.html")
+            .await
+            .unwrap();
+
+        // One row 91 days old — beyond the 90-day retention window.
+        sqlx::query(
+            "INSERT INTO access_log (vault_slug, email, source, path, ts)  VALUES ('wiki', 'a@x.fr', 'web', '/old.html', datetime('now', '-91 days'))",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+        let removed = s.prune_access_log().await.unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining: Vec<(String,)> = sqlx::query_as("SELECT path FROM access_log ORDER BY path")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, vec![("/fresh.html".to_string(),)]);
+
+        // Idempotent: a second prune deletes nothing.
+        assert_eq!(s.prune_access_log().await.unwrap(), 0);
     }
 }
