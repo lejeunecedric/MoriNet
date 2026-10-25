@@ -520,4 +520,128 @@ mod tests {
         .unwrap();
         assert!(rows.is_empty(), "denied calls log nothing: {rows:?}");
     }
+
+    // ---- share ACL through MCP tokens (plan 10.1-03, REQ-VLT-010) ----
+
+    /// Owner vault + sharee user; returns (store, sharee MoriMcp).
+    async fn share_fixture(tag: &str, slug: &str, role: &str) -> (Store, MoriMcp) {
+        let s = store().await;
+        s.create_user("owner@share.test", "pw", "reader")
+            .await
+            .unwrap();
+        s.create_user("sharee@share.test", "pw", "reader")
+            .await
+            .unwrap();
+        let src = tmpdir(tag);
+        std::fs::write(src.join("note.md"), "# Shared\nsecret needle content").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        s.seed_vault(slug, "Shared vault", &src.join("book"))
+            .await
+            .unwrap();
+        s.share_vault(slug, "sharee@share.test", role)
+            .await
+            .unwrap();
+        let m = MoriMcp::new(s.clone(), "sharee@share.test".into());
+        (s, m)
+    }
+
+    #[tokio::test]
+    async fn mcp_sharee_sees_shared_vault() {
+        // reader share and writer share both list + read via MCP (MCP is
+        // read-only; writer's extra rights live web/WebDAV-side).
+        for role in ["reader", "writer"] {
+            let want_role = if role == "writer" { "write" } else { "read" };
+            let (_s, m) = share_fixture(&format!("share-{role}"), "sh1", role).await;
+            let res = m.list_vaults().await.unwrap();
+            let body = text(&res);
+            assert!(
+                body.contains("\"sh1\"") && body.contains(&format!("\"{want_role}\"")),
+                "{role} share listed with role {want_role}: {body}"
+            );
+
+            let ok = m
+                .read_note(Parameters(SlugPath {
+                    slug: "sh1".into(),
+                    path: "note.md".into(),
+                }))
+                .await
+                .unwrap();
+            assert_ne!(ok.is_error, Some(true), "{role} can read: {ok:?}");
+            assert!(text(&ok).contains("secret needle content"));
+
+            let listed = m
+                .list_notes(Parameters(ListNotesParams {
+                    slug: "sh1".into(),
+                    path: None,
+                }))
+                .await
+                .unwrap();
+            assert_ne!(listed.is_error, Some(true), "{role} can list notes");
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_hidden_share_invisible() {
+        let (s, m) = share_fixture("share-hidden", "sh2", "reader").await;
+        s.hide_share("sh2", "sharee@share.test").await.unwrap();
+
+        let res = m.list_vaults().await.unwrap();
+        assert!(
+            !text(&res).contains("sh2"),
+            "hidden share absent from list_vaults"
+        );
+        let bad = m
+            .read_note(Parameters(SlugPath {
+                slug: "sh2".into(),
+                path: "note.md".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(bad.is_error, Some(true));
+        assert_eq!(text(&bad), "vault not found or access denied");
+    }
+
+    #[tokio::test]
+    async fn mcp_revoked_share_denied() {
+        let (s, m) = share_fixture("share-revoked", "sh3", "reader").await;
+        // Access works before revocation, is gone immediately after.
+        let ok = m
+            .read_note(Parameters(SlugPath {
+                slug: "sh3".into(),
+                path: "note.md".into(),
+            }))
+            .await
+            .unwrap();
+        assert_ne!(ok.is_error, Some(true));
+
+        s.revoke_share("sh3", "sharee@share.test").await.unwrap();
+        let bad = m
+            .read_note(Parameters(SlugPath {
+                slug: "sh3".into(),
+                path: "note.md".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(bad.is_error, Some(true));
+        assert_eq!(text(&bad), "vault not found or access denied");
+        assert!(!text(&m.list_vaults().await.unwrap()).contains("sh3"));
+    }
+
+    #[tokio::test]
+    async fn mcp_search_finds_notes_in_shared_vault() {
+        let (_s, m) = share_fixture("share-search", "sh4", "reader").await;
+        let res = m
+            .search_notes(Parameters(SearchParams {
+                query: "secret needle".into(),
+                slug: None,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(res.is_error, Some(true));
+        let body = text(&res);
+        assert!(
+            body.contains("\"sh4\""),
+            "global search hits the shared vault: {body}"
+        );
+    }
 }
