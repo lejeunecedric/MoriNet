@@ -65,6 +65,7 @@
 **Goal**: lay the foundations — the repo exists on GitHub, the crate compiles, CI is green, the binary installs via `cargo install`.
 
 **Success criteria**:
+
 - `gh repo view lejeunecedric/MoriNet` → public repo exists ✅
 - `cargo install --path .` from a cloned checkout succeeds (binary `morinet` available) ✅
 - `morinet --version` returns `0.1.0` ✅
@@ -80,6 +81,7 @@
 **Goal**: a single hardcoded admin (via env var at boot) can log in and see ONE compiled vault at `data/vaults/demo/book/`.
 
 **Criteria**:
+
 - `morinet serve --vault data/vaults/demo/book` starts a server on `:8080`
 - `GET /` redirects to `/login`
 - `POST /login` with the bootstrap admin from env `MORINET_ADMIN_EMAIL`/`MORINET_ADMIN_PASSWORD` (creds never recorded in this repo) sets a signed HttpOnly cookie
@@ -90,6 +92,7 @@
 **Goal**: the admin can register N vaults (`name`, `slug`, local `path`) and each user sees `/vault/<slug>/` for the vaults they have access to.
 
 **Criteria**:
+
 - `vaults` table (id, slug, name, path, created_at)
 - `vault_acl` table (vault_id, user_id)
 - `GET /` (logged in) lists the user's accessible vaults with links
@@ -100,6 +103,7 @@
 **Goal**: add a `GithubVaultSource` plugin (clone private/public git + periodic sync).
 
 **Criteria**:
+
 - `VaultSource` trait with `sync()` (idempotent) → returns a local path
 - `LocalVaultSource` (resolves the path as-is)
 - `GithubVaultSource` (clone via `git2` or shelling out `git`, periodic sync at configurable interval)
@@ -111,6 +115,7 @@
 **Goal**: HTML pages served by axum (no SPA) to manage users + vaults + perms.
 
 **Criteria**:
+
 - `GET /admin/users`: table with an "Invite" button
 - `POST /admin/users/invite { email }`: creates a user, generates a magic link
 - `GET /admin/vaults`: table with "Add vault" button
@@ -122,6 +127,7 @@
 **Goal**: configurable generic SMTP, send invitations and password reset emails.
 
 **Criteria**:
+
 - `[smtp]` section in `config.toml`: host, port, user, pass, from, tls
 - `EmailSender::send(to, subject, body_html)` via `lettre`
 - Templates: `invitation.html.tera`, `reset_password.html.tera`
@@ -132,6 +138,7 @@
 **Goal**: WebDAV exposure at `/webdav/<vault-slug>/*` with PROPFIND/GET/PUT, Basic auth (mdbook email + password).
 
 **Criteria**:
+
 - `PROPFIND`: returns the list of `.md` files in the vault (depth 1 = vault, depth 0 = file)
 - `GET`: returns the raw `.md` (text/markdown)
 - `PUT`: allowed for admin only (overwrites the `.md` and rebuilds mdbook for that vault)
@@ -147,6 +154,7 @@
 **User decision (2026-10-21)**: the picker browses **the server's filesystem**, not the admin's machine. A vault is a path on the host running MoriNet; offering a browser-side folder picker would upload a path string that does not exist there.
 
 **Criteria**:
+
 - `GET /admin/browse?path=<dir>` → JSON `{ current, parent, dirs[] }` (admin only)
 - **Import**: a browser-side folder picker (`<input type=file webkitdirectory>`) uploads the selected files into the server-side vault chosen by the picker — the browser path is never trusted as a server path
 - The "Add vault" form hides the path field behind a **Browse** button when `kind=local`
@@ -182,6 +190,7 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 **Existing rows migrate to `scope='global'` with no owner**, so nothing disappears.
 
 **Criteria**:
+
 - Migration adds the tables and the columns without losing existing vaults
 - `list_vaults_for` returns: personal vaults of the user + global vaults where one of their groups has a row
 - A personal vault of someone else is invisible (403 even on a guessed URL)
@@ -189,11 +198,13 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 - Existing behavior of the current admin pages keeps working
 
 **Quota par groupe (user decision 2026-10-21, feedback UX admin)**:
+
 - `groups.personal_vault_limit` (NULL = illimité) — REQ-GRP-005
 - Builtin au bootstrap : `free` (limit **2**), `admin` (illimité) — REQ-GRP-006
 - **`demo` devient un `reader` membre de `free`** (plus admin) — REQ-GRP-007 ; l'admin
   du bootstrap est membre de `admin`. C'est CE qui fait disparaître le bouton Admin
   pour demo (le code index/`require_admin` était déjà correct — demo était admin en base).
+
 - La limite compte les vaults **personnels créés**, pas les partages ni la visibilité — REQ-VLT-008
 - Limite effective = la plus permissive des groupes du user — REQ-GRP-008
 
@@ -219,6 +230,7 @@ les pages mdBook portent la barre zoom + « Close vault » en haut à droite
 (sous le bouton Print, href `/`).
 
 **Criteria**:
+
 - Shared header on every page: **My vaults** (landing) + account menu top-right
 - Account menu: display name (editable), email, logout
 - Logout clears the cookie and returns to `/login`
@@ -241,11 +253,14 @@ Passes **Impeccable** (`/extract`, `/polish`, `/critique`) + vocabulaire
 - **v0.1.17** — `/extract` : un seul menu, nav non dupliquée, CSS consolidé
   (radius/spacing scales, `--on-accent`, flat forms), MENU_JS (un menu ouvert
   à la fois, Échap/clic extérieur)
+
 - **v0.1.18** — chrome vault : Close vault fonctionnel (href `/`), barre
   top-right unique sous le bouton Print (mesuré : pas de chevauchement)
+
 - **v0.1.19** — `/critique` mdBook : detector `npx impeccable detect` sur
   snapshots CSS-inlinés → meta 13px sans fade, line-height 1.65, wikilinks
   pleins, `--icons` dark 4:1, police système
+
 - **v0.1.20** — anti-clutter : 1 contrôle header (2 boutons admin = showstopper
   signalé), titres jamais dupliqués, sections complètes (empty states inclus),
   vaults en rangées, form de rename sur `/account` (pas de form dans un menu)
@@ -263,6 +278,7 @@ surface parente.
 **Goal**: MCP StreamableHttp on `/mcp`, Bearer auth (token derived from password), tools on accessible vaults.
 
 **Criteria**:
+
 - `/mcp` endpoint (StreamableHttp)
 - Tools exposed: `list_vaults`, `list_notes(slug, path?)`, `read_note(slug, path)`, `search_notes(query, slug?)`
 - Resource template `vault://<slug>/...` (optional)
@@ -279,6 +295,7 @@ surface parente.
 **Plans:** 0 plans
 
 **Criteria:**
+
 - Index redesign: section "My vaults" (cards with Edit, Refresh, Delete, Share, Statistics), section "Shared with me" (identical card layout/actions), section "Load a vault" (moved out of the My-vaults panel)
 - **Edit**: rename vault + change GitHub source URL + per-vault `allow_reshare` toggle (owner decides whether sharees may re-share)
 - **Share**: direct user-to-user sharing by email (new `vault_shares` table: vault, email, role reader/writer); sharee sees the vault in "Shared with me"; re-share only when `allow_reshare`
@@ -289,13 +306,19 @@ surface parente.
 - **Default docs vault**: at boot, seed a global vault `morinet-docs` ("MoriNet Documentation") granted to every user (all groups, swept at boot like `ensure_default_memberships`), built from markdown embedded in the binary (`include_str!`) — idempotent, never overwrites operator edits; appears in "Shared with me" on first login
 
 Plans:
+
 - [ ] TBD (run /gsd-plan-phase 10.1 to break down)
+
+**Cross-cutting constraints:**
+
+- cargo test --lib green, clippy -D warnings clean
 
 ## Phase 11: polish (v1.0)
 
 **Goal**: ready to ship.
 
 **Criteria**:
+
 - `cargo install morinet` works end-to-end (re-check README)
 - Minimal/elegant README (5 sections: What / Install / Quick start / Status / License)
 - `morinet init` creates an example `config.toml`

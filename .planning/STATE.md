@@ -4,12 +4,12 @@ milestone: v0.1.9
 milestone_name: → v0.1.13)
 status: executing
 stopped_at: bootstrap GSD terminé (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modifié en attente de commit (user edit).
-last_updated: "2026-10-25T14:26:12.703Z"
-last_activity: 2026-10-25 -- Phase 10.1 inserted (home UX)
+last_updated: "2026-10-25T14:57:35.505Z"
+last_activity: 2026-10-25 -- Phase 10.1 planning complete
 progress:
   total_phases: 7
   completed_phases: 1
-  total_plans: 6
+  total_plans: 10
   completed_plans: 2
   percent: 14
 ---
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 Phase: 10.1 of 12 (home UX inserted after 10)
 Plan: Phase 11 planned (3 plans); Phase 10.1 to plan first
 Status: Ready to execute
-Last activity: 2026-10-25 -- Phase 10.1 inserted (home UX); Phase 11 planned
+Last activity: 2026-10-25 -- Phase 10.1 planning complete
 
 Progress: [█████████░] 93% (13/14 phases)
 
