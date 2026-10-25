@@ -4,6 +4,7 @@ pub mod browse;
 pub mod config;
 pub mod docs_seed;
 pub mod email;
+pub mod init;
 pub mod mcp;
 pub mod obsidian;
 pub mod server;
