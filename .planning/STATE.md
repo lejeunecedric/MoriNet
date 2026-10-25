@@ -12,7 +12,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 Phase: 11 of 11 (polish v1.0)
 Plan: none yet — Phase 10 shipped same-day
 Status: Phase 10 COMPLETE (10-01 + 10-02, 2026-10-25)
-Last activity: 2026-10-25 — Phase 10 livré : API tokens (/account) + MCP StreamableHttp sur /mcp (rmcp 3.7, Bearer, 4 tools ACL-scoped). 213 tests verts
+Last activity: 2026-10-25 — v0.1.21 DEPLOYE sur la demo en 100% local (scripts/deploy.sh, git2 vendored-openssl = binaire autonome). /mcp live : 401 sans Bearer (OK). 213 tests verts
 
 Progress: [█████████░] 93% (13/14 phases)
 

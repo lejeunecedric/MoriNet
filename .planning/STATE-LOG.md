@@ -100,6 +100,8 @@
 
 - **2026-10-25 (delivery)** — **Compilation retirée de GitHub, tout est local** (decision user). `ci.yml` et `release.yml` supprimés ; remplacés par `scripts/check.sh` (fmt+clippy+test+build), `scripts/release.sh` (gate → bump → tag → GitHub release draft → upload asset `morinet-x86_64-unknown-linux-gnu.tar.xz` + `.sha256` → publish ; GITHUB_TOKEN requis) et `scripts/deploy.sh` (build + scp staging + mv atomique + restart + /health ; DEPLOY_HOST requis). `deploy.yml` est CONSERVÉ inchangé (déclenché par release:published, mêmes noms d'assets que cargo-dist). Le piège de la course tag↔release disparu : les assets sont attachés avant la publication.
 
+- **2026-10-25 (v0.1.21)** — premier deploy 100 % local : `scripts/deploy.sh` (SSH [REDACTED-DEPLOY-USER], staging ~ + sudo mv + restart + /health). Pitfall : le binaire local etait lie a `libssl.so.4` (Ubuntu 26.10) absent du serveur -> `git2` en `vendored-openssl`, plus aucune dep openssl dynamique (verifie par ldd). Guard `version_matches_cargo_pkg_version` bump a chaque release (lib.rs).
+
 ## Stats
 
 - Planning files: 5 (ROADMAP, REQUIREMENTS, STATE, index, Phase 0 PLAN)
