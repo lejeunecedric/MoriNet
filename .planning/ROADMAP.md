@@ -286,6 +286,7 @@ surface parente.
 - Access logging wired into `vault_file`/`vault_index` and the 4 MCP tools (best-effort, never fails the request)
 - ACL: `accessible_vaults` extended to union group grants + direct email shares; WebDAV + MCP honor shares
 - Tests: share/reshare/ACL matrix + stats aggregation; UI parity check (same markup for both sections)
+- **Default docs vault**: at boot, seed a global vault `morinet-docs` ("MoriNet Documentation") granted to every user (all groups, swept at boot like `ensure_default_memberships`), built from markdown embedded in the binary (`include_str!`) — idempotent, never overwrites operator edits; appears in "Shared with me" on first login
 
 Plans:
 - [ ] TBD (run /gsd-plan-phase 10.1 to break down)

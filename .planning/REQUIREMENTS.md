@@ -102,6 +102,7 @@
 | REQ-VLT-010    | Partage direct d'un vault par email à un utilisateur (rôles reader/writer), avec toggle `allow_reshare` du propriétaire | le partagé voit le vault dans "Shared with me" ; re-partage refusé si `allow_reshare` off |
 | REQ-VLT-011    | Page Statistics par vault : nb pages, taille, dernière refresh, source + compteurs d'accès (web + MCP) | `/vault/{slug}/stats` affiche les compteurs ; logging best-effort (jamais de 500) |
 | REQ-VLT-012    | "Shared with me" rendu identiquement à "My vaults" (mêmes cartes/actions) ; "Load a vault" est une section séparée | markup identique des deux sections ; 3 sections sur `/` |
+| REQ-VLT-013    | Au boot, un vault global "MoriNet Documentation" (`morinet-docs`) est créé et accessible à tous les utilisateurs (seed idempotent, contenu embarqué dans le binaire) | fresh install → le vault apparaît dans "Shared with me" sans config |
 
 ## ACCOUNT — Self-service profile
 
@@ -206,7 +207,7 @@
 - Phase 7: REQ-UX-001..007 (vault management UX — inserted before MCP)
 - Phase 8: REQ-MCP-001..007 (renumbered)
 - Phase 8 (access-model, quotas): REQ-GRP-001..008, REQ-VLT-001..008
-- Phase 10.1 (home-ux): REQ-VLT-009..012
+- Phase 10.1 (home-ux): REQ-VLT-009..013
 - Phase 9: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
 - Phase 8b: REQ-OBSFMT-001..006 (converter llm-wiki/Obsidian → mdBook)
 - Phase 9 pull-forward (2026-10-21, feedback user) : REQ-ACC-003 (`POST /logout`), REQ-NAV-006 (nav claire), REQ-ADMIN-007 (bouton About version + repo)
