@@ -133,20 +133,26 @@ impl Store {
                 .await?;
         match existing {
             None => {
-                sqlx::query("INSERT INTO vaults (slug, name, book_path) VALUES (?, ?, ?)")
-                    .bind(slug)
-                    .bind(name)
-                    .bind(&path_str)
-                    .execute(&self.pool)
-                    .await?;
+                sqlx::query(
+                    "INSERT INTO vaults (slug, name, book_path, last_refreshed_at) \
+                     VALUES (?, ?, ?, datetime('now'))",
+                )
+                .bind(slug)
+                .bind(name)
+                .bind(&path_str)
+                .execute(&self.pool)
+                .await?;
             }
             Some((old_path,)) if old_path != path_str => {
-                sqlx::query("UPDATE vaults SET name = ?, book_path = ? WHERE slug = ?")
-                    .bind(name)
-                    .bind(&path_str)
-                    .bind(slug)
-                    .execute(&self.pool)
-                    .await?;
+                sqlx::query(
+                    "UPDATE vaults SET name = ?, book_path = ?, last_refreshed_at = datetime('now') \
+                     WHERE slug = ?",
+                )
+                .bind(name)
+                .bind(&path_str)
+                .bind(slug)
+                .execute(&self.pool)
+                .await?;
             }
             _ => {}
         }
@@ -1475,6 +1481,151 @@ mod tests {
         assert_eq!(vaults.len(), 1);
         assert_eq!(vaults[0].book_path, "/tmp/new");
         assert_eq!(vaults[0].name, "Demo v2");
+    }
+
+    // ---------- Phase 10.1 / PLAN 10.1-01 Task 1: migration 0008 shape ----------
+
+    #[tokio::test]
+    async fn shares_stats_migration_shape() {
+        let s = store().await;
+        s.seed_vault("shape", "Shape", Path::new("/tmp/shape/book"))
+            .await
+            .unwrap();
+        // New vaults columns: allow_reshare defaults to 0, last_refreshed_at
+        // is stamped by seed_vault.
+        let (allow, refreshed): (i64, Option<String>) = sqlx::query_as(
+            "SELECT allow_reshare, last_refreshed_at FROM vaults WHERE slug = 'shape'",
+        )
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(allow, 0, "allow_reshare defaults to 0");
+        assert!(refreshed.is_some(), "seed_vault stamps last_refreshed_at");
+        // Both new tables exist and are queryable.
+        let _: Vec<(i64,)> = sqlx::query_as("SELECT vault_id FROM vault_shares")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+        let _: Vec<(i64,)> = sqlx::query_as("SELECT id FROM access_log")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn vault_shares_rejects_bad_role_and_duplicate_pair() {
+        let s = store().await;
+        s.seed_vault("v", "V", Path::new("/tmp/v/book"))
+            .await
+            .unwrap();
+        let bad = sqlx::query(
+            "INSERT INTO vault_shares (vault_id, email, role) \
+             SELECT id, 'a@x.fr', 'admin' FROM vaults WHERE slug = 'v'",
+        )
+        .execute(&s.pool)
+        .await;
+        assert!(bad.is_err(), "role CHECK must reject 'admin'");
+        sqlx::query(
+            "INSERT INTO vault_shares (vault_id, email, role) \
+             SELECT id, 'a@x.fr', 'reader' FROM vaults WHERE slug = 'v'",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        let dup = sqlx::query(
+            "INSERT INTO vault_shares (vault_id, email, role) \
+             SELECT id, 'a@x.fr', 'writer' FROM vaults WHERE slug = 'v'",
+        )
+        .execute(&s.pool)
+        .await;
+        assert!(dup.is_err(), "duplicate (vault_id, email) must be rejected");
+    }
+
+    #[tokio::test]
+    async fn access_log_rejects_bad_source() {
+        let s = store().await;
+        let bad = sqlx::query(
+            "INSERT INTO access_log (vault_slug, email, source, path) \
+             VALUES ('v', 'a@x.fr', 'ftp', '/x')",
+        )
+        .execute(&s.pool)
+        .await;
+        assert!(bad.is_err(), "source CHECK must reject 'ftp'");
+        sqlx::query(
+            "INSERT INTO access_log (vault_slug, email, source, path) \
+             VALUES ('v', 'a@x.fr', 'web', '/x')",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO access_log (vault_slug, email, source, path) \
+             VALUES ('v', 'a@x.fr', 'mcp', '/y')",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_vault_cascades_share_rows() {
+        let s = store().await;
+        s.seed_vault("gone", "Gone", Path::new("/tmp/gone/book"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO vault_shares (vault_id, email, role) \
+             SELECT id, 'a@x.fr', 'reader' FROM vaults WHERE slug = 'gone'",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        s.delete_vault("gone").await.unwrap();
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM vault_shares")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "vault_shares rows cascade with the vault");
+    }
+
+    #[tokio::test]
+    async fn seed_vault_stamps_last_refreshed_at() {
+        let s = store().await;
+        s.seed_vault("stamp", "Stamp", Path::new("/tmp/stamp/book"))
+            .await
+            .unwrap();
+        let (t1,): (Option<String>,) =
+            sqlx::query_as("SELECT last_refreshed_at FROM vaults WHERE slug = 'stamp'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        let t1 = t1.expect("stamped on insert");
+        // Same path again: the no-op branch must not restamp (idempotent).
+        s.seed_vault("stamp", "Stamp", Path::new("/tmp/stamp/book"))
+            .await
+            .unwrap();
+        let (t2,): (String,) =
+            sqlx::query_as("SELECT last_refreshed_at FROM vaults WHERE slug = 'stamp'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(t1, t2, "unchanged path must not restamp");
+        // Changed path: the UPDATE branch restamps.
+        sqlx::query(
+            "UPDATE vaults SET last_refreshed_at = '2000-01-01 00:00:00' WHERE slug = 'stamp'",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        s.seed_vault("stamp", "Stamp", Path::new("/tmp/stamp/other"))
+            .await
+            .unwrap();
+        let (t3,): (String,) =
+            sqlx::query_as("SELECT last_refreshed_at FROM vaults WHERE slug = 'stamp'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_ne!(t3, "2000-01-01 00:00:00", "changed path must restamp");
     }
 }
 
