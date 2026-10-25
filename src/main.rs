@@ -94,6 +94,11 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
     store.ensure_fallback_admin().await?;
     // REQ-VLT-011: 90-day retention sweep on the access log at every boot.
     store.prune_access_log().await?;
+    // REQ-VLT-013: boot-seed the global "MoriNet Documentation" vault.
+    // Warning-only: a missing mdbook or a failed build must never abort boot.
+    if let Err(e) = morinet::docs_seed::seed_docs_vault(&data_dir, &store).await {
+        eprintln!("warning: docs vault seed failed: {e}");
+    }
 
     // Phase 3: resolve vault sources (local | github), sync + build + seed.
     use morinet::sources::{GitSource, LocalSource, VaultSource};
