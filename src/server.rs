@@ -164,6 +164,12 @@ pub fn build_router_with_email(
             "/vault/{slug}/edit",
             get(vault_edit_page).post(vault_edit_submit),
         )
+        .route(
+            "/vault/{slug}/share",
+            get(vault_share_page).post(vault_share_add),
+        )
+        .route("/vault/{slug}/share/revoke", post(vault_share_revoke))
+        .route("/vault/{slug}/share/hide", post(vault_share_hide))
         .route("/vault", get(vault_root_redirect))
         .route("/vault/{slug}/", get(vault_index))
         .route("/vault/{slug}/{*rest}", get(vault_file))
@@ -1958,6 +1964,169 @@ async fn vault_edit_submit(
         .await
     {
         return error_page(&format!("could not update the re-share setting: {e}"));
+    }
+    Redirect::to("/").into_response()
+}
+
+/// `POST /vault/{slug}/share` fields: sharee address + role.
+#[derive(Debug, Deserialize)]
+struct ShareAddForm {
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    role: String,
+}
+
+/// `POST /vault/{slug}/share/revoke` fields.
+#[derive(Debug, Deserialize)]
+struct ShareEmailForm {
+    #[serde(default)]
+    email: String,
+}
+
+/// `GET /vault/{slug}/share` — share table + add form (REQ-VLT-010). Gated by
+/// `can_share`: owner, admin, or a sharee of a re-shareable vault.
+async fn vault_share_page(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+) -> Response {
+    if !state
+        .store
+        .can_share(&claims.email, &slug)
+        .await
+        .unwrap_or(false)
+    {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    let shares = state.store.list_shares(&slug).await.unwrap_or_default();
+    let mut rows = String::new();
+    for (email, role, hidden, created) in &shares {
+        // Unknown addresses get a pending hint: the sharer typed the address
+        // themselves, so this is not cross-user enumeration (T-10.1-08).
+        let pending = match state.store.user_exists(email).await {
+            Ok(false) => " <small class=\"muted\">pending — not registered yet</small>",
+            _ => "",
+        };
+        let hidden_mark = if *hidden {
+            " <small class=\"muted\">hidden from your view</small>"
+        } else {
+            ""
+        };
+        rows.push_str(&format!(
+            r#"<tr><td>{e}{p}{h}</td><td>{r}</td><td>{c}</td><td><form method="post" action="/vault/{s}/share/revoke"><input type="hidden" name="email" value="{e}"><button type="submit" class="btn-quiet">Revoke</button></form></td></tr>"#,
+            e = html_escape(email),
+            p = pending,
+            h = hidden_mark,
+            r = html_escape(role),
+            c = html_escape(created),
+            s = html_escape(&slug),
+        ));
+    }
+    let table = if rows.is_empty() {
+        r#"<p class="empty">Not shared with anyone yet.</p>"#.to_string()
+    } else {
+        format!(
+            r#"<table><thead><tr><th>Sharee</th><th>Role</th><th>Since</th><th></th></tr></thead><tbody>{rows}</tbody></table>"#
+        )
+    };
+    let name = state
+        .store
+        .vault_name(&slug)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| slug.clone());
+    let body = format!(
+        r#"<section class="panel">
+<h2>Share "{n}"</h2>
+{table}
+<form method="post" action="/vault/{s}/share" class="stacked">
+  <div class="field"><label for="sh-email">Email</label><input id="sh-email" type="email" name="email" required></div>
+  <div class="field"><label for="sh-role">Role</label><select id="sh-role" name="role"><option value="reader">reader</option><option value="writer">writer</option></select></div>
+  <button type="submit">Share</button>
+</form>
+</section>
+"#,
+        n = html_escape(&name),
+        s = html_escape(&slug),
+    );
+    app_page("Share vault", &body)
+}
+
+/// `POST /vault/{slug}/share` — upsert a share (email may be unregistered;
+/// the page shows it as pending until the account exists).
+async fn vault_share_add(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+    Form(p): Form<ShareAddForm>,
+) -> Response {
+    if !state
+        .store
+        .can_share(&claims.email, &slug)
+        .await
+        .unwrap_or(false)
+    {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    let email = p.email.trim();
+    if email.is_empty() {
+        return error_page("the email is required");
+    }
+    let role = if p.role == "writer" { "writer" } else { "reader" };
+    if let Err(e) = state.store.share_vault(&slug, email, role).await {
+        return error_page(&format!("could not share the vault: {e}"));
+    }
+    // Safe: share_vault succeeded, so `slug` is a registered vault slug.
+    Redirect::to(&format!("/vault/{slug}/share")).into_response()
+}
+
+/// `POST /vault/{slug}/share/revoke` — delete a share row outright.
+async fn vault_share_revoke(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+    Form(p): Form<ShareEmailForm>,
+) -> Response {
+    if !state
+        .store
+        .can_share(&claims.email, &slug)
+        .await
+        .unwrap_or(false)
+    {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    let email = p.email.trim();
+    if email.is_empty() {
+        return error_page("the email is required");
+    }
+    if let Err(e) = state.store.revoke_share(&slug, email).await {
+        return error_page(&format!("could not revoke the share: {e}"));
+    }
+    Redirect::to(&format!("/vault/{slug}/share")).into_response()
+}
+
+/// `POST /vault/{slug}/share/hide` — "remove from my view": sets the hidden
+/// flag on the CALLER's own direct share only. Any direct sharee may do it;
+/// the owner's share list is untouched.
+async fn vault_share_hide(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+) -> Response {
+    let is_direct_sharee = state
+        .store
+        .accessible_vaults(&claims.email)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|a| a.vault.slug == slug && a.direct_share);
+    if !is_direct_sharee {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    if let Err(e) = state.store.hide_share(&slug, &claims.email).await {
+        return error_page(&format!("could not hide the vault: {e}"));
     }
     Redirect::to("/").into_response()
 }
@@ -4959,5 +5128,166 @@ mod tests {
                 .is_none(),
             "revoked from the UI stops resolving"
         );
+    }
+
+    // ---------- Phase 10.1: Share pages (10.1-02 Task 3) ----------
+
+    #[tokio::test]
+    async fn share_page_owner_lists_and_adds() {
+        let (app, state) = test_router().await;
+        // pal owns `mine` — the owner manages its share list.
+        seed_owner_and_shared_share(&state, "reader").await;
+        state
+            .store
+            .create_user("friend@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vault/mine/share",
+            form_headers(&cookie),
+            Some(Body::from("email=friend%40example.com&role=reader")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vault/mine/share",
+            form_headers(&cookie),
+            Some(Body::from("email=nobody%40example.com&role=writer")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(app, "GET", "/vault/mine/share", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("friend@example.com"), "sharee listed: {body}");
+        assert!(body.contains("nobody@example.com"), "unknown listed: {body}");
+        assert!(body.contains("Revoke"), "revoke button: {body}");
+        assert!(
+            body.contains("name=\"email\"") && body.contains("name=\"role\""),
+            "add form fields: {body}"
+        );
+        // The pending hint shows ONLY for the unregistered address.
+        assert_eq!(
+            body.matches("pending").count(),
+            1,
+            "pending hint only for the unknown email: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn share_page_sharee_forbidden_when_reshare_off() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/demo/share", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn share_page_sharee_allowed_when_reshare_on() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        state.store.set_allow_reshare("demo", true).await.unwrap();
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app.clone(), "GET", "/vault/demo/share", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        // The re-sharee can add their own sub-share.
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vault/demo/share",
+            form_headers(&cookie),
+            Some(Body::from("email=sub%40example.com&role=reader")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(app, "GET", "/vault/demo/share", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(body.contains("sub@example.com"), "sub-share listed: {body}");
+    }
+
+    #[tokio::test]
+    async fn share_revoke_removes_row() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        req(
+            app.clone(),
+            "POST",
+            "/vault/mine/share",
+            form_headers(&cookie),
+            Some(Body::from("email=bob%40example.com&role=reader")),
+        )
+        .await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vault/mine/share/revoke",
+            form_headers(&cookie),
+            Some(Body::from("email=bob%40example.com")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(app, "GET", "/vault/mine/share", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(
+            !body.contains("bob@example.com"),
+            "revoked row is gone: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn share_hide_removes_from_own_view_only() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vault/demo/share/hide",
+            form_headers(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        // Gone from the sharee's index...
+        let res = req(app.clone(), "GET", "/", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(
+            !body.contains("/vault/demo/"),
+            "hidden vault gone from sharee view: {body}"
+        );
+        // ...but the owner's share list still shows the row.
+        let admin = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/share", cookie_hdr(&admin), None).await;
+        let body = body_text(res).await;
+        assert!(
+            body.contains("pal@example.com"),
+            "owner still sees the (hidden) share: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn share_page_escapes_email() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        req(
+            app.clone(),
+            "POST",
+            "/vault/mine/share",
+            form_headers(&cookie),
+            Some(Body::from("email=evi%3Cb%3E%40x.com&role=reader")),
+        )
+        .await;
+        let res = req(app, "GET", "/vault/mine/share", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(body.contains("&lt;b&gt;"), "email is escaped: {body}");
+        assert!(!body.contains("evi<b>"), "no raw markup from email: {body}");
     }
 }
