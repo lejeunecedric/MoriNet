@@ -104,6 +104,8 @@
 
 - **2026-10-25 (10.1)** — Home UX livrée en local : index 3 sections (helper vault_row unique = parité structurelle), Edit (rename + re-source + allow_reshare), partage direct par email (vault_shares reader/writer, hidden per-sharee, pending inconnus, re-partage gated), page Stats (panneau owner vs compteur perso pour partagés), access_log best-effort web+MCP (purge 90 j au boot), vault global « MoriNet Documentation » seedé au boot (6 pages EN embarquées, marqueur idempotent, grant every-boot). 262 tests. E2E fresh-install vérifié (3 boots, édition opérateur préservée). Pitfall exécutants : lire server.rs/store.rs par fenêtres ≤100 lignes (3 agents morts à 262k tokens) ; un run = une tâche.
 
+- **2026-10-25 (v1.0.0)** — RELEASE v1.0.0 : scripts/release.sh corrigé (guard lib.rs bumpé atomiquement, no-op toléré), gate check.sh, tag v1.0.0, GitHub release draft→assets→publish (id 423655496, asset x86_64 + sha256), deploy direct holldemo → serveur en 1.0.0, /mcp 401, vault docs seedé sur la démo, home 3 sections live. Frictions : PAT fine-grained créé read-only (403 jusqu'à Contents=Read and write) ; --follow-tags ne pousse pas les tags légers.
+
 ## Stats
 
 - Planning files: 5 (ROADMAP, REQUIREMENTS, STATE, index, Phase 0 PLAN)

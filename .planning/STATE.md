@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Charger un vault Obsidian/llm-wiki et le servir instantanément en site mdBook navigable, multi-utilisateurs et sécurisé.
-**Current focus:** Phase 11 — polish v1.0 (planned, ready to execute)
+**Current focus:** v1.0.0 LIVE — milestone complete; next: post v1.0 backlog
 
 ## Current Position
 
-Phase: 10.1 complete · next 11 of 12 (polish v1.0)
-Plan: Phase 10.1 executed 4/4 (262 tests green); Phase 11 planned (3 plans)
+Phase: 11 of 12 COMPLETE — v1.0.0 released 2026-10-25
+Plan: Phase 11 executed 3/3 — v1.0.0 released (GitHub release + assets) and deployed to demo (270 tests green)
 Status: Ready to execute
 Last activity: 2026-10-25 -- Phase 10.1 planning complete
 
