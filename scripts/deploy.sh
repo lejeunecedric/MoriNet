@@ -17,13 +17,14 @@ cargo build --release
 ./target/release/morinet --version
 
 echo "==> scp to staging (never overwrite the running binary: ETXTBSY)"
-ssh "$DEPLOY_HOST" 'mkdir -p /opt/morinet/staging'
-scp target/release/morinet "$DEPLOY_HOST:/opt/morinet/staging/morinet"
+# /opt/morinet is root-owned; stage in the user's home and sudo-mv across.
+ssh "$DEPLOY_HOST" 'mkdir -p ~/morinet-staging'
+scp target/release/morinet "$DEPLOY_HOST:~/morinet-staging/morinet"
 
 echo "==> swap + restart + health"
 ssh "$DEPLOY_HOST" '
-  mv -f /opt/morinet/staging/morinet /opt/morinet/bin/morinet
-  chmod +x /opt/morinet/bin/morinet
+  sudo -n mv -f ~/morinet-staging/morinet /opt/morinet/bin/morinet
+  sudo -n chmod +x /opt/morinet/bin/morinet
   /opt/morinet/bin/morinet --version
   sudo -n systemctl restart morinet
 '
