@@ -1,5 +1,5 @@
-//! Server configuration loading (Phase 1: `[server]`, `[session]` sections;
-//! admin credentials come from the environment until Phase 2 adds the DB).
+//! Server configuration loading (`[server]`, `[session]`, `[storage]`, `[admin]`, ...);
+//! admin credentials come from env vars or the `[admin]` section as fallback.
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,19 @@ pub struct FileConfig {
     /// stays usable and the admin falls back to the manual flow.
     #[serde(default)]
     pub smtp: SmtpConfig,
+    /// Bootstrap admin credentials (fallback when the env vars are absent).
+    #[serde(default)]
+    pub admin: AdminSection,
+}
+
+/// `[admin]` section: bootstrap admin credentials written by `morinet init`.
+/// Env vars `MORINET_ADMIN_EMAIL` / `MORINET_ADMIN_PASSWORD` take precedence.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AdminSection {
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -123,8 +136,8 @@ pub fn load_config(path: &Path) -> anyhow::Result<FileConfig> {
 /// Resolve the final runtime config: file values + env overrides.
 ///
 /// Precedence for the cookie secret: `MORINET_COOKIE_SECRET` env > `[session].cookie_secret`.
-/// Admin credentials come ONLY from env in Phase 1 (single hardcoded admin, staging-grade).
-/// Phase 2 replaces this with the SQLite users table + bcrypt.
+/// Admin credentials: `MORINET_ADMIN_EMAIL` / `MORINET_ADMIN_PASSWORD` env >
+/// `[admin]` section in the config file (bootstrap only — the DB users table wins).
 pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Result<RuntimeConfig> {
     let cookie_secret = std::env::var(ENV_COOKIE_SECRET)
         .ok()
@@ -135,9 +148,13 @@ pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Resu
             )
         })?;
     let admin_email = std::env::var(ENV_ADMIN_EMAIL)
-        .map_err(|_| anyhow::anyhow!("missing admin email: set {ENV_ADMIN_EMAIL}"))?;
+        .ok()
+        .or_else(|| cfg.admin.email.clone().filter(|s| !s.is_empty()))
+        .ok_or_else(|| anyhow::anyhow!("missing admin email: set {ENV_ADMIN_EMAIL}"))?;
     let admin_password = std::env::var(ENV_ADMIN_PASSWORD)
-        .map_err(|_| anyhow::anyhow!("missing admin password: set {ENV_ADMIN_PASSWORD}"))?;
+        .ok()
+        .or_else(|| cfg.admin.password.clone().filter(|s| !s.is_empty()))
+        .ok_or_else(|| anyhow::anyhow!("missing admin password: set {ENV_ADMIN_PASSWORD}"))?;
 
     Ok(RuntimeConfig {
         bind_addr: cfg.server.bind_addr,
@@ -308,6 +325,71 @@ starttls = true
         }
         if let Some(v) = saved_pass {
             std::env::set_var(ENV_ADMIN_PASSWORD, v);
+        }
+    }
+
+    #[test]
+    fn file_config_without_admin_section_deserializes() {
+        let cfg: FileConfig = toml::from_str("[server]\n").unwrap();
+        assert!(cfg.admin.email.is_none());
+        assert!(cfg.admin.password.is_none());
+    }
+
+    #[test]
+    fn resolve_admin_from_file_section_when_env_absent() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> = [
+            (ENV_COOKIE_SECRET, std::env::var(ENV_COOKIE_SECRET).ok()),
+            (ENV_ADMIN_EMAIL, std::env::var(ENV_ADMIN_EMAIL).ok()),
+            (ENV_ADMIN_PASSWORD, std::env::var(ENV_ADMIN_PASSWORD).ok()),
+        ]
+        .into_iter()
+        .collect();
+        std::env::remove_var(ENV_COOKIE_SECRET);
+        std::env::remove_var(ENV_ADMIN_EMAIL);
+        std::env::remove_var(ENV_ADMIN_PASSWORD);
+        let dir = std::env::temp_dir().join(format!("morinet-cfg-admin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_cfg(
+            &dir,
+            "[server]\n[session]\ncookie_secret = \"filesecret\"\n[admin]\nemail = \"file-admin@example.com\"\npassword = \"test-pass-9f3a\"\n",
+        );
+        let cfg = load_config(&path).unwrap();
+        let rt = resolve(cfg, None).expect("resolve should fall back to [admin] section");
+        assert_eq!(rt.admin_email, "file-admin@example.com");
+        assert_eq!(rt.admin_password, "test-pass-9f3a");
+        std::fs::remove_dir_all(&dir).ok();
+        for (k, v) in saved {
+            match v {
+                Some(s) => std::env::set_var(k, s),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_env_admin_overrides_file_section() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> = [
+            (ENV_ADMIN_EMAIL, std::env::var(ENV_ADMIN_EMAIL).ok()),
+            (ENV_ADMIN_PASSWORD, std::env::var(ENV_ADMIN_PASSWORD).ok()),
+        ]
+        .into_iter()
+        .collect();
+        std::env::set_var(ENV_ADMIN_EMAIL, "env-admin@example.com");
+        std::env::set_var(ENV_ADMIN_PASSWORD, "env-pass");
+        let cfg: FileConfig = toml::from_str(
+            "[session]\ncookie_secret = \"filesecret\"\n[admin]\nemail = \"file-admin@example.com\"\npassword = \"test-pass-9f3a\"\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("resolve with env admin set");
+        assert_eq!(rt.admin_email, "env-admin@example.com");
+        assert_eq!(rt.admin_password, "env-pass");
+        for (k, v) in saved {
+            match v {
+                Some(s) => std::env::set_var(k, s),
+                None => std::env::remove_var(k),
+            }
         }
     }
 }
