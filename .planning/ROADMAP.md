@@ -271,6 +271,25 @@ surface parente.
 
 ---
 
+### Phase 10.1: Home UX — vault actions, share by email, statistics (INSERTED)
+
+**Goal:** The landing page is the vault cockpit: every vault card exposes Edit / Refresh / Delete / Share / Statistics; "Shared with me" renders with the same card layout and actions as "My vaults"; "Load a vault" becomes its own section.
+**Requirements**: REQ-VLT-009..012 (new)
+**Depends on:** Phase 10
+**Plans:** 0 plans
+
+**Criteria:**
+- Index redesign: section "My vaults" (cards with Edit, Refresh, Delete, Share, Statistics), section "Shared with me" (identical card layout/actions), section "Load a vault" (moved out of the My-vaults panel)
+- **Edit**: rename vault + change GitHub source URL + per-vault `allow_reshare` toggle (owner decides whether sharees may re-share)
+- **Share**: direct user-to-user sharing by email (new `vault_shares` table: vault, email, role reader/writer); sharee sees the vault in "Shared with me"; re-share only when `allow_reshare`
+- **Statistics**: per-vault page — page count, disk size, last refresh, source URL + access counts (web page views + MCP tool calls) from a new lightweight `access_log` table (simplified first pass: counts per vault/day/source, top pages)
+- Access logging wired into `vault_file`/`vault_index` and the 4 MCP tools (best-effort, never fails the request)
+- ACL: `accessible_vaults` extended to union group grants + direct email shares; WebDAV + MCP honor shares
+- Tests: share/reshare/ACL matrix + stats aggregation; UI parity check (same markup for both sections)
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 10.1 to break down)
+
 ## Phase 11: polish (v1.0)
 
 **Goal**: ready to ship.

@@ -98,6 +98,10 @@
 | REQ-VLT-006    | A user always has 'write' on their own personal vault                      | PUT on own vault succeeds             |
 | REQ-VLT-007    | Admins see every vault (global and personal)                               | admin list shows all                  |
 | REQ-VLT-008    | `create_personal_vault` refuse au-delà de la limite du groupe (les partages ne comptent pas) | 3e création par un membre de `free` → erreur |
+| REQ-VLT-009    | Le propriétaire peut renommer un vault perso et changer son URL source (Edit) | rename + re-source via UI, refresh suit la nouvelle URL |
+| REQ-VLT-010    | Partage direct d'un vault par email à un utilisateur (rôles reader/writer), avec toggle `allow_reshare` du propriétaire | le partagé voit le vault dans "Shared with me" ; re-partage refusé si `allow_reshare` off |
+| REQ-VLT-011    | Page Statistics par vault : nb pages, taille, dernière refresh, source + compteurs d'accès (web + MCP) | `/vault/{slug}/stats` affiche les compteurs ; logging best-effort (jamais de 500) |
+| REQ-VLT-012    | "Shared with me" rendu identiquement à "My vaults" (mêmes cartes/actions) ; "Load a vault" est une section séparée | markup identique des deux sections ; 3 sections sur `/` |
 
 ## ACCOUNT — Self-service profile
 
@@ -202,6 +206,7 @@
 - Phase 7: REQ-UX-001..007 (vault management UX — inserted before MCP)
 - Phase 8: REQ-MCP-001..007 (renumbered)
 - Phase 8 (access-model, quotas): REQ-GRP-001..008, REQ-VLT-001..008
+- Phase 10.1 (home-ux): REQ-VLT-009..012
 - Phase 9: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
 - Phase 8b: REQ-OBSFMT-001..006 (converter llm-wiki/Obsidian → mdBook)
 - Phase 9 pull-forward (2026-10-21, feedback user) : REQ-ACC-003 (`POST /logout`), REQ-NAV-006 (nav claire), REQ-ADMIN-007 (bouton About version + repo)
