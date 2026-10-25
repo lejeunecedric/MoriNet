@@ -10,7 +10,10 @@ Highlights:
 - llm-wiki / Obsidian conversion: `[[wikilinks]]`, frontmatter, auto-generated summaries
 - Multi-vault with groups, quotas, and personal vaults (pull your own from GitHub)
 - WebDAV — drop a note in, it goes live
+- Share vaults with other users by email (reader/writer, re-share control)
+- Per-vault statistics: pages, size, and web + MCP access counts
 - MCP over StreamableHttp with per-user API tokens
+- Built-in "MoriNet Documentation" vault on every install
 - Admin UI, email invites and password reset
 - Single Rust binary
 
