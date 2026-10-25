@@ -2221,7 +2221,7 @@ mod tests {
             cookie_secret: b"test-secret-0123456789abcdef".to_vec(),
             cookie_name: "morinet_session".to_string(),
             admin_email: "admin@example.com".to_string(),
-            admin_password: "[REDACTED-DEV-PASSWORD]".to_string(),
+            admin_password: "test-pass-9f3a".to_string(),
             smtp: Default::default(), // Phase 5: no SMTP in tests unless asked
             data_dir: std::env::temp_dir().join("morinet-test-data"),
             vault_book_dir: None, // Phase 2: book dirs live in the vaults table
@@ -2231,7 +2231,7 @@ mod tests {
     async fn fixture_store() -> Store {
         let store = Store::connect_memory().await.expect("memory store");
         store
-            .ensure_admin("admin@example.com", "[REDACTED-DEV-PASSWORD]")
+            .ensure_admin("admin@example.com", "test-pass-9f3a")
             .await
             .unwrap();
         let book = std::env::temp_dir().join(format!("morinet-vault-{}", std::process::id()));
@@ -3855,7 +3855,7 @@ mod tests {
             app,
             "PROPFIND",
             "/webdav/dav",
-            basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+            basic("admin@example.com", "test-pass-9f3a"),
             None,
         )
         .await;
@@ -3879,7 +3879,7 @@ mod tests {
         seed_dav_vault_named(&state, "propfind-depth0-returns-only-the-collection").await;
         // No Depth header at all => depth 0 (RFC 4918 default).
         let mut b = Request::builder().method("PROPFIND").uri("/webdav/dav");
-        for (k, v) in basic("admin@example.com", "[REDACTED-DEV-PASSWORD]").iter() {
+        for (k, v) in basic("admin@example.com", "test-pass-9f3a").iter() {
             b = b.header(k, v);
         }
         let res = app.oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
@@ -3901,7 +3901,7 @@ mod tests {
             app,
             "GET",
             "/webdav/dav/src/note.md",
-            basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+            basic("admin@example.com", "test-pass-9f3a"),
             None,
         )
         .await;
@@ -3928,7 +3928,7 @@ mod tests {
                 app.clone(),
                 "GET",
                 uri,
-                basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+                basic("admin@example.com", "test-pass-9f3a"),
                 None,
             )
             .await;
@@ -3995,7 +3995,7 @@ mod tests {
             app,
             "PUT",
             "/webdav/dav/src/new-note.md",
-            basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+            basic("admin@example.com", "test-pass-9f3a"),
             Some("# Fresh note\n\nwritten over webdav\n"),
         )
         .await;
@@ -4019,7 +4019,7 @@ mod tests {
             app,
             "PUT",
             "/webdav/wikidav/concepts/new.md",
-            basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+            basic("admin@example.com", "test-pass-9f3a"),
             Some("---\ntitle: New Page\ntype: concept\n---\n\nFresh.\n"),
         )
         .await;
@@ -4091,7 +4091,7 @@ mod tests {
                 app.clone(),
                 "PUT",
                 uri,
-                basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+                basic("admin@example.com", "test-pass-9f3a"),
                 Some("pwned"),
             )
             .await;
@@ -4116,7 +4116,7 @@ mod tests {
             app,
             "PUT",
             "/webdav/dav/../escaped.md",
-            basic("admin@example.com", "[REDACTED-DEV-PASSWORD]"),
+            basic("admin@example.com", "test-pass-9f3a"),
             Some("nope"),
         )
         .await;
@@ -4396,7 +4396,7 @@ mod tests {
 
         let uid = state
             .store
-            .verify_login("admin@example.com", "[REDACTED-DEV-PASSWORD]")
+            .verify_login("admin@example.com", "test-pass-9f3a")
             .await
             .unwrap()
             .unwrap()
@@ -4416,12 +4416,12 @@ mod tests {
         let (app, state) = test_router().await;
         state
             .store
-            .create_user("plain@mcp.test", "[REDACTED-DEV-PASSWORD]", "reader")
+            .create_user("plain@mcp.test", "test-pass-9f3a", "reader")
             .await
             .unwrap();
         let uid = state
             .store
-            .verify_login("plain@mcp.test", "[REDACTED-DEV-PASSWORD]")
+            .verify_login("plain@mcp.test", "test-pass-9f3a")
             .await
             .unwrap()
             .unwrap()
@@ -4446,7 +4446,7 @@ mod tests {
         let (app, state) = test_router().await;
         let uid = state
             .store
-            .verify_login("admin@example.com", "[REDACTED-DEV-PASSWORD]")
+            .verify_login("admin@example.com", "test-pass-9f3a")
             .await
             .unwrap()
             .unwrap()
@@ -4528,7 +4528,7 @@ mod tests {
         let cookie = admin_cookie(&app).await;
         let uid = state
             .store
-            .verify_login("admin@example.com", "[REDACTED-DEV-PASSWORD]")
+            .verify_login("admin@example.com", "test-pass-9f3a")
             .await
             .unwrap()
             .expect("admin logs in")
