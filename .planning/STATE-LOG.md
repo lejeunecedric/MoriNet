@@ -102,6 +102,8 @@
 
 - **2026-10-25 (v0.1.21)** — premier deploy 100 % local : `scripts/deploy.sh` (SSH serveur de démo — hôte dans la note locale gitignorée, staging ~ + sudo mv + restart + /health). Pitfall : le binaire local etait lie a `libssl.so.4` (Ubuntu 26.10) absent du serveur -> `git2` en `vendored-openssl`, plus aucune dep openssl dynamique (verifie par ldd). Guard `version_matches_cargo_pkg_version` bump a chaque release (lib.rs).
 
+- **2026-10-25 (10.1)** — Home UX livrée en local : index 3 sections (helper vault_row unique = parité structurelle), Edit (rename + re-source + allow_reshare), partage direct par email (vault_shares reader/writer, hidden per-sharee, pending inconnus, re-partage gated), page Stats (panneau owner vs compteur perso pour partagés), access_log best-effort web+MCP (purge 90 j au boot), vault global « MoriNet Documentation » seedé au boot (6 pages EN embarquées, marqueur idempotent, grant every-boot). 262 tests. E2E fresh-install vérifié (3 boots, édition opérateur préservée). Pitfall exécutants : lire server.rs/store.rs par fenêtres ≤100 lignes (3 agents morts à 262k tokens) ; un run = une tâche.
+
 ## Stats
 
 - Planning files: 5 (ROADMAP, REQUIREMENTS, STATE, index, Phase 0 PLAN)
