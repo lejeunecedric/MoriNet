@@ -167,6 +167,18 @@ impl MoriMcp {
         crate::webdav::source_dir_of(Path::new(&entry.vault.book_path))
     }
 
+    /// Best-effort access log: spawn so a slow or failing insert can never
+    /// fail the tool call (same contract as the web layer, plan 02).
+    fn log_access(&self, slug: &str, path: &str) {
+        let store = self.store.clone();
+        let email = self.email.clone();
+        let slug = slug.to_string();
+        let path = path.to_string();
+        tokio::spawn(async move {
+            let _ = store.log_access(&email, &slug, "mcp", &path).await;
+        });
+    }
+
     /// The vaults the token's user can access (personal + shared via groups).
     #[tool(description = "List the vaults this token's user can access")]
     pub async fn list_vaults(&self) -> Result<CallToolResult, ErrorData> {
@@ -185,6 +197,7 @@ impl MoriMcp {
                 })
             })
             .collect();
+        self.log_access("-", "-");
         Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&vaults).unwrap_or_else(|_| "[]".into()),
         )]))
@@ -210,6 +223,7 @@ impl MoriMcp {
             return tool_error("no such folder");
         }
         let files = list_md_files(&base);
+        self.log_access(&p.slug, p.path.as_deref().unwrap_or("-"));
         Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&files).unwrap_or_else(|_| "[]".into()),
         )]))
@@ -232,7 +246,10 @@ impl MoriMcp {
             return tool_error("no such note");
         }
         match std::fs::read_to_string(&full) {
-            Ok(content) => Ok(CallToolResult::success(vec![ContentBlock::text(content)])),
+            Ok(content) => {
+                self.log_access(&p.slug, &p.path);
+                Ok(CallToolResult::success(vec![ContentBlock::text(content)]))
+            }
             Err(_) => tool_error("could not read the note"),
         }
     }
@@ -262,6 +279,9 @@ impl MoriMcp {
             }
         }
         let hits = search_md(&vaults, &p.query, 50);
+        for (slug, _) in &vaults {
+            self.log_access(slug, "-");
+        }
         Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into()),
         )]))
@@ -390,5 +410,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bad.is_error, Some(true), "traversal refused");
+    }
+
+    // ---- access logging (plan 10.1-03, REQ-VLT-011) ----
+
+    fn text(res: &CallToolResult) -> String {
+        match &res.content[0] {
+            ContentBlock::Text(t) => t.text.clone(),
+            other => panic!("expected text block, got {other:?}"),
+        }
+    }
+
+    /// Poll briefly for a specific spawned best-effort row to land.
+    async fn poll_log(s: &Store, email: &str, want: (&str, &str, &str)) -> bool {
+        for _ in 0..40 {
+            let hit: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM access_log WHERE email = ? AND vault_slug = ? AND source = ? AND path = ? LIMIT 1",
+            )
+            .bind(email)
+            .bind(want.0)
+            .bind(want.1)
+            .bind(want.2)
+            .fetch_optional(&s.pool)
+            .await
+            .unwrap();
+            if hit.is_some() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn mcp_read_note_logs_access() {
+        let s = store().await;
+        s.ensure_admin("log@mcp.test", "pw").await.unwrap();
+        let src = tmpdir("log-read");
+        std::fs::write(src.join("note.md"), "# Note\ncontent").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        s.seed_vault("lr", "Log read", &src.join("book"))
+            .await
+            .unwrap();
+
+        let m = MoriMcp::new(s.clone(), "log@mcp.test".into());
+        let ok = m
+            .read_note(Parameters(SlugPath {
+                slug: "lr".into(),
+                path: "note.md".into(),
+            }))
+            .await
+            .unwrap();
+        assert_ne!(ok.is_error, Some(true));
+
+        let rows = poll_log(&s, "log@mcp.test", ("lr", "mcp", "note.md")).await;
+        assert!(rows, "expected (lr, mcp, note.md) row for log@mcp.test");
+    }
+
+    #[tokio::test]
+    async fn mcp_list_and_search_log() {
+        let s = store().await;
+        s.ensure_admin("log2@mcp.test", "pw").await.unwrap();
+        let src = tmpdir("log-list");
+        std::fs::write(src.join("note.md"), "needle here").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        s.seed_vault("ll", "Log list", &src.join("book"))
+            .await
+            .unwrap();
+
+        let m = MoriMcp::new(s.clone(), "log2@mcp.test".into());
+        let res = m.list_vaults().await.unwrap();
+        assert_ne!(res.is_error, Some(true));
+        let rows = poll_log(&s, "log2@mcp.test", ("-", "mcp", "-")).await;
+        assert!(rows, "list_vaults logs slug='-' path='-'");
+
+        m.search_notes(Parameters(SearchParams {
+            query: "needle".into(),
+            slug: Some("ll".into()),
+        }))
+        .await
+        .unwrap();
+        let rows = poll_log(&s, "log2@mcp.test", ("ll", "mcp", "-")).await;
+        assert!(rows, "slug-scoped search logs one row for that slug");
+    }
+
+    #[tokio::test]
+    async fn mcp_denied_call_logs_nothing() {
+        let s = store().await;
+        s.create_user("nobody@mcp.test", "pw", "reader")
+            .await
+            .unwrap();
+        let m = MoriMcp::new(s.clone(), "nobody@mcp.test".into());
+        let res = m
+            .read_note(Parameters(SlugPath {
+                slug: "ghost".into(),
+                path: "x.md".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(res.is_error, Some(true));
+        // Give any (wrongly) spawned insert a chance to land before asserting.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT vault_slug, source, path FROM access_log WHERE email = ?",
+        )
+        .bind("nobody@mcp.test")
+        .fetch_all(&s.pool)
+        .await
+        .unwrap();
+        assert!(rows.is_empty(), "denied calls log nothing: {rows:?}");
     }
 }
