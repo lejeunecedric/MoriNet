@@ -19,7 +19,7 @@ use crate::browse;
 use crate::config::RuntimeConfig;
 use crate::email::{invitation_email, reset_email, EmailSender, InMemorySender, SmtpSender};
 use crate::session::{Claims, SessionCodec, DEFAULT_TTL_SECS};
-use crate::store::Store;
+use crate::store::{AccessibleVault, Store};
 use crate::webdav;
 
 /// Invitation links are valid 24h (REQ-EMAIL-005).
@@ -417,69 +417,104 @@ async fn logout(State(state): State<SharedState>) -> Response {
     (headers, Redirect::to("/login")).into_response()
 }
 
+/// Render ONE vault row `<li>`. Both index lists call this single helper, so
+/// "My vaults" and "Shared with me" rows are structurally identical by
+/// construction (10.1-02 Task 1: parity is impossible to break).
+///
+/// `can_share` is computed by the caller via `store.can_share` — it only
+/// matters for shared rows; owner rows always render the full action set.
+fn vault_row(a: &AccessibleVault, can_share: bool) -> String {
+    let slug = html_escape(&a.vault.slug);
+    let name = html_escape(&a.vault.name);
+    let tag = if a.personal {
+        "private"
+    } else {
+        a.role.as_str()
+    };
+    let mut actions = String::new();
+    if a.personal {
+        // The owner manages their own vault: edit settings, pull upstream
+        // updates, share it, inspect stats, or remove it (which frees the
+        // quota slot). Quiet styling on Delete — the accent stays on the one
+        // primary action per row.
+        actions.push_str(&format!(
+            r#"<a class="btn-ghost" href="/vault/{s}/edit">Edit</a><form method="post" action="/vaults/{s}/refresh"><button type="submit" class="btn-ghost">Refresh</button></form><a class="btn-ghost" href="/vault/{s}/share">Share</a><a class="btn-ghost" href="/vault/{s}/stats">Statistics</a><form method="post" action="/vaults/{s}/delete" onsubmit="return confirm('Remove this vault from your collection?')"><button type="submit" class="btn-quiet">Delete</button></form>"#,
+            s = slug,
+        ));
+    } else {
+        // A sharee / group member sees the role-gated subset: Refresh only
+        // for writers, Share only when re-sharing is allowed, Statistics
+        // always, and "Remove" (hide from my view) only for direct shares.
+        if a.role == "write" {
+            actions.push_str(&format!(
+                r#"<form method="post" action="/vaults/{s}/refresh"><button type="submit" class="btn-ghost">Refresh</button></form>"#,
+                s = slug,
+            ));
+        }
+        if can_share {
+            actions.push_str(&format!(
+                r#"<a class="btn-ghost" href="/vault/{s}/share">Share</a>"#,
+                s = slug,
+            ));
+        }
+        actions.push_str(&format!(
+            r#"<a class="btn-ghost" href="/vault/{s}/stats">Statistics</a>"#,
+            s = slug,
+        ));
+        if a.direct_share {
+            actions.push_str(&format!(
+                r#"<form method="post" action="/vault/{s}/share/hide"><button type="submit" class="btn-quiet">Remove</button></form>"#,
+                s = slug,
+            ));
+        }
+    }
+    format!(
+        r#"<li><a class="vault-name" href="/vault/{s}/">{n}</a> <small>({t})</small><span class="vault-actions">{acts}</span></li>"#,
+        s = slug,
+        n = name,
+        t = tag,
+        acts = actions,
+    )
+}
+
+/// The vault cockpit (10.1-02): three panels — My vaults, Shared with me,
+/// Load a vault. Both lists render through `vault_row` (structural parity).
 async fn index(State(state): State<SharedState>, Extension(claims): Extension<Claims>) -> Response {
-    // Phase 8: the listing uses the group model, so a user sees their own
-    // personal vaults plus the global ones their groups are granted.
+    // The listing uses the group + share model (plan 01): own personal vaults
+    // plus everything reached through groups or direct email shares.
     let accessible = state
         .store
         .accessible_vaults(&claims.email)
         .await
         .unwrap_or_default();
-    let mut personal_items = String::new();
-    let mut global_items = String::new();
+    let mut own_items = String::new();
+    let mut shared_items = String::new();
     for a in &accessible {
-        let mut line = format!(
-            r#"<li><a class="vault-name" href="/vault/{}/">{}</a> <small>({})</small><span class="vault-actions">"#,
-            html_escape(&a.vault.slug),
-            html_escape(&a.vault.name),
-            if a.personal {
-                "private"
-            } else {
-                a.role.as_str()
-            },
-        );
         if a.personal {
-            // The owner manages their own vault: pull upstream updates or
-            // remove it (which frees the quota slot). Quiet buttons — the
-            // accent is reserved for the one primary action on the page.
-            line.push_str(&format!(
-                r#"<form method="post" action="/vaults/{s}/refresh"><button type="submit" class="btn-ghost">Refresh</button></form><form method="post" action="/vaults/{s}/delete" onsubmit="return confirm('Remove this vault from your collection?')"><button type="submit" class="btn-quiet">Delete</button></form>"#,
-                s = html_escape(&a.vault.slug),
-            ));
-        }
-        line.push_str("</span></li>\n");
-        if a.personal {
-            personal_items.push_str(&line);
+            own_items.push_str(&vault_row(a, false));
+            own_items.push('\n');
         } else {
-            global_items.push_str(&line);
+            // Per-row gate for the Share button (owner | admin | sharee with
+            // allow_reshare). A store error degrades to "no Share button".
+            let can_share = state
+                .store
+                .can_share(&claims.email, &a.vault.slug)
+                .await
+                .unwrap_or(false);
+            shared_items.push_str(&vault_row(a, can_share));
+            shared_items.push('\n');
         }
     }
+    let list = |items: &str, empty: &str| -> String {
+        if items.is_empty() {
+            format!(r#"<p class="empty">{empty}</p>"#)
+        } else {
+            format!(r#"<ul class="vault-list">{items}</ul>"#)
+        }
+    };
     // The shared header carries the admin menu (role=admin only) — no extra
-    // admin link here (the old paragraph was redundant with it).
-    // "My vaults" is always rendered: the load form is how a user with no
-    // vault yet (e.g. the demo account) loads one (REQ-VLT-005).
-    // The page title heads the list — no second "My vaults" heading inside a
-    // panel (it read as the page repeating itself).
-    let personal_section = format!(
-        "<section class=\"panel\">\n{list}\n</section>\n<section class=\"panel\">\n<h2>Load a vault</h2>\n<form method=\"post\" action=\"/vaults/create\" class=\"stacked\">\n  <div class=\"field\"><label for=\"lv-name\">Name</label><input id=\"lv-name\" type=\"text\" name=\"name\" placeholder=\"e.g. My Wiki\"></div>\n  <div class=\"field field-wide\"><label for=\"lv-url\">GitHub URL</label><input id=\"lv-url\" type=\"url\" name=\"url\" required placeholder=\"https://github.com/owner/repo\"></div>\n  <div class=\"field\"><label for=\"lv-token\">Token <small>(optional)</small></label><input id=\"lv-token\" type=\"text\" name=\"token\" placeholder=\"private repos only\"></div>\n  <button type=\"submit\">Load vault</button>\n</form>\n{autofill}\n</section>\n",
-        list = if personal_items.is_empty() {
-            "<p class=\"empty\">No personal vaults yet.</p>".to_string()
-        } else {
-            format!("<ul class=\"vault-list\">{personal_items}</ul>")
-        },
-        autofill = AUTOFILL_NAME_JS,
-    );
-    // "Shared with me" is always a real section (heading + content) — the old
-    // empty case dropped a bare paragraph with no heading below the page.
-    let global_section = format!(
-        "<section class=\"panel\">\n<h2>Shared with me</h2>\n{shared}\n</section>\n",
-        shared = if global_items.is_empty() {
-            "<p class=\"empty\">No shared vaults yet.</p>".to_string()
-        } else {
-            format!("<ul class=\"vault-list\">{global_items}</ul>")
-        },
-    );
-
+    // admin link here. The "Load a vault" panel is always rendered: it is how
+    // a user with no vault yet (e.g. the demo account) loads one (REQ-VLT-005).
     let html = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -487,12 +522,31 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
 <link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   {header}
-  <h1>My vaults</h1>
-  {personal_section}
-  {global_section}
+  <h1>Vaults</h1>
+  <section class="panel">
+<h2>My vaults</h2>
+{own}
+</section>
+<section class="panel">
+<h2>Shared with me</h2>
+{shared}
+</section>
+<section class="panel">
+<h2>Load a vault</h2>
+<form method="post" action="/vaults/create" class="stacked">
+  <div class="field"><label for="lv-name">Name</label><input id="lv-name" type="text" name="name" placeholder="e.g. My Wiki"></div>
+  <div class="field field-wide"><label for="lv-url">GitHub URL</label><input id="lv-url" type="url" name="url" required placeholder="https://github.com/owner/repo"></div>
+  <div class="field"><label for="lv-token">Token <small>(optional)</small></label><input id="lv-token" type="text" name="token" placeholder="private repos only"></div>
+  <button type="submit">Load vault</button>
+</form>
+{autofill}
+</section>
 </body>
 </html>"#,
-        header = account_menu(&state, &claims).await
+        header = account_menu(&state, &claims).await,
+        own = list(&own_items, "No personal vaults yet."),
+        shared = list(&shared_items, "No shared vaults yet."),
+        autofill = AUTOFILL_NAME_JS,
     );
     Html(html).into_response()
 }
@@ -2429,6 +2483,128 @@ mod tests {
         let body = String::from_utf8_lossy(&body);
         assert!(body.contains("/vault/demo/"), "index lists demo: {body}");
         assert!(body.contains("Demo vault"), "index shows name: {body}");
+    }
+
+    // ---------- Phase 10.1: 3-section index (10.1-02 Task 1) ----------
+
+    fn cookie_hdr(cookie: &str) -> HeaderMap {
+        HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())])
+    }
+
+    async fn body_text(res: Response) -> String {
+        String::from_utf8_lossy(&to_bytes(res.into_body(), 65536).await.unwrap()).to_string()
+    }
+
+    /// Seed `pal@example.com` (reader) owning a personal vault `mine`, plus a
+    /// direct share of the fixture `demo` vault at the given role — one row
+    /// per index section.
+    async fn seed_owner_and_shared_share(state: &SharedState, share_role: &str) {
+        state
+            .store
+            .create_user("pal@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let book = std::env::temp_dir().join(format!(
+            "morinet-vault-{}-mine-{}",
+            std::process::id(),
+            share_role
+        ));
+        std::fs::create_dir_all(&book).unwrap();
+        std::fs::write(
+            book.join("index.html"),
+            "<html><body>mine page</body></html>",
+        )
+        .unwrap();
+        state
+            .store
+            .create_personal_vault("pal@example.com", "mine", "My Book", &book)
+            .await
+            .unwrap();
+        state
+            .store
+            .share_vault("demo", "pal@example.com", share_role)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn index_has_three_sections() {
+        let (app, _) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert_eq!(
+            body.matches("<section class=\"panel\"").count(),
+            3,
+            "exactly three panels: {body}"
+        );
+        assert!(
+            body.contains("<h2>My vaults</h2>"),
+            "my-vaults heading: {body}"
+        );
+        assert!(
+            body.contains("<h2>Shared with me</h2>"),
+            "shared heading: {body}"
+        );
+        assert!(
+            body.contains("<h2>Load a vault</h2>"),
+            "load heading: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_row_parity_between_sections() {
+        // Both lists render through the SAME vault_row helper: identical class
+        // structure and the Statistics action on every row.
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("/vault/mine/"), "own row: {body}");
+        assert!(body.contains("/vault/demo/"), "shared row: {body}");
+        // Structural parity: two rows, same markup skeleton, both with the
+        // Statistics action (the one action every row carries).
+        assert_eq!(body.matches("class=\"vault-name\"").count(), 2, "{body}");
+        assert_eq!(body.matches("class=\"vault-actions\"").count(), 2, "{body}");
+        assert_eq!(body.matches(">Statistics</a>").count(), 2, "{body}");
+    }
+
+    #[tokio::test]
+    async fn index_shared_writer_row_has_refresh() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "writer").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(
+            body.contains("action=\"/vaults/demo/refresh\""),
+            "writer share row has Refresh: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_shared_reader_row_has_no_refresh_no_edit() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(
+            !body.contains("action=\"/vaults/demo/refresh\""),
+            "reader share row has no Refresh: {body}"
+        );
+        assert!(
+            !body.contains("/vault/demo/edit"),
+            "reader share row has no Edit: {body}"
+        );
+        // The sharee's OWN row still carries the owner actions.
+        assert!(
+            body.contains("/vault/mine/edit"),
+            "own row has Edit: {body}"
+        );
     }
 
     #[tokio::test]
