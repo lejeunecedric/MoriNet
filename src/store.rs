@@ -913,6 +913,16 @@ impl Store {
         Ok(row.map(|(n,)| n))
     }
 
+    /// When the vault was last refreshed/re-synced (stats panel, REQ-VLT-011).
+    pub async fn vault_last_refreshed(&self, slug: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT last_refreshed_at FROM vaults WHERE slug = ?")
+                .bind(slug)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(t,)| t))
+    }
+
     /// How many personal vaults `email` owns (REQ-VLT-008).
     pub async fn count_personal_vaults(&self, email: &str) -> anyhow::Result<i64> {
         let (n,): (i64,) = sqlx::query_as(

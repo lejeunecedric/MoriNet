@@ -170,6 +170,7 @@ pub fn build_router_with_email(
         )
         .route("/vault/{slug}/share/revoke", post(vault_share_revoke))
         .route("/vault/{slug}/share/hide", post(vault_share_hide))
+        .route("/vault/{slug}/stats", get(vault_stats))
         .route("/vault", get(vault_root_redirect))
         .route("/vault/{slug}/", get(vault_index))
         .route("/vault/{slug}/{*rest}", get(vault_file))
@@ -613,16 +614,22 @@ async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str)
         Ok(meta) if meta.is_dir() => {
             let index = full.join("index.html");
             match tokio::fs::read(&index).await {
-                Ok(bytes) => (
-                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                    bytes,
-                )
-                    .into_response(),
+                Ok(bytes) => {
+                    // Successful serve: record the hit without ever letting a
+                    // store failure touch the response.
+                    log_web_access(state, email, slug, rel);
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        bytes,
+                    )
+                        .into_response()
+                }
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
             }
         }
         _ => match tokio::fs::read(&full).await {
             Ok(bytes) => {
+                log_web_access(state, email, slug, rel);
                 let ct = content_type(rel);
                 ([(axum::http::header::CONTENT_TYPE, ct)], bytes).into_response()
             }
@@ -2074,7 +2081,11 @@ async fn vault_share_add(
     if email.is_empty() {
         return error_page("the email is required");
     }
-    let role = if p.role == "writer" { "writer" } else { "reader" };
+    let role = if p.role == "writer" {
+        "writer"
+    } else {
+        "reader"
+    };
     if let Err(e) = state.store.share_vault(&slug, email, role).await {
         return error_page(&format!("could not share the vault: {e}"));
     }
@@ -2129,6 +2140,171 @@ async fn vault_share_hide(
         return error_page(&format!("could not hide the vault: {e}"));
     }
     Redirect::to("/").into_response()
+}
+
+/// Recursive byte sum over a directory. Unreadable entries are skipped and a
+/// missing dir yields 0 — the stats panel degrades to "—", never a 500.
+fn dir_size_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            total += dir_size_bytes(&p);
+        } else if let Ok(m) = std::fs::metadata(&p) {
+            total += m.len();
+        }
+    }
+    total
+}
+
+/// Human-readable size: plain bytes below 1 KiB, then KB/MB/GB with one decimal.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut v = bytes as f64;
+    let mut i = 0usize;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
+    }
+}
+
+/// Fire-and-forget web hit (REQ-VLT-012): the store error is dropped inside
+/// the spawned task, so a logging failure can never change the response.
+fn log_web_access(state: &AppState, email: &str, slug: &str, path: &str) {
+    let store = state.store.clone();
+    let email = email.to_string();
+    let slug = slug.to_string();
+    let path = path.to_string();
+    tokio::spawn(async move {
+        let _ = store.log_access(&email, &slug, "web", &path).await;
+    });
+}
+
+/// `GET /vault/{slug}/stats` (REQ-VLT-011). Owner/admin: full panel. Any
+/// other viewer WITH access (direct share hidden=0 or group grant — proven by
+/// their `accessible_vaults` row): ONLY their own hit count. No access: 403.
+async fn vault_stats(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+) -> Response {
+    let is_admin = state
+        .store
+        .role_for(&claims.email)
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("admin");
+    let accessible = state
+        .store
+        .accessible_vaults(&claims.email)
+        .await
+        .unwrap_or_default();
+    let Some(entry) = accessible.iter().find(|a| a.vault.slug == slug) else {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    };
+    if !(entry.personal || is_admin) {
+        // Sharee branch: a single line, nothing from the owner panel (T-10.1-07).
+        let n = state
+            .store
+            .stats_own_count(&slug, &claims.email)
+            .await
+            .unwrap_or(0);
+        let body = format!(
+            r#"<section class="panel">
+<h2>Statistics</h2>
+<p>You have accessed this vault {n} time(s).</p>
+</section>
+"#
+        );
+        return app_page("Statistics", &body);
+    }
+    let book_dir = PathBuf::from(&entry.vault.book_path);
+    let pages = webdav::source_dir_of(&book_dir)
+        .map(|d| crate::mcp::list_md_files(&d).len().to_string())
+        .unwrap_or_else(|| "—".to_string());
+    let size = if book_dir.is_dir() {
+        human_size(dir_size_bytes(&book_dir))
+    } else {
+        "—".to_string()
+    };
+    let last_refresh = state
+        .store
+        .vault_last_refreshed(&slug)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "—".to_string());
+    let source = state
+        .store
+        .vault_source(&slug)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    // Paths in the tables come from the request URL (attacker-controlled) —
+    // escape them like every other interpolated string (T-10.1-09).
+    let day_rows: String = state
+        .store
+        .stats_per_day(&slug)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|(d, src, n)| {
+            format!(
+                r#"<tr><td>{d}</td><td>{s}</td><td>{n}</td></tr>"#,
+                d = html_escape(d),
+                s = html_escape(src),
+                n = n
+            )
+        })
+        .collect();
+    let top_rows: String = state
+        .store
+        .stats_top_pages(&slug)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|(p, n)| {
+            format!(
+                r#"<tr><td>{p}</td><td>{n}</td></tr>"#,
+                p = html_escape(p),
+                n = n
+            )
+        })
+        .collect();
+    let body = format!(
+        r#"<section class="panel">
+<h2>Statistics</h2>
+<dl class="stats">
+  <dt>Pages</dt><dd>{pages}</dd>
+  <dt>Disk size</dt><dd>{size}</dd>
+  <dt>Last refresh</dt><dd>{lr}</dd>
+  <dt>Source</dt><dd>{src}</dd>
+</dl>
+<h2>Activity by day</h2>
+<table><thead><tr><th>Day</th><th>Source</th><th>Hits</th></tr></thead><tbody>{day_rows}</tbody></table>
+<h2>Top pages</h2>
+<table><thead><tr><th>Page</th><th>Hits</th></tr></thead><tbody>{top_rows}</tbody></table>
+</section>
+"#,
+        pages = pages,
+        size = size,
+        lr = html_escape(&last_refresh),
+        src = html_escape(&source),
+        day_rows = day_rows,
+        top_rows = top_rows,
+    );
+    app_page("Statistics", &body)
 }
 
 async fn refresh_my_vault(
@@ -2660,7 +2836,9 @@ mod tests {
             "POST",
             "/login",
             login_headers(),
-            Some(Body::from("email=admin%40example.com&password=test-pass-9f3a")),
+            Some(Body::from(
+                "email=admin%40example.com&password=test-pass-9f3a",
+            )),
         )
         .await;
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
@@ -2718,7 +2896,9 @@ mod tests {
             "POST",
             "/login",
             login_headers(),
-            Some(Body::from("email=admin%40example.com&password=test-pass-9f3a")),
+            Some(Body::from(
+                "email=admin%40example.com&password=test-pass-9f3a",
+            )),
         )
         .await;
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
@@ -5165,7 +5345,10 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = body_text(res).await;
         assert!(body.contains("friend@example.com"), "sharee listed: {body}");
-        assert!(body.contains("nobody@example.com"), "unknown listed: {body}");
+        assert!(
+            body.contains("nobody@example.com"),
+            "unknown listed: {body}"
+        );
         assert!(body.contains("Revoke"), "revoke button: {body}");
         assert!(
             body.contains("name=\"email\"") && body.contains("name=\"role\""),
@@ -5194,7 +5377,14 @@ mod tests {
         seed_owner_and_shared_share(&state, "reader").await;
         state.store.set_allow_reshare("demo", true).await.unwrap();
         let cookie = login_as(&app, "pal@example.com", "pw").await;
-        let res = req(app.clone(), "GET", "/vault/demo/share", cookie_hdr(&cookie), None).await;
+        let res = req(
+            app.clone(),
+            "GET",
+            "/vault/demo/share",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         // The re-sharee can add their own sub-share.
         let res = req(
@@ -5289,5 +5479,265 @@ mod tests {
         let body = body_text(res).await;
         assert!(body.contains("&lt;b&gt;"), "email is escaped: {body}");
         assert!(!body.contains("evi<b>"), "no raw markup from email: {body}");
+    }
+
+    // ---------- Phase 10.1: Stats page (10.1-02 Task 4) ----------
+
+    #[tokio::test]
+    async fn stats_owner_sees_full_panel() {
+        let (app, state) = test_router().await;
+        // admin is the effective owner of the fixture `demo` vault.
+        state
+            .store
+            .log_access("admin@example.com", "demo", "web", "notes.html")
+            .await
+            .unwrap();
+        state
+            .store
+            .log_access("admin@example.com", "demo", "web", "notes.html")
+            .await
+            .unwrap();
+        state
+            .store
+            .log_access("admin@example.com", "demo", "mcp", "vault_list")
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("Pages"), "page count label: {body}");
+        assert!(body.contains("Last refresh"), "last refresh label: {body}");
+        assert!(body.contains("Top pages"), "top pages table: {body}");
+        assert!(body.contains("notes.html"), "top page row: {body}");
+        assert!(body.contains(">web<"), "per-day web row: {body}");
+        assert!(body.contains(">mcp<"), "per-day mcp row: {body}");
+    }
+
+    #[tokio::test]
+    async fn stats_sharee_sees_only_own_count() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        for _ in 0..2 {
+            state
+                .store
+                .log_access("pal@example.com", "demo", "web", "index.html")
+                .await
+                .unwrap();
+        }
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("You have accessed this vault 2 time(s)"),
+            "own count line: {body}"
+        );
+        // Negative assertion: nothing from the owner panel leaks (T-10.1-07).
+        assert!(!body.contains("Top pages"), "no owner panel: {body}");
+        assert!(!body.contains("Last refresh"), "no owner panel: {body}");
+    }
+
+    #[tokio::test]
+    async fn stats_group_member_sees_only_own_count() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("grp@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let gid = state.store.create_group("team").await.unwrap();
+        state
+            .store
+            .add_group_member(gid, "grp@example.com")
+            .await
+            .unwrap();
+        state
+            .store
+            .set_vault_group_role("demo", gid, "read")
+            .await
+            .unwrap();
+        state
+            .store
+            .log_access("grp@example.com", "demo", "web", "index.html")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "grp@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("You have accessed this vault 1 time(s)"),
+            "own count line: {body}"
+        );
+        assert!(!body.contains("Top pages"), "no owner panel: {body}");
+    }
+
+    #[tokio::test]
+    async fn stats_unrelated_user_forbidden() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("stranger@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "stranger@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn web_access_is_logged_best_effort() {
+        let (app, state) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        // The fire-and-forget spawn lands shortly after the response.
+        let mut logged = false;
+        for _ in 0..40 {
+            let top = state.store.stats_top_pages("demo").await.unwrap();
+            if top.iter().any(|(p, _)| p == "index.html") {
+                logged = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(logged, "web access row appears in access_log");
+    }
+
+    #[test]
+    fn human_size_formats() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(999), "999 B");
+        assert_eq!(human_size(1024), "1.0 KB");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(1024 * 1024), "1.0 MB");
+        assert_eq!(human_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
+
+    #[test]
+    fn dir_size_bytes_sums_recursively() {
+        let dir = std::env::temp_dir().join(format!(
+            "morinet-dirsize-{}-{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "abc").unwrap();
+        std::fs::write(dir.join("sub/b.txt"), "defgh").unwrap();
+        assert_eq!(dir_size_bytes(&dir), 8);
+        assert_eq!(dir_size_bytes(&dir.join("missing")), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---------- Phase 10.1: WebDAV share ACL at route level (Task 4) ----------
+
+    /// `<src>/book` mdbook layout under a per-test slug (pitfall #23: each
+    /// test owns its slug AND its directory, parallel tests never collide).
+    async fn seed_dav_share_fixture(state: &SharedState, slug: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("morinet-dav-vault-{}-{slug}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("book.toml"), "[book]\ntitle = \"T\"\n").unwrap();
+        std::fs::write(root.join("src").join("SUMMARY.md"), "# Summary\n").unwrap();
+        std::fs::write(root.join("src").join("note.md"), "# Note\n\nhello\n").unwrap();
+        std::fs::create_dir_all(root.join("book")).unwrap();
+        std::fs::write(root.join("book").join("index.html"), "<html>built</html>").unwrap();
+        state
+            .store
+            .seed_vault(slug, "DAV share vault", &root.join("book"))
+            .await
+            .unwrap();
+        root
+    }
+
+    #[tokio::test]
+    async fn webdav_writer_sharee_can_put_reader_cannot() {
+        let (app, state) = test_router().await;
+        let root = seed_dav_share_fixture(&state, "davshare").await;
+        // Writer sharee: PUT succeeds.
+        state
+            .store
+            .create_user("w@example.com", "Write!pw123", "reader")
+            .await
+            .unwrap();
+        state
+            .store
+            .share_vault("davshare", "w@example.com", "writer")
+            .await
+            .unwrap();
+        let res = dav_request(
+            app.clone(),
+            "PUT",
+            "/webdav/davshare/src/w.md",
+            basic("w@example.com", "Write!pw123"),
+            Some("# writer sharee\n"),
+        )
+        .await;
+        assert!(
+            res.status().is_success(),
+            "writer sharee PUT ok, got {}",
+            res.status()
+        );
+        assert!(root.join("src/w.md").exists(), "file written");
+        // Reader sharee: 403.
+        state
+            .store
+            .create_user("r@example.com", "Read!pw123", "reader")
+            .await
+            .unwrap();
+        state
+            .store
+            .share_vault("davshare", "r@example.com", "reader")
+            .await
+            .unwrap();
+        let res = dav_request(
+            app.clone(),
+            "PUT",
+            "/webdav/davshare/src/r.md",
+            basic("r@example.com", "Read!pw123"),
+            Some("# reader\n"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "readers never write");
+        assert!(!root.join("src/r.md").exists(), "no file written");
+        // Hidden sharee: no access at all (404 via dav_resolve, or 401).
+        state
+            .store
+            .create_user("h@example.com", "Hide!pw123", "reader")
+            .await
+            .unwrap();
+        state
+            .store
+            .share_vault("davshare", "h@example.com", "writer")
+            .await
+            .unwrap();
+        state
+            .store
+            .hide_share("davshare", "h@example.com")
+            .await
+            .unwrap();
+        // Hidden sharee: no access at all. The existing `access_for` gate
+        // answers 403 before dav_resolve's 404 can fire (same convention as
+        // `reader_without_acl_is_denied_on_webdav`); any of 401/403/404 proves
+        // the write was refused.
+        let res = dav_request(
+            app,
+            "PUT",
+            "/webdav/davshare/src/h.md",
+            basic("h@example.com", "Hide!pw123"),
+            Some("# hidden\n"),
+        )
+        .await;
+        assert!(
+            res.status() == StatusCode::NOT_FOUND
+                || res.status() == StatusCode::UNAUTHORIZED
+                || res.status() == StatusCode::FORBIDDEN,
+            "hidden sharee has no access, got {}",
+            res.status()
+        );
+        assert!(!root.join("src/h.md").exists(), "no file written");
+        std::fs::remove_dir_all(&root).ok();
     }
 }
