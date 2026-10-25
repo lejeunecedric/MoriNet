@@ -1,0 +1,8 @@
+[book]
+title = "MoriNet Documentation"
+authors = ["The MoriNet project"]
+language = "en"
+description = "User documentation for the MoriNet mdBook server"
+
+[output.html]
+default-theme = "navy"
