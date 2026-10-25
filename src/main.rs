@@ -1,8 +1,10 @@
 //! MoriNet — CLI entry point.
 //!
 //! Phase 1 supports `morinet serve --config <path> [--vault <book-dir>]` to run the
-//! HTTP server, plus `morinet init` and `morinet version`.
+//! HTTP server, plus `morinet init` (interactive; `--yes` for scripts) and
+//! `morinet version`.
 
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -32,6 +34,9 @@ enum Command {
         /// Overwrite existing file instead of refusing
         #[arg(long)]
         force: bool,
+        /// Non-interactive: write the default config without prompting
+        #[arg(long)]
+        yes: bool,
     },
     /// Start the MoriNet HTTP server
     Serve {
@@ -51,16 +56,19 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Version) => {
             println!("morinet {}", version());
         }
-        Some(Command::Init { out, force }) => {
+        Some(Command::Init { out, force, yes }) => {
             if out.exists() && !force {
                 anyhow::bail!(
                     "{} already exists; pass --force to overwrite",
                     out.display()
                 );
             }
-            let cfg = default_config();
-            std::fs::write(&out, cfg)?;
-            println!("Wrote example config to {}", out.display());
+            if yes {
+                std::fs::write(&out, default_config())?;
+                println!("Wrote example config to {}", out.display());
+            } else {
+                interactive_init(&out)?;
+            }
         }
         Some(Command::Serve { config, vault }) => tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -71,6 +79,50 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Interactive `morinet init`: prompt for port / data dir / admin email, read
+/// the admin password masked via `rpassword` (re-prompting while empty), then
+/// write a generated config.toml with an auto-generated cookie secret.
+fn interactive_init(out: &std::path::Path) -> anyhow::Result<()> {
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    let mut writer = std::io::stdout();
+    let mut answers = morinet::init::prompt_answers(&mut reader, &mut writer)?;
+    loop {
+        // Masked prompt on a real TTY; when stdin is piped (tests/CI) fall
+        // back to reading a line — rpassword needs /dev/tty and errors there.
+        let password = if std::io::stdin().is_terminal() {
+            rpassword::prompt_password("Admin password: ")?
+        } else {
+            write!(writer, "Admin password: ")?;
+            writer.flush()?;
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                anyhow::bail!("admin password required (stdin closed)");
+            }
+            line.trim_end_matches(['\r', '\n']).to_string()
+        };
+        if !password.is_empty() {
+            answers.admin_password = password;
+            break;
+        }
+        writeln!(writer, "Password must not be empty; try again.")?;
+    }
+    let secret = morinet::init::generate_cookie_secret();
+    let cfg = morinet::init::generate_config(
+        answers.port,
+        &answers.data_dir,
+        &answers.admin_email,
+        &answers.admin_password,
+        &secret,
+    );
+    std::fs::write(out, cfg)?;
+    println!("Wrote example config to {}", out.display());
+    println!(
+        "Note: the file contains the bootstrap admin credentials in plaintext — chmod 600 advised."
+    );
     Ok(())
 }
 
