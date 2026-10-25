@@ -1023,6 +1023,156 @@ impl Store {
         Ok(rows)
     }
 
+    // ---------- Phase 10.1: direct email sharing (REQ-VLT-010) ----------
+
+    /// Share a vault with an email as `reader` or `writer` (upsert).
+    /// Re-sharing the same email updates the role and clears `hidden`.
+    /// The email may be unknown — the share resolves when that user registers.
+    pub async fn share_vault(&self, slug: &str, email: &str, role: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            role == "reader" || role == "writer",
+            "unknown share role {role}"
+        );
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM vaults WHERE slug = ?")
+            .bind(slug)
+            .fetch_optional(&self.pool)
+            .await?;
+        anyhow::ensure!(exists.is_some(), "unknown vault {slug}");
+        sqlx::query(
+            "INSERT INTO vault_shares (vault_id, email, role) \
+             VALUES ((SELECT id FROM vaults WHERE slug = ?), ?, ?) \
+             ON CONFLICT(vault_id, email) DO UPDATE SET role = excluded.role, hidden = 0",
+        )
+        .bind(slug)
+        .bind(email)
+        .bind(role)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The owner's share list for a vault: (email, role, hidden, created_at),
+    /// hidden rows included (they only hide the vault for the sharee).
+    pub async fn list_shares(
+        &self,
+        slug: &str,
+    ) -> anyhow::Result<Vec<(String, String, bool, String)>> {
+        let rows: Vec<(String, String, bool, String)> = sqlx::query_as(
+            "SELECT s.email, s.role, s.hidden, s.created_at FROM vault_shares s \
+             WHERE s.vault_id = (SELECT id FROM vaults WHERE slug = ?) \
+             ORDER BY s.email",
+        )
+        .bind(slug)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Revoke a share outright (row deleted). `false` if there was no such share.
+    pub async fn revoke_share(&self, slug: &str, email: &str) -> anyhow::Result<bool> {
+        let res = sqlx::query(
+            "DELETE FROM vault_shares \
+             WHERE email = ? \
+               AND vault_id = (SELECT id FROM vaults WHERE slug = ?)",
+        )
+        .bind(email)
+        .bind(slug)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// "Remove from my view": hide the share for that sharee only. The row
+    /// survives (the owner's share list is unchanged). `false` if no row.
+    pub async fn hide_share(&self, slug: &str, email: &str) -> anyhow::Result<bool> {
+        let res = sqlx::query(
+            "UPDATE vault_shares SET hidden = 1 \
+             WHERE email = ? \
+               AND vault_id = (SELECT id FROM vaults WHERE slug = ?)",
+        )
+        .bind(email)
+        .bind(slug)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// May `email` share the vault further? Admins and the owner always can;
+    /// a sharee only when the vault's `allow_reshare` toggle is on AND their
+    /// own share is present and not hidden.
+    pub async fn can_share(&self, email: &str, slug: &str) -> anyhow::Result<bool> {
+        if self.role_for(email).await?.as_deref() == Some("admin") {
+            return Ok(true);
+        }
+        let owner: Option<(i64,)> = sqlx::query_as(
+            "SELECT v.id FROM vaults v \
+             JOIN users u ON u.id = v.owner_id \
+             WHERE v.slug = ? AND u.email = ?",
+        )
+        .bind(slug)
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
+        if owner.is_some() {
+            return Ok(true);
+        }
+        let sharee: Option<(i64,)> = sqlx::query_as(
+            "SELECT v.id FROM vaults v \
+             JOIN vault_shares s ON s.vault_id = v.id \
+             WHERE v.slug = ? AND s.email = ? AND s.hidden = 0 AND v.allow_reshare = 1",
+        )
+        .bind(slug)
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(sharee.is_some())
+    }
+
+    /// Vault-level re-share toggle (part of the owner's Edit form).
+    pub async fn set_allow_reshare(&self, slug: &str, on: bool) -> anyhow::Result<()> {
+        sqlx::query("UPDATE vaults SET allow_reshare = ? WHERE slug = ?")
+            .bind(on)
+            .bind(slug)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Rename a vault. The slug is deliberately NOT changed so existing links,
+    /// ACL rows and shares stay valid.
+    pub async fn rename_vault(&self, slug: &str, name: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE vaults SET name = ? WHERE slug = ?")
+            .bind(name)
+            .bind(slug)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Whether an account with this email exists (drives the "pending share"
+    /// hint on the owner's share form).
+    pub async fn user_exists(&self, email: &str) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    /// Boot sweep (like `ensure_default_memberships`): grant every existing
+    /// group `read` on a vault. Idempotent — existing roles are never
+    /// downgraded (INSERT OR IGNORE on the (vault_id, group_id) PK).
+    pub async fn grant_vault_to_all_groups(&self, slug: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO vault_group_acl (vault_id, group_id, role) \
+             SELECT v.id, g.id, 'read' FROM vaults v, groups g WHERE v.slug = ?",
+        )
+        .bind(slug)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     fn unix_now(&self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2231,5 +2381,197 @@ mod access_tests {
             "bob cannot revoke alice's token"
         );
         assert_eq!(s.list_api_tokens(alice).await.unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod share_tests {
+    use super::*;
+
+    async fn st(_name: &str) -> Store {
+        Store::connect_memory().await.expect("store")
+    }
+
+    #[tokio::test]
+    async fn share_vault_upserts_role_and_unhides() {
+        let s = st("share-upsert").await;
+        s.create_user("owner@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("b@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault(
+            "owner@x.fr",
+            "book",
+            "Book",
+            Path::new("/tmp/share-up/book"),
+        )
+        .await
+        .unwrap();
+
+        s.share_vault("book", "b@x.fr", "reader").await.unwrap();
+        let shares = s.list_shares("book").await.unwrap();
+        assert_eq!(shares.len(), 1);
+        assert_eq!(
+            (shares[0].0.as_str(), shares[0].1.as_str()),
+            ("b@x.fr", "reader")
+        );
+        assert!(!shares[0].2, "fresh share is not hidden");
+
+        // Hidden, then re-shared with a new role: role updates AND hidden clears.
+        assert!(s.hide_share("book", "b@x.fr").await.unwrap());
+        s.share_vault("book", "b@x.fr", "writer").await.unwrap();
+        let shares = s.list_shares("book").await.unwrap();
+        assert_eq!(shares.len(), 1, "upsert must not duplicate the row");
+        assert_eq!(shares[0].1, "writer");
+        assert!(!shares[0].2, "re-sharing clears the hidden flag");
+
+        // Guards: unknown slug and unknown role are refused.
+        assert!(s.share_vault("nope", "b@x.fr", "reader").await.is_err());
+        assert!(s.share_vault("book", "b@x.fr", "admin").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn revoke_and_hide_share_behave_differently() {
+        let s = st("share-revoke-hide").await;
+        s.create_user("owner@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("b@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault(
+            "owner@x.fr",
+            "book",
+            "Book",
+            Path::new("/tmp/share-rh/book"),
+        )
+        .await
+        .unwrap();
+        s.share_vault("book", "b@x.fr", "reader").await.unwrap();
+
+        // hide: the row survives with hidden=1 (owner's list still shows it).
+        assert!(s.hide_share("book", "b@x.fr").await.unwrap());
+        let shares = s.list_shares("book").await.unwrap();
+        assert_eq!(shares.len(), 1, "hidden share stays in the owner's list");
+        assert!(shares[0].2, "hidden flag set");
+
+        // revoke: the row is gone.
+        assert!(s.revoke_share("book", "b@x.fr").await.unwrap());
+        assert!(s.list_shares("book").await.unwrap().is_empty());
+        assert!(
+            !s.revoke_share("book", "b@x.fr").await.unwrap(),
+            "second revoke is a no-op"
+        );
+        assert!(
+            !s.hide_share("book", "b@x.fr").await.unwrap(),
+            "hide on missing row is false"
+        );
+    }
+
+    #[tokio::test]
+    async fn share_reshare_matrix() {
+        let s = st("reshare-matrix").await;
+        s.ensure_admin("admin@x.fr", "pw").await.unwrap();
+        s.create_user("owner@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("reader@x.fr", "pw", "reader").await.unwrap();
+        s.create_user("writer@x.fr", "pw", "reader").await.unwrap();
+        s.create_personal_vault(
+            "owner@x.fr",
+            "book",
+            "Book",
+            Path::new("/tmp/share-mx/book"),
+        )
+        .await
+        .unwrap();
+        s.share_vault("book", "reader@x.fr", "reader")
+            .await
+            .unwrap();
+        s.share_vault("book", "writer@x.fr", "writer")
+            .await
+            .unwrap();
+
+        // Owner and admin can always share.
+        assert!(s.can_share("owner@x.fr", "book").await.unwrap());
+        assert!(s.can_share("admin@x.fr", "book").await.unwrap());
+        // Sharees cannot re-share while the vault toggle is off.
+        assert!(!s.can_share("reader@x.fr", "book").await.unwrap());
+        assert!(!s.can_share("writer@x.fr", "book").await.unwrap());
+
+        // Toggle on: both sharees may re-share.
+        s.set_allow_reshare("book", true).await.unwrap();
+        assert!(s.can_share("reader@x.fr", "book").await.unwrap());
+        assert!(s.can_share("writer@x.fr", "book").await.unwrap());
+
+        // A hidden share does not grant re-share rights.
+        s.hide_share("book", "writer@x.fr").await.unwrap();
+        assert!(!s.can_share("writer@x.fr", "book").await.unwrap());
+        s.hide_share("book", "writer@x.fr").await.unwrap(); // no-op, still hidden
+        s.share_vault("book", "writer@x.fr", "writer")
+            .await
+            .unwrap(); // un-hide
+
+        // Unknown email and revoked sharee: never.
+        assert!(!s.can_share("ghost@x.fr", "book").await.unwrap());
+        s.revoke_share("book", "reader@x.fr").await.unwrap();
+        assert!(!s.can_share("reader@x.fr", "book").await.unwrap());
+
+        // Toggle off again: sharees lose re-share rights.
+        s.set_allow_reshare("book", false).await.unwrap();
+        assert!(!s.can_share("writer@x.fr", "book").await.unwrap());
+        assert!(s.can_share("owner@x.fr", "book").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn rename_vault_keeps_slug() {
+        let s = st("rename").await;
+        s.seed_vault("book", "Old name", Path::new("/tmp/rename/book"))
+            .await
+            .unwrap();
+        s.rename_vault("book", "New name").await.unwrap();
+        assert_eq!(
+            s.vault_name("book").await.unwrap().as_deref(),
+            Some("New name")
+        );
+        let slugs: Vec<String> = s
+            .list_all_vaults()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| v.slug)
+            .collect();
+        assert_eq!(
+            slugs,
+            vec!["book".to_string()],
+            "slug is deliberately unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_exists_reports_registered_accounts() {
+        let s = st("user-exists").await;
+        s.create_user("real@x.fr", "pw", "reader").await.unwrap();
+        assert!(s.user_exists("real@x.fr").await.unwrap());
+        assert!(!s.user_exists("ghost@x.fr").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn grant_vault_to_all_groups_grants_read_to_every_group_and_is_idempotent() {
+        let s = st("grant-all").await;
+        s.seed_vault("docs", "Docs", Path::new("/tmp/grant-all/book"))
+            .await
+            .unwrap();
+        let g1 = s.create_group("free").await.unwrap();
+        let g2 = s.create_group("team").await.unwrap();
+        let g3 = s.create_group("power").await.unwrap();
+        s.set_vault_group_role("docs", g3, "write").await.unwrap();
+
+        s.grant_vault_to_all_groups("docs").await.unwrap();
+        let mut roles = s.vault_group_roles("docs").await.unwrap();
+        roles.sort();
+        assert_eq!(roles.len(), 3);
+        assert!(roles.iter().any(|(id, _, r)| *id == g1 && r == "read"));
+        assert!(roles.iter().any(|(id, _, r)| *id == g2 && r == "read"));
+        assert!(
+            roles.iter().any(|(id, _, r)| *id == g3 && r == "write"),
+            "an existing stronger role is never downgraded"
+        );
+
+        // Idempotent: running the sweep again changes nothing.
+        s.grant_vault_to_all_groups("docs").await.unwrap();
+        assert_eq!(s.vault_group_roles("docs").await.unwrap().len(), 3);
     }
 }
