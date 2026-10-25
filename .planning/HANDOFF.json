@@ -12,21 +12,21 @@
     {"id": 1, "name": "10-01 API tokens (store, /account UI, Bearer middleware)", "status": "done", "commit": "5effb10"},
     {"id": 2, "name": "10-02 MCP StreamableHttp /mcp (rmcp 3.7, 4 tools ACL-scoped)", "status": "done", "commit": "5effb10"},
     {"id": 3, "name": "Delivery 100% locale: scripts/check.sh + release.sh + deploy.sh, suppression ci.yml/release.yml", "status": "done", "commit": "4442060"},
-    {"id": 4, "name": "v0.1.21 buildé localement et déployé sur holldemo (demo live)", "status": "done", "commit": "3bee008"}
+    {"id": 4, "name": "v0.1.21 buildé localement et déployé sur la démo live", "status": "done", "commit": "3bee008"}
   ],
   "remaining_tasks": [
     {"id": 5, "name": "Phase 11 — polish v1.0 (README minimal, morinet init, tag v1.0.0): PLAN non créé", "status": "not_started"}
   ],
   "blockers": [],
   "human_actions_pending": [
-    {"action": "Fournir un GITHUB_TOKEN (fine-grained, contents:write) si on veut un GitHub release avec assets via scripts/release.sh", "context": "Le déploiement direct via scripts/deploy.sh fonctionne sans token ; seul le GitHub release public en dépend", "blocking": false}
+    {"action": "Fournir un GITHUB_TOKEN (fine-grained, contents:write) si on veut un GitHub release avec assets via scripts/release.sh", "context": "Le déploiement direct via scripts/deploy.sh fonctionne sans token (DEPLOY_HOST dans la note locale gitignorée) ; seul le GitHub release public en dépend", "blocking": false}
   ],
   "decisions": [
     {"decision": "Compilation retirée de GitHub (ci.yml/release.yml supprimés), tout en local via scripts/", "rationale": "Demande user 2026-10-25 : runners GitHub inutiles/instables ; deploy.yml conservé inchangé", "phase": "10"},
     {"decision": "git2 en vendored-openssl", "rationale": "Le binaire local (Ubuntu 26.10) liait libssl.so.4, absent du serveur → binaire autonome vérifié par ldd", "phase": "10"},
-    {"decision": "deploy.sh stage dans ~/morinet-staging + sudo mv", "rationale": "/opt/morinet est root-owned, scp direct en Permission denied ; sudo -n NOPASSWD vérifié sur holldemo", "phase": "10"}
+    {"decision": "deploy.sh stage dans ~/morinet-staging + sudo mv", "rationale": "/opt/morinet est root-owned, scp direct en Permission denied ; staging home + sudo mv (sudoers dédié, voir note locale)", "phase": "10"}
   ],
   "uncommitted_files": [],
   "next_action": "Lancer /gsd:plan-phase 11 (polish v1.0 : README minimal, morinet init, tag v1.0.0) — voir ROADMAP.md",
-  "context_notes": "Session de livraison propre : 213 tests verts, clippy -D warnings clean, demo https://morinet.treklair.fr en v0.1.21 (MCP live, 401 sans Bearer vérifié). SSH [REDACTED-DEPLOY-USER] par clé (Tailscale), git push OK par clé SSH GitHub. Guard version lib.rs à bump à CHAQUE release (test qui casse exprès). Pas de GITHUB_TOKEN sur cette machine — releases GitHub en attente, déploiement direct opérationnel."
+  "context_notes": "Session de livraison propre : 213 tests verts, clippy -D warnings clean, démo publique en v0.1.21 (MCP live, 401 sans Bearer vérifié). SSH serveur via hôte local (voir .planning/DEPLOY-LOCAL.md, gitignoré), git push OK par clé SSH GitHub. Guard version lib.rs à bump à CHAQUE release (test qui casse exprès). Pas de GITHUB_TOKEN sur cette machine — releases GitHub en attente, déploiement direct opérationnel."
 }

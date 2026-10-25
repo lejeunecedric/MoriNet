@@ -82,7 +82,7 @@
 **Criteria**:
 - `morinet serve --vault data/vaults/demo/book` starts a server on `:8080`
 - `GET /` redirects to `/login`
-- `POST /login` with `admin@example.com / [REDACTED-DEV-PASSWORD]` (env `MORINET_ADMIN_*`) sets a signed HttpOnly cookie
+- `POST /login` with the bootstrap admin from env `MORINET_ADMIN_EMAIL`/`MORINET_ADMIN_PASSWORD` (creds never recorded in this repo) sets a signed HttpOnly cookie
 - `GET /vault/*` serves the compiled mdbook files, gated by the cookie
 
 ## Phase 02: multi-vault

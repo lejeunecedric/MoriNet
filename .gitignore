@@ -24,3 +24,7 @@ Thumbs.db
 
 # Nested git repos / local agent worktrees — never part of this repo
 .worktrees/
+
+# Local-only infra notes (host, SSH, creds) — NEVER commit
+.planning/DEPLOY-LOCAL.md
+.deploy.env
