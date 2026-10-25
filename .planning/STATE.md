@@ -1,3 +1,19 @@
+---
+gsd_state_version: 1.0
+milestone: v0.1.9
+milestone_name: → v0.1.13)
+status: executing
+stopped_at: bootstrap GSD terminé (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modifié en attente de commit (user edit).
+last_updated: "2026-10-25T13:44:51.457Z"
+last_activity: 2026-10-25 -- Phase 11 planning complete
+progress:
+  total_phases: 14
+  completed_phases: 1
+  total_plans: 10
+  completed_plans: 2
+  percent: 7
+---
+
 # Project State
 
 ## Project Reference
@@ -11,14 +27,15 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 Phase: 11 of 11 (polish v1.0)
 Plan: none yet — Phase 10 shipped same-day
-Status: Phase 10 COMPLETE (10-01 + 10-02, 2026-10-25)
-Last activity: 2026-10-25 — v0.1.21 DEPLOYE sur la demo en 100% local (scripts/deploy.sh, git2 vendored-openssl = binaire autonome). /mcp live : 401 sans Bearer (OK). 213 tests verts
+Status: Ready to execute
+Last activity: 2026-10-25 -- Phase 11 planning complete
 
 Progress: [█████████░] 93% (13/14 phases)
 
 ## Performance Metrics
 
 **Velocity:**
+
 - Total plans completed: n/a (pre-GSD phases used `.planning/phases/*/…-PLAN.md`)
 - Historical detail: .planning/STATE-LOG.md
 
