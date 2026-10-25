@@ -160,6 +160,10 @@ pub fn build_router_with_email(
         .route("/vaults/create", post(load_personal_vault))
         .route("/vaults/{slug}/delete", post(delete_my_vault))
         .route("/vaults/{slug}/refresh", post(refresh_my_vault))
+        .route(
+            "/vault/{slug}/edit",
+            get(vault_edit_page).post(vault_edit_submit),
+        )
         .route("/vault", get(vault_root_redirect))
         .route("/vault/{slug}/", get(vault_index))
         .route("/vault/{slug}/{*rest}", get(vault_file))
@@ -1851,6 +1855,113 @@ async fn delete_my_vault(
 
 /// `POST /vaults/{slug}/refresh` — re-pull the vault's upstream and rebuild so
 /// pages added after the load appear without reloading (REQ-VLT-005).
+/// Owner gate for the Edit page (LOCKED decision: owner-only, admins keep
+/// their global power). A `personal` row in `accessible_vaults` is only ever
+/// returned to the vault's owner (plan 01), so "has a personal row for this
+/// slug" is exactly "is the owner" — no new store query needed.
+async fn can_edit_vault(state: &SharedState, email: &str, slug: &str) -> bool {
+    let role = state.store.role_for(email).await.ok().flatten();
+    if role.as_deref() == Some("admin") {
+        return true;
+    }
+    state
+        .store
+        .accessible_vaults(email)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|a| a.personal && a.vault.slug == slug)
+}
+
+/// `POST /vault/{slug}/edit` fields. `allow_reshare` follows HTML checkbox
+/// semantics: present (any value) = on, absent = off.
+#[derive(Debug, Deserialize)]
+struct EditForm {
+    name: String,
+    #[serde(default)]
+    url: String,
+    allow_reshare: Option<String>,
+}
+
+/// `GET /vault/{slug}/edit` — owner-only settings form (REQ-VLT-009).
+async fn vault_edit_page(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+) -> Response {
+    if !can_edit_vault(&state, &claims.email, &slug).await {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    let accessible = state
+        .store
+        .accessible_vaults(&claims.email)
+        .await
+        .unwrap_or_default();
+    let Some(a) = accessible.iter().find(|a| a.vault.slug == slug) else {
+        return error_page("vault not found");
+    };
+    let source = state
+        .store
+        .vault_source(&slug)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let reshare = state.store.allow_reshare(&slug).await.unwrap_or(false);
+    let body = format!(
+        r#"<section class="panel">
+<h2>Edit vault</h2>
+<form method="post" action="/vault/{s}/edit" class="stacked">
+  <div class="field"><label for="ev-name">Name</label><input id="ev-name" type="text" name="name" value="{n}" required></div>
+  <div class="field field-wide"><label for="ev-url">Source URL <small>(next Refresh pulls this repo)</small></label><input id="ev-url" type="url" name="url" value="{u}" placeholder="https://github.com/owner/repo"></div>
+  <div class="field"><label><input id="ev-reshare" type="checkbox" name="allow_reshare"{c}> Allow sharees to re-share this vault</label></div>
+  <button type="submit">Save</button>
+</form>
+</section>
+"#,
+        s = html_escape(&slug),
+        n = html_escape(&a.vault.name),
+        u = html_escape(&source),
+        c = if reshare { " checked" } else { "" },
+    );
+    app_page("Edit vault", &body)
+}
+
+/// `POST /vault/{slug}/edit` — persist rename / re-source / re-share toggle,
+/// then return to the index (303 so a refresh does not resubmit).
+async fn vault_edit_submit(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+    Form(p): Form<EditForm>,
+) -> Response {
+    if !can_edit_vault(&state, &claims.email, &slug).await {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    let name = p.name.trim();
+    if name.is_empty() {
+        return error_page("the name is required");
+    }
+    if let Err(e) = state.store.rename_vault(&slug, name).await {
+        return error_page(&format!("could not rename the vault: {e}"));
+    }
+    // An empty URL field means "keep the current source" — never wipe it.
+    let url = p.url.trim();
+    if !url.is_empty() {
+        if let Err(e) = state.store.set_vault_source(&slug, url).await {
+            return error_page(&format!("could not set the source URL: {e}"));
+        }
+    }
+    if let Err(e) = state
+        .store
+        .set_allow_reshare(&slug, p.allow_reshare.is_some())
+        .await
+    {
+        return error_page(&format!("could not update the re-share setting: {e}"));
+    }
+    Redirect::to("/").into_response()
+}
+
 async fn refresh_my_vault(
     State(state): State<SharedState>,
     Extension(claims): Extension<Claims>,
@@ -2604,6 +2715,120 @@ mod tests {
         assert!(
             body.contains("/vault/mine/edit"),
             "own row has Edit: {body}"
+        );
+    }
+
+    // ---------- Phase 10.1: Edit page (10.1-02 Task 2) ----------
+
+    /// Personal vault `mine` owned by `pal@example.com` (no share).
+    async fn seed_edit_fixture(state: &SharedState) {
+        state
+            .store
+            .create_user("pal@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let book = std::env::temp_dir().join(format!(
+            "morinet-vault-{}-edit-{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&book).unwrap();
+        std::fs::write(
+            book.join("index.html"),
+            "<html><body>mine page</body></html>",
+        )
+        .unwrap();
+        state
+            .store
+            .create_personal_vault("pal@example.com", "mine", "My Book", &book)
+            .await
+            .unwrap();
+    }
+
+    fn form_headers(cookie: &str) -> HeaderMap {
+        let mut h = login_headers();
+        h.insert(COOKIE, cookie.parse().unwrap());
+        h
+    }
+
+    #[tokio::test]
+    async fn edit_page_owner_shows_form() {
+        let (app, state) = test_router().await;
+        seed_edit_fixture(&state).await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/mine/edit", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("name=\"name\""), "name field: {body}");
+        assert!(body.contains("name=\"url\""), "url field: {body}");
+        assert!(
+            body.contains("name=\"allow_reshare\""),
+            "allow_reshare checkbox: {body}"
+        );
+        assert!(body.contains("My Book"), "name prefilled: {body}");
+    }
+
+    #[tokio::test]
+    async fn edit_page_sharee_forbidden() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/demo/edit", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn edit_submit_renames_resources_and_sets_reshare() {
+        let (app, state) = test_router().await;
+        seed_edit_fixture(&state).await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vault/mine/edit",
+            form_headers(&cookie),
+            Some(Body::from(
+                "name=New+Name&url=https%3A%2F%2Fgithub.com%2Fo%2Fr&allow_reshare=on",
+            )),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let vaults = state
+            .store
+            .accessible_vaults("pal@example.com")
+            .await
+            .unwrap();
+        assert_eq!(vaults[0].vault.name, "New Name", "renamed in store");
+        assert_eq!(
+            state.store.vault_source("mine").await.unwrap().as_deref(),
+            Some("https://github.com/o/r"),
+            "source URL persisted"
+        );
+        assert!(state.store.allow_reshare("mine").await.unwrap());
+        // The index row shows the new name.
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(body.contains("New Name"), "index shows new name: {body}");
+    }
+
+    #[tokio::test]
+    async fn edit_submit_without_checkbox_clears_reshare() {
+        let (app, state) = test_router().await;
+        seed_edit_fixture(&state).await;
+        state.store.set_allow_reshare("mine", true).await.unwrap();
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(
+            app,
+            "POST",
+            "/vault/mine/edit",
+            form_headers(&cookie),
+            Some(Body::from("name=My+Book&url=")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(
+            !state.store.allow_reshare("mine").await.unwrap(),
+            "absent checkbox clears the toggle"
         );
     }
 

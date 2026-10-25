@@ -1193,6 +1193,15 @@ impl Store {
         Ok(sharee.is_some())
     }
 
+    /// Current value of the re-share toggle (prefills the owner's Edit form).
+    pub async fn allow_reshare(&self, slug: &str) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT allow_reshare FROM vaults WHERE slug = ?")
+            .bind(slug)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(v,)| v != 0).unwrap_or(false))
+    }
+
     /// Vault-level re-share toggle (part of the owner's Edit form).
     pub async fn set_allow_reshare(&self, slug: &str, on: bool) -> anyhow::Result<()> {
         sqlx::query("UPDATE vaults SET allow_reshare = ? WHERE slug = ?")
