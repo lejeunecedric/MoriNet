@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v0.1.9
 milestone_name: → v0.1.13)
 status: executing
-stopped_at: bootstrap GSD terminé (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modifié en attente de commit (user edit).
+stopped_at: GSD bootstrap complete (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modified, pending commit (user edit).
 last_updated: "2026-10-25T14:57:35.505Z"
 last_activity: 2026-10-25 -- Phase 10.1 planning complete
 progress:
@@ -20,7 +20,7 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-10-25)
 
-**Core value:** Charger un vault Obsidian/llm-wiki et le servir instantanément en site mdBook navigable, multi-utilisateurs et sécurisé.
+**Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
 **Current focus:** v1.0.0 LIVE — milestone complete; next: post v1.0 backlog
 
 ## Current Position
@@ -57,10 +57,10 @@ Progress: [█████████░] 93% (13/14 phases)
 
 Full log in PROJECT.md (Key Decisions) and STATE-LOG.md (AD-1..AD-14, PRD-1..PRD-6). Recent decisions affecting current work:
 
-- [Phase 8b / AD-14]: vault = Obsidian/llm-wiki converti in-pipeline dans `.morinet-build/` — le MCP (Phase 10) doit lire la source convertie, pas le `book/` compilé
-- [Phase 8]: groupes + vaults personnels + quotas — les tools MCP ne voient que les vaults accessibles à l'utilisateur (même ACL que WebDAV)
-- [Phase 9b]: design system stabilisé — ne pas toucher au CSS sans passe Impeccable (skill `ui-design-passes`)
-- [Ops]: CI Linux-only ; `release.yml` cargo-dist intouchable ; mdBook thèmes figés au build → Refresh après modif d'assets (pitfall #24)
+- [Phase 8b / AD-14]: vault = Obsidian/llm-wiki converted in-pipeline into `.morinet-build/` — MCP (Phase 10) must read the converted source, not the compiled `book/`
+- [Phase 8]: groups + personal vaults + quotas — MCP tools only see the vaults accessible to the user (same ACL as WebDAV)
+- [Phase 9b]: design system stabilized — do not touch the CSS without an Impeccable pass (skill `ui-design-passes`)
+- [Ops]: CI Linux-only; cargo-dist `release.yml` untouchable; mdBook themes are frozen at build → Refresh after asset changes (pitfall #24)
 
 ### Pending Todos
 
@@ -68,8 +68,8 @@ None yet.
 
 ### Blockers/Concerns
 
-- ~~Auth MCP non tranchée~~ → RÉSOLU 2026-10-25 : token API dédié (`.planning/phases/10-mcp/CONTEXT.md`)
-- `mdbook` CLI requis dans le PATH de prod (échec LOUD si absent) — à documenter dans le README (Phase 11)
+- ~~MCP auth undecided~~ → RESOLVED 2026-10-25: dedicated API token (`.planning/phases/10-mcp/CONTEXT.md`)
+- `mdbook` CLI required in the prod PATH (LOUD failure if missing) — to document in the README (Phase 11)
 
 ## Deferred Items
 
@@ -80,11 +80,11 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-10-25
-Stopped at: bootstrap GSD terminé (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modifié en attente de commit (user edit).
+Stopped at: GSD bootstrap complete (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modified, pending commit (user edit).
 Resume file: None — next: `/gsd:plan-phase 11` (polish v1.0)
 
 ## Useful links
 
 - ROADMAP: `.planning/ROADMAP.md` · REQUIREMENTS: `.planning/REQUIREMENTS.md`
-- Handoff: `.planning/HANDOFF.md` · Changelog + AD/PRD + erreurs notables: `.planning/STATE-LOG.md`
-- Phases pré-GSD: `.planning/phases/` · Live: https://morinet.treklair.fr
+- Handoff: `.planning/HANDOFF.md` · Changelog + AD/PRD + notable errors: `.planning/STATE-LOG.md`
+- Pre-GSD phases: `.planning/phases/` · Live: https://morinet.treklair.fr

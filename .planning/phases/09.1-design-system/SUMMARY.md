@@ -1,5 +1,5 @@
 # SUMMARY — 09.1 design system ✅ (v0.1.16 → v0.1.20)
 
-Passe Impeccable + vocabulaire Linear : tokens de thème light/dark, un seul contrôle header, pill nav avec état actif, CSS consolidé (radius/spacing scales, `--on-accent`), chrome vault mesuré, anti-clutter (titres non dupliqués, empty states). Règles tenues dans le skill `ui-design-passes`.
+Impeccable pass + Linear vocabulary: light/dark theme tokens, a single header control, pill nav with active state, consolidated CSS (radius/spacing scales, `--on-accent`), measured vault chrome, anti-clutter (no duplicated titles, empty states). Rules maintained in the `ui-design-passes` skill.
 
-Pre-GSD phase — détail dans ROADMAP Phase 09.1.
+Pre-GSD phase — details in ROADMAP Phase 09.1.

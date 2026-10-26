@@ -1,1 +1,1 @@
-On développe MoriNet, un Knowledge System
+We are developing MoriNet, a Knowledge System

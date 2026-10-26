@@ -49,7 +49,7 @@
 | 06   | **webdav**        | WebDAV endpoints on vaults (same creds), browse + read                                    | REQ-WEBDAV-*           | ✅ done |
 | 07   | **vault-ux**      | Vault management UX: server-side dir picker, browser-side import, URL field for GitHub   | REQ-UX-*               | ✅ done (v0.1.10..v0.1.15 — URL GitHub, picker, import) |
 | 08   | **access-model**  | Groups + personal vaults: `group_members`, `vault_group_acl`, `scope`/`owner_id`          | REQ-GRP-*, REQ-VLT-*   | ✅ done (v0.1.9/v0.1.11/v0.1.12 — quotas, plans, load/refresh/delete) |
-| 08.1 | **obsidian-format** | In-pipeline converter : vault llm-wiki/Obsidian → arbre mdBook (SUMMARY + wikilinks + frontmatter) | REQ-OBSFMT-001..006 | ✅ done (v0.1.8) |
+| 08.1 | **obsidian-format** | In-pipeline converter: llm-wiki/Obsidian vault → mdBook tree (SUMMARY + wikilinks + frontmatter) | REQ-OBSFMT-001..006 | ✅ done (v0.1.8) |
 | 09   | **ux-nav**        | New shell: My vaults landing, account menu top-right, mdbook close button, admin menu    | REQ-ACC-*, REQ-NAV-*   | ✅ done (v0.1.12/v0.1.14) |
 | 10   | **mcp**           | MCP StreamableHttp on `/mcp`, list/read/search tools                                      | REQ-MCP-*              | ⬜ |
 | +11  | **polish**        | Clean one-line installer, full README, badges, Release v1.0                              | REQ-OPS-*              | ⬜ |
@@ -149,7 +149,7 @@
 
 **Goal**: adding a local vault must not require typing a path on the server. An admin clicks **Browse**, walks the server's directories, and picks one.
 
-**Status**: livré (v0.1.15). Le `<dialog>` natif liste les dossiers du serveur (`GET /admin/browse`), descend / remonte (breadcrumb + Up), **Select** remplit path/slug/name. L'import browser-side (`<input webkitdirectory>`) téléverse les fichiers dans le vault choisi — le chemin navigateur n'est jamais cru côté serveur. Pièges : les sélecteurs `[name="name"]` globaux croisent le champ de renommage du compte → scoped ; `root.join(path)` avec un chemin absolu **remplace** la racine → `trim_start_matches('/')`.
+**Status**: shipped (v0.1.15). The native `<dialog>` lists the server's directories (`GET /admin/browse`), descends / goes up (breadcrumb + Up), **Select** fills path/slug/name. The browser-side import (`<input webkitdirectory>`) uploads the files into the chosen vault — the browser path is never trusted server-side. Pitfalls: global `[name="name"]` selectors intersect the account rename field → scoped; `root.join(path)` with an absolute path **replaces** the root → `trim_start_matches('/')`.
 
 **User decision (2026-10-21)**: the picker browses **the server's filesystem**, not the admin's machine. A vault is a path on the host running MoriNet; offering a browser-side folder picker would upload a path string that does not exist there.
 
@@ -170,7 +170,7 @@
 
 ## Phase 08: access-model ✅ DONE (v0.1.9 → v0.1.13)
 
-**Status**: livré. Groups + personal vaults + quotas (v0.1.9), load GitHub vault en espace personnel (v0.1.10), delete owner-only + refresh (v0.1.11), autofill name (v0.1.12), `source_url` retrouvé depuis le remote git (v0.1.13).
+**Status**: shipped. Groups + personal vaults + quotas (v0.1.9), load GitHub vault into personal space (v0.1.10), delete owner-only + refresh (v0.1.11), autofill name (v0.1.12), `source_url` recovered from the git remote (v0.1.13).
 
 **Goal** (user decision, 2026-10-21): abandon the merged-book idea and replace the flat ACL with **groups + personal vaults**.
 
@@ -197,24 +197,24 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 - Admins still see everything
 - Existing behavior of the current admin pages keeps working
 
-**Quota par groupe (user decision 2026-10-21, feedback UX admin)**:
+**Per-group quota (user decision 2026-10-21, admin UX feedback)**:
 
-- `groups.personal_vault_limit` (NULL = illimité) — REQ-GRP-005
-- Builtin au bootstrap : `free` (limit **2**), `admin` (illimité) — REQ-GRP-006
-- **`demo` devient un `reader` membre de `free`** (plus admin) — REQ-GRP-007 ; l'admin
-  du bootstrap est membre de `admin`. C'est CE qui fait disparaître le bouton Admin
-  pour demo (le code index/`require_admin` était déjà correct — demo était admin en base).
+- `groups.personal_vault_limit` (NULL = unlimited) — REQ-GRP-005
+- Built at bootstrap: `free` (limit **2**), `admin` (unlimited) — REQ-GRP-006
+- **`demo` becomes a `reader` member of `free`** (no longer admin) — REQ-GRP-007; the
+  bootstrap admin is a member of `admin`. This is what makes the Admin button
+  disappear for demo (the index/`require_admin` code was already correct — demo was admin in the DB).
 
-- La limite compte les vaults **personnels créés**, pas les partages ni la visibilité — REQ-VLT-008
-- Limite effective = la plus permissive des groupes du user — REQ-GRP-008
+- The limit counts **personal vaults created**, not shares or visibility — REQ-VLT-008
+- Effective limit = the most permissive of the user's groups — REQ-GRP-008
 
 ---
 
 ## Phase 08.1: obsidian-format ✅ DONE (v0.1.8)
 
-**Goal**: charger des vaults llm-wiki / Obsidian (bare `[[wikilinks]]` + YAML frontmatter, sans `book.toml`).
+**Goal**: load llm-wiki / Obsidian vaults (bare `[[wikilinks]]` + YAML frontmatter, no `book.toml`).
 
-**Delivered**: convertisseur in-pipeline (AD-14/PRD-6) — sync → miroir `.morinet-build/` (frontmatter consommé, wikilinks résolus, SUMMARY.md + book.toml générés, folder landing pages) → `mdbook build`. Corpus réel validé (ProgWiki : 131 .md, 812 wikilinks, 542 aliases) + oracle `MORINET_CORPUS=… cargo test -- --ignored`. E2E vérifié en navigateur, WebDAV PUT → re-conversion live. REQ-OBSFMT-001..006.
+**Delivered**: in-pipeline converter (AD-14/PRD-6) — sync → `.morinet-build/` mirror (frontmatter consumed, wikilinks resolved, SUMMARY.md + book.toml generated, folder landing pages) → `mdbook build`. Validated on a real corpus (ProgWiki: 131 .md, 812 wikilinks, 542 aliases) + oracle `MORINET_CORPUS=… cargo test -- --ignored`. E2E verified in the browser, WebDAV PUT → live re-conversion. REQ-OBSFMT-001..006.
 
 ---
 
@@ -222,12 +222,12 @@ A vault can be shared by several groups, each with its own level — B3Wiki as `
 
 **Goal**: the new shell.
 
-**Status**: livré. Nav shell (v0.1.14) → restyle (v0.1.16) → passes design
-Impeccable/Linear (v0.1.17-v0.1.20, voir « Phase 09.1: design system »).
-Le header porte **un seul contrôle** (menu compte : identité → `/account`,
-entrée Admin, logout) ; la tab bar admin est la seule nav des sections ;
-les pages mdBook portent la barre zoom + « Close vault » en haut à droite
-(sous le bouton Print, href `/`).
+**Status**: shipped. Nav shell (v0.1.14) → restyle (v0.1.16) → design passes
+Impeccable/Linear (v0.1.17-v0.1.20, see "Phase 09.1: design system").
+The header carries **a single control** (account menu: identity → `/account`,
+Admin entry, logout); the admin tab bar is the only section nav;
+the mdBook pages carry the zoom bar + "Close vault" top-right
+(below the Print button, href `/`).
 
 **Criteria**:
 
@@ -244,32 +244,31 @@ les pages mdBook portent la barre zoom + « Close vault » en haut à droite
 
 ## Phase 09.1: design system ✅ DONE (v0.1.16 → v0.1.20)
 
-**Goal**: un UI sans slop, mesuré et vérifiable.
+**Goal**: a slop-free UI, measured and verifiable.
 
-Passes **Impeccable** (`/extract`, `/polish`, `/critique`) + vocabulaire
-**Linear** (skill `popular-web-designs`) + règles du skill `ui-design-passes` :
+**Impeccable** passes (`/extract`, `/polish`, `/critique`) + **Linear** vocabulary
+(skill `popular-web-designs`) + rules from the `ui-design-passes` skill:
 
-- **v0.1.16** — tokens de thème light/dark, panels, formulaires, pill nav
-- **v0.1.17** — `/extract` : un seul menu, nav non dupliquée, CSS consolidé
-  (radius/spacing scales, `--on-accent`, flat forms), MENU_JS (un menu ouvert
-  à la fois, Échap/clic extérieur)
+- **v0.1.16** — light/dark theme tokens, panels, forms, pill nav
+- **v0.1.17** — `/extract`: a single menu, non-duplicated nav, consolidated CSS
+  (radius/spacing scales, `--on-accent`, flat forms), MENU_JS (one menu open
+  at a time, Escape/outside click)
 
-- **v0.1.18** — chrome vault : Close vault fonctionnel (href `/`), barre
-  top-right unique sous le bouton Print (mesuré : pas de chevauchement)
+- **v0.1.18** — vault chrome: functional Close vault (href `/`), single
+  top-right bar below the Print button (measured: no overlap)
 
-- **v0.1.19** — `/critique` mdBook : detector `npx impeccable detect` sur
-  snapshots CSS-inlinés → meta 13px sans fade, line-height 1.65, wikilinks
-  pleins, `--icons` dark 4:1, police système
+- **v0.1.19** — `/critique` mdBook: `npx impeccable detect` detector on
+  CSS-inlined snapshots → meta 13px without fade, line-height 1.65, solid
+  wikilinks, `--icons` dark 4:1, system font
 
-- **v0.1.20** — anti-clutter : 1 contrôle header (2 boutons admin = showstopper
-  signalé), titres jamais dupliqués, sections complètes (empty states inclus),
-  vaults en rangées, form de rename sur `/account` (pas de form dans un menu)
+- **v0.1.20** — anti-clutter: 1 header control (2 admin buttons = reported
+  showstopper), titles never duplicated, complete sections (empty states included),
+  vaults as rows, rename form on `/account` (no form inside a menu)
 
-**Règles design tenues** (détail dans le skill `ui-design-passes`) : pas de
-texte en opacity réduite, corps ≥ 13px / line-height 1.55-1.7, pas de carte
-dans une carte, liens de nav une seule fois, identité rendue une fois, overlays
-fixes jamais par-dessus un contrôle existant, un seul accent, close/back → la
-surface parente.
+**Design rules held** (details in the `ui-design-passes` skill): no
+reduced-opacity text, body ≥ 13px / line-height 1.55-1.7, no card inside a
+card, nav links only once, identity rendered once, fixed overlays never on top
+of an existing control, a single accent, close/back → the parent surface.
 
 ---
 

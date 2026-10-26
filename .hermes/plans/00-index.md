@@ -19,7 +19,7 @@
 
 | #    | Decision                                       | Tracked in   |
 |------|------------------------------------------------|--------------|
-| PRD-1 | Stack 100% Rust                                | STATE.md     |
+| PRD-1 | 100% Rust stack                                | STATE.md     |
 | PRD-2 | Repo github.com/`lejeunecedric`/MoriNet        | STATE.md     |
 | PRD-3 | Multi-vault = sub-paths `/vaultA/`, `/vaultB/` | STATE.md     |
 | PRD-4 | SMTP = generic `lettre` adapter                | STATE.md     |

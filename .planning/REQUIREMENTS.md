@@ -81,10 +81,10 @@
 | REQ-GRP-002    | Admin creates / edits / deletes a group                                    | browser click-through                 |
 | REQ-GRP-003    | Admin adds and removes users from a group                                  | browser + membership reflected in ACL |
 | REQ-GRP-004    | Deleting a group removes its membership rows (CASCADE)                    | delete then list                      |
-| REQ-GRP-005    | `groups.personal_vault_limit` (NULL = unlimited) — quota de création de vaults **personnels** | migration + store test |
-| REQ-GRP-006    | Groupes builtin au bootstrap : `free` (limit 2) et `admin` (illimité)      | fresh DB has both, with limits        |
-| REQ-GRP-007    | Le compte **demo** est un `reader` membre de `free` (PAS admin) ; l'admin du bootstrap est membre de `admin` | role_for(demo) = reader, demo ∉ admin |
-| REQ-GRP-008    | La limite effective d'un user = le plus permissif de ses groupes (NULL > tout ; sinon max) | multi-group test                      |
+| REQ-GRP-005    | `groups.personal_vault_limit` (NULL = unlimited) — quota for creating **personal** vaults | migration + store test |
+| REQ-GRP-006    | Built-in groups at bootstrap: `free` (limit 2) and `admin` (unlimited)      | fresh DB has both, with limits        |
+| REQ-GRP-007    | The **demo** account is a `reader` member of `free` (NOT admin); the bootstrap admin is a member of `admin` | role_for(demo) = reader, demo ∉ admin |
+| REQ-GRP-008    | A user's effective limit = the most permissive of their groups (NULL > everything; otherwise max) | multi-group test                      |
 
 ## VAULTS — Global and personal
 
@@ -97,12 +97,12 @@
 | REQ-VLT-005    | Any user may add a vault from the UI (browse + import)                    | user creates a personal vault         |
 | REQ-VLT-006    | A user always has 'write' on their own personal vault                      | PUT on own vault succeeds             |
 | REQ-VLT-007    | Admins see every vault (global and personal)                               | admin list shows all                  |
-| REQ-VLT-008    | `create_personal_vault` refuse au-delà de la limite du groupe (les partages ne comptent pas) | 3e création par un membre de `free` → erreur |
-| REQ-VLT-009    | Le propriétaire peut renommer un vault perso et changer son URL source (Edit) | rename + re-source via UI, refresh suit la nouvelle URL |
-| REQ-VLT-010    | Partage direct d'un vault par email à un utilisateur (rôles reader/writer), avec toggle `allow_reshare` du propriétaire | le partagé voit le vault dans "Shared with me" ; re-partage refusé si `allow_reshare` off |
-| REQ-VLT-011    | Page Statistics par vault : nb pages, taille, dernière refresh, source + compteurs d'accès (web + MCP) | `/vault/{slug}/stats` affiche les compteurs ; logging best-effort (jamais de 500) |
-| REQ-VLT-012    | "Shared with me" rendu identiquement à "My vaults" (mêmes cartes/actions) ; "Load a vault" est une section séparée | markup identique des deux sections ; 3 sections sur `/` |
-| REQ-VLT-013    | Au boot, un vault global "MoriNet Documentation" (`morinet-docs`) est créé et accessible à tous les utilisateurs (seed idempotent, contenu embarqué dans le binaire) | fresh install → le vault apparaît dans "Shared with me" sans config |
+| REQ-VLT-008    | `create_personal_vault` refuses beyond the group limit (shares do not count) | 3rd creation by a `free` member → error |
+| REQ-VLT-009    | The owner can rename a personal vault and change its source URL (Edit) | rename + re-source via UI, refresh follows the new URL |
+| REQ-VLT-010    | Direct sharing of a vault by email to a user (reader/writer roles), with an owner `allow_reshare` toggle | the recipient sees the vault in "Shared with me"; re-sharing refused if `allow_reshare` is off |
+| REQ-VLT-011    | Per-vault Statistics page: page count, size, last refresh, source + access counters (web + MCP) | `/vault/{slug}/stats` displays the counters; best-effort logging (never a 500) |
+| REQ-VLT-012    | "Shared with me" rendered identically to "My vaults" (same cards/actions); "Load a vault" is a separate section | identical markup for both sections; 3 sections on `/` |
+| REQ-VLT-013    | At boot, a global vault "MoriNet Documentation" (`morinet-docs`) is created and accessible to all users (idempotent seed, content embedded in the binary) | fresh install → the vault appears in "Shared with me" with no config |
 
 ## ACCOUNT — Self-service profile
 
@@ -187,12 +187,12 @@
 
 | REQ-ID           | Description                                                                                       | Verification              |
 |------------------|-----------------------------------------------------------------------------------|---------------------------|
-| REQ-OBSFMT-001   | Détection llm-wiki : pas de `book.toml`/`src/SUMMARY.md` → pipeline Obsidian ; ni l'un ni l'autre → warning admin « LLM-Wiki not detected: this vault might not work as expected » | route e2e + page admin    |
-| REQ-OBSFMT-002   | `[[slug]]` résolu à l'Obsidian (racine d'abord, le plus proche gagne, alias `[[t\|Texte]]`, `#section`) → lien md relatif que mdBook honore | unit + corpus             |
-| REQ-OBSFMT-003   | Wikilink cassé → texte inerte `<span class="wikilink-missing">`, jamais de 404 ; `![[embed]]` → image | unit + snapshot HTML      |
-| REQ-OBSFMT-004   | Frontmatter consommé : title → SUMMARY ; type/tags/created/updated → bloc méta en tête de page rendue | golden + snapshot         |
-| REQ-OBSFMT-005   | SUMMARY.md + book.toml régénérés à chaque sync depuis l'arborescence (index.md = Home) ; source jamais modifié (output dans `.morinet-build/`) | unit + convert tempdir    |
-| REQ-OBSFMT-006   | WebDAV PUT + rebuild passent par la conversion sur le source ; la nouvelle note apparaît | e2e route + curl          |
+| REQ-OBSFMT-001   | llm-wiki detection: no `book.toml`/`src/SUMMARY.md` → Obsidian pipeline; neither → admin warning "LLM-Wiki not detected: this vault might not work as expected" | route e2e + admin page    |
+| REQ-OBSFMT-002   | `[[slug]]` resolved Obsidian-style (root first, closest wins, alias `[[t\|Texte]]`, `#section`) → relative md link that mdBook honors | unit + corpus             |
+| REQ-OBSFMT-003   | Broken wikilink → inert text `<span class="wikilink-missing">`, never a 404; `![[embed]]` → image | unit + snapshot HTML      |
+| REQ-OBSFMT-004   | Frontmatter consumed: title → SUMMARY; type/tags/created/updated → meta block at the top of the rendered page | golden + snapshot         |
+| REQ-OBSFMT-005   | SUMMARY.md + book.toml regenerated on every sync from the directory tree (index.md = Home); source never modified (output in `.morinet-build/`) | unit + convert tempdir    |
+| REQ-OBSFMT-006   | WebDAV PUT + rebuild go through the conversion on the source; the new note appears | e2e route + curl          |
 
 ## Breakdown per phase
 
@@ -209,5 +209,5 @@
 - Phase 8 (access-model, quotas): REQ-GRP-001..008, REQ-VLT-001..008
 - Phase 10.1 (home-ux): REQ-VLT-009..013
 - Phase 9: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
-- Phase 8b: REQ-OBSFMT-001..006 (converter llm-wiki/Obsidian → mdBook)
-- Phase 9 pull-forward (2026-10-21, feedback user) : REQ-ACC-003 (`POST /logout`), REQ-NAV-006 (nav claire), REQ-ADMIN-007 (bouton About version + repo)
+- Phase 8b: REQ-OBSFMT-001..006 (llm-wiki/Obsidian → mdBook converter)
+- Phase 9 pull-forward (2026-10-21, user feedback): REQ-ACC-003 (`POST /logout`), REQ-NAV-006 (clear nav), REQ-ADMIN-007 (About button: version + repo)

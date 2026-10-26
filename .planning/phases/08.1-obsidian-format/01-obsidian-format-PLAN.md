@@ -21,7 +21,7 @@ proper feature.
 |---|----------|
 | D1 | **In-pipeline converter** in MoriNet (`AD-14`): sync transforms the Obsidian tree → a generated mdBook tree, then `mdbook build` runs on the *generated* tree. mdBook stays upstream (`AD-2` respected). No preprocessor plugin, no custom renderer. |
 | D2 | **Detection inverted** (`PRD-6`): MoriNet only loads llm-wiki vaults. Absence of `book.toml`/`src/SUMMARY.md` → llm-wiki pipeline. A vault matching *neither* format gets the admin-visible warning: `LLM-Wiki not detected: this vault might not work as expected`. |
-| D3 | **Wikilink resolution à l'Obsidian**: `[[slug]]` → first `**/slug.md` match (root first, then shallowest, then alphabetical, case-insensitive fallback). `[[target\|Alias]]` → `[Alias](rel/path.md)`. `[[page#Heading]]` → anchor kebab-cased to mdBook ids. `![[img.png]]` → image embed. **Broken link → inert text `<span class="wikilink-missing">`, never a 404.** |
+| D3 | **Obsidian-style wikilink resolution**: `[[slug]]` → first `**/slug.md` match (root first, then shallowest, then alphabetical, case-insensitive fallback). `[[target\|Alias]]` → `[Alias](rel/path.md)`. `[[page#Heading]]` → anchor kebab-cased to mdBook ids. `![[img.png]]` → image embed. **Broken link → inert text `<span class="wikilink-missing">`, never a 404.** |
 | D4 | **Frontmatter is consumed**: `title` (or first H1) → SUMMARY entry title; `type`/`tags`/`created`/`updated` → meta block at the top of the rendered page; everything else stripped from the body. |
 | D5 | **SUMMARY.md regenerated at every sync**: tree by folder, alphabetical, `index.md` as "Home". So notes created via WebDAV `PUT` appear without manual step. |
 

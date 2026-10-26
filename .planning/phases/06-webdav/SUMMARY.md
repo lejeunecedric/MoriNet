@@ -1,5 +1,5 @@
 # SUMMARY — 06 webdav ✅
 
-PROPFIND (depth 0/1) + GET + PUT admin sur `/webdav/<slug>/…` — expose la SOURCE du vault (markdown in, `mdbook build` out), HTTP Basic + ACL par vault. Pitfalls documentés dans STATE-LOG (percent-decode avant traversal check, `Method::PROPFIND` inexistant, `.route(any(h))`). REQ-WEBDAV-*.
+PROPFIND (depth 0/1) + GET + PUT admin at `/webdav/<slug>/…` — exposes the vault SOURCE (markdown in, `mdbook build` out), HTTP Basic + per-vault ACL. Pitfalls documented in STATE-LOG (percent-decode before traversal check, `Method::PROPFIND` does not exist, `.route(any(h))`). REQ-WEBDAV-*.
 
-Pre-GSD phase — pas de PLAN séparé ; détail dans ROADMAP Phase 06.
+Pre-GSD phase — no separate PLAN; details in ROADMAP Phase 06.

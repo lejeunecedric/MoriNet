@@ -1,5 +1,5 @@
 # SUMMARY — 09 ux-nav ✅ (v0.1.14)
 
-Header partagé sur toutes les pages (brand + My vaults + menu compte : display name via `POST /account/name`, email, logout), entrée Admin role=admin seulement, barre zoom + Close vault sur les pages mdBook. REQ-ACC-*, REQ-NAV-*.
+Shared header on all pages (brand + My vaults + account menu: display name via `POST /account/name`, email, logout), Admin entry for role=admin only, zoom bar + Close vault on mdBook pages. REQ-ACC-*, REQ-NAV-*.
 
-Pre-GSD phase — pas de PLAN séparé ; détail dans ROADMAP Phase 09.
+Pre-GSD phase — no separate PLAN; details in ROADMAP Phase 09.

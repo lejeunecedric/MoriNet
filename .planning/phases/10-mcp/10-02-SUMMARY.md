@@ -1,18 +1,18 @@
 # SUMMARY — 10-02 MCP StreamableHttp ✅ (2026-10-25)
 
-**Livré** : `src/mcp.rs` (module rmcp 3.7) + montage `ANY /mcp` dans `server.rs`.
+**Delivered** : `src/mcp.rs` (rmcp 3.7 module) + `ANY /mcp` mount in `server.rs`.
 
-- **Auth** : middleware Bearer → `Store::user_for_api_token` ; absent/inconnu/révoqué → 401 + `WWW-Authenticate: Bearer`. Cookies et mot de passe refusés.
-- **Transport** : `StreamableHttpService` stateless (`with_legacy_session_mode(false)` + `with_json_response(true)`), un `MoriMcp` frais par request lié à l'utilisateur du token — pas d'état croisable entre users.
-- **Tools** (tous scoped ACL via `accessible_vaults`, lecture de la SOURCE markdown, AD-13) :
-  `list_vaults`, `list_notes(slug, path?)`, `read_note(slug, path)`, `search_notes(query, slug?)` (insensible à la casse, cap 50 hits).
-- **Sécurité** : `safe_join` refuse `..` et chemins absolus ; erreur d'outil générique « vault not found or access denied » (pas de fuite d'existence).
+- **Auth** : Bearer middleware → `Store::user_for_api_token` ; missing/unknown/revoked → 401 + `WWW-Authenticate: Bearer`. Cookies and passwords rejected.
+- **Transport** : stateless `StreamableHttpService` (`with_legacy_session_mode(false)` + `with_json_response(true)`), a fresh `MoriMcp` per request bound to the token's user — no state crossable between users.
+- **Tools** (all ACL-scoped via `accessible_vaults`, reading the markdown SOURCE, AD-13) :
+  `list_vaults`, `list_notes(slug, path?)`, `read_note(slug, path)`, `search_notes(query, slug?)` (case-insensitive, capped at 50 hits).
+- **Security** : `safe_join` rejects `..` and absolute paths ; generic tool error "vault not found or access denied" (no existence leak).
 
-**TDD** : 5 tests unitaires mcp + 4 tests E2E HTTP (401 sans Bearer, forged/révoqué → 401, tools/list expose les 4 tools, tools/call bound au user du token), tous vus échouer d'abord. Suite : 213 verts, clippy `-D warnings` clean.
+**TDD** : 5 mcp unit tests + 4 HTTP E2E tests (401 without Bearer, forged/revoked → 401, tools/list exposes the 4 tools, tools/call bound to the token's user), all observed failing first. Suite : 213 green, clippy `-D warnings` clean.
 
-**Découvertes (rmcp 3.7)** :
-- le serveur valide l'en-tête `Host` (anti DNS-rebinding) — les clients HTTP bruts doivent l'envoyer ;
-- sans `MCP-Protocol-Version`, un request est traité comme legacy → session requise ; corrigé par `with_legacy_session_mode(false)` (stateless pour toutes les versions) ;
-- `ServerInfo` est déprécié → `#[tool_handler(router = self.tool_router)]` sans override `get_info`.
+**Discoveries (rmcp 3.7)** :
+- the server validates the `Host` header (anti DNS-rebinding) — raw HTTP clients must send it ;
+- without `MCP-Protocol-Version`, a request is treated as legacy → session required ; fixed by `with_legacy_session_mode(false)` (stateless for all versions) ;
+- `ServerInfo` is deprecated → `#[tool_handler(router = self.tool_router)]` without a `get_info` override.
 
-**Hors périmètre** (optionnel, non fait) : resource template `vault://<slug>/…`.
+**Out of scope** (optional, not done) : resource template `vault://<slug>/…`.
