@@ -80,6 +80,29 @@ fn app_page(title: &str, body: &str) -> Response {
     Html(html).into_response()
 }
 
+/// Authenticated variant of `app_page` that keeps the global header (brand +
+/// account menu) — issue #5: the Share / Statistics / Edit pages went through
+/// the bare shell and the top menu vanished on them. Every signed-in page must
+/// render through this so the nav never disappears.
+async fn nav_page(state: &SharedState, claims: &Claims, title: &str, body: &str) -> Response {
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{t}</title>
+<link rel="stylesheet" href="/assets/style.css"></head>
+<body>
+  {header}
+  {b}
+</body>
+</html>"#,
+        t = html_escape(title),
+        header = account_menu(state, claims).await,
+        b = body
+    );
+    Html(html).into_response()
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1937,7 +1960,7 @@ async fn vault_edit_page(
         u = html_escape(&source),
         c = if reshare { " checked" } else { "" },
     );
-    app_page("Edit vault", &body)
+    nav_page(&state, &claims, "Edit vault", &body).await
 }
 
 /// `POST /vault/{slug}/edit` — persist rename / re-source / re-share toggle,
@@ -2058,7 +2081,7 @@ async fn vault_share_page(
         n = html_escape(&name),
         s = html_escape(&slug),
     );
-    app_page("Share vault", &body)
+    nav_page(&state, &claims, "Share vault", &body).await
 }
 
 /// `POST /vault/{slug}/share` — upsert a share (email may be unregistered;
@@ -2226,7 +2249,7 @@ async fn vault_stats(
 </section>
 "#
         );
-        return app_page("Statistics", &body);
+        return nav_page(&state, &claims, "Statistics", &body).await;
     }
     let book_dir = PathBuf::from(&entry.vault.book_path);
     let pages = webdav::source_dir_of(&book_dir)
@@ -2304,7 +2327,7 @@ async fn vault_stats(
         day_rows = day_rows,
         top_rows = top_rows,
     );
-    app_page("Statistics", &body)
+    nav_page(&state, &claims, "Statistics", &body).await
 }
 
 async fn refresh_my_vault(
@@ -5360,6 +5383,28 @@ mod tests {
             1,
             "pending hint only for the unknown email: {body}"
         );
+    }
+
+    // Issue #5: Share / Statistics / Edit pages rendered through the bare
+    // `app_page` shell, which drops the global header (brand + account menu).
+    // Every authenticated page must keep the nav.
+    #[tokio::test]
+    async fn vault_subpages_keep_global_header() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        // owner: share/stats/edit on own vault; sharee: stats on shared vault
+        for path in [
+            "/vault/mine/share",
+            "/vault/mine/stats",
+            "/vault/mine/edit",
+            "/vault/demo/stats",
+        ] {
+            let res = req(app.clone(), "GET", path, cookie_hdr(&cookie), None).await;
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            let body = body_text(res).await;
+            assert!(body.contains("mori-nav"), "global header on {path}: {body}");
+        }
     }
 
     #[tokio::test]
