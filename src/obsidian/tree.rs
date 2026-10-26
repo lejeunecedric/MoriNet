@@ -35,6 +35,41 @@ pub fn page_title(fm: &Frontmatter, body: &str, rel: &str) -> String {
         .unwrap_or_else(|| rel.to_string())
 }
 
+/// Issue #7: llm-wiki note titles carry hierarchical decimal prefixes
+/// ("1. Foo", "15.1. Bar") used for ordering. The left menu must show the
+/// label without them — the prefix is stripped from DISPLAY text only; the
+/// sort still uses the full numbered title, so the order is preserved.
+/// Conservative: requires digits + period + space, so "3 Body Problem" and
+/// "1.Foo" (no space) are left alone.
+pub fn strip_menu_number(s: &str) -> String {
+    let digits = |c: char| c.is_ascii_digit();
+    let chars = s.char_indices();
+    let mut i = 0;
+    let mut dotted = false;
+    let mut saw_digit = false;
+    for (idx, c) in chars {
+        if digits(c) {
+            saw_digit = true;
+            i = idx + c.len_utf8();
+        } else if c == '.' && saw_digit {
+            // A period may follow digits ("1.") or another group ("15.1.").
+            dotted = true;
+            i += 1;
+        } else if c == ' ' && dotted {
+            return s[i + 1..].to_string();
+        } else {
+            break;
+        }
+    }
+    s.to_string()
+}
+
+/// Menu link text: strip the numeric prefix (issue #7), then make the title
+/// safe for `[text](target)` (see md_link_text).
+fn menu_link_text(s: &str) -> String {
+    md_link_text(&strip_menu_number(s))
+}
+
 /// Generate `src/SUMMARY.md` from page entries (locked D5: folder tree,
 /// alphabetical, `index.md` as Home, regenerated at every sync).
 /// Make a title/alias safe as `[link text](target)` (mdBook's SUMMARY parser
@@ -77,7 +112,7 @@ pub fn summary_md(entries: &[PageEntry]) -> String {
     if let Some(home) = entries.iter().find(|e| e.rel == "index.md") {
         out.push_str(&format!(
             "[{}]({})\n\n",
-            md_link_text(&home.title),
+            menu_link_text(&home.title),
             home.rel
         ));
     }
@@ -88,7 +123,7 @@ pub fn summary_md(entries: &[PageEntry]) -> String {
         .collect();
     sort_pages(&mut roots);
     for r in roots {
-        out.push_str(&format!("- [{}]({})\n", md_link_text(&r.title), r.rel));
+        out.push_str(&format!("- [{}]({})\n", menu_link_text(&r.title), r.rel));
     }
     // One section per top-level folder, alphabetical.
     let mut top_dirs: Vec<String> = entries
@@ -130,7 +165,11 @@ fn render_children(out: &mut String, dir_prefix: &str, kids: &[&PageEntry], inde
         .collect();
     sort_pages(&mut files);
     for f in files {
-        out.push_str(&format!("{pad}- [{}]({})\n", md_link_text(&f.title), f.rel));
+        out.push_str(&format!(
+            "{pad}- [{}]({})\n",
+            menu_link_text(&f.title),
+            f.rel
+        ));
     }
     let mut subs: Vec<String> = kids
         .iter()
@@ -151,7 +190,11 @@ fn render_children(out: &mut String, dir_prefix: &str, kids: &[&PageEntry], inde
             .iter()
             .find_map(|n| kids.iter().find(|e| e.rel == format!("{s}/{n}")));
         match parent {
-            Some(p) => out.push_str(&format!("{pad}- [{}]({})\n", md_link_text(&p.title), p.rel)),
+            Some(p) => out.push_str(&format!(
+                "{pad}- [{}]({})\n",
+                menu_link_text(&p.title),
+                p.rel
+            )),
             None => out.push_str(&format!(
                 "{pad}- {}\n",
                 humanize(s.split('/').next_back().unwrap_or(&s))
@@ -423,5 +466,43 @@ mod tests {
         // Empty frontmatter → no block.
         let (fm0, _) = frontmatter::split("no fm here");
         assert_eq!(meta_block(&fm0), "");
+    }
+
+    // Issue #7: llm-wiki titles carry hierarchical decimal prefixes
+    // ("1. ", "15.1. ") — the left menu must show the label without them.
+    #[test]
+    fn summary_strips_numeric_menu_prefixes() {
+        let entries = [
+            e("b.md", "2. B3Wiki"),
+            e("a.md", "1. AGENTS.md — instructions"),
+            e("c/15.1. new-releases.md", "15.1. new-releases"),
+        ];
+        let summary = summary_md(&entries);
+        assert!(
+            summary.contains("- [AGENTS.md — instructions](a.md)"),
+            "top-level number stripped:\n{summary}"
+        );
+        assert!(
+            summary.contains("- [B3Wiki](b.md)"),
+            "top-level number stripped:\n{summary}"
+        );
+        assert!(
+            summary.contains("[new-releases](c/15.1. new-releases.md)"),
+            "nested number stripped:\n{summary}"
+        );
+        // Sort still uses the numbered title: 1. before 2.
+        assert!(
+            summary.find("AGENTS").unwrap() < summary.find("B3Wiki").unwrap(),
+            "numeric order preserved:\n{summary}"
+        );
+    }
+
+    #[test]
+    fn strip_menu_number_keeps_plain_and_unpunctuated_titles() {
+        assert_eq!(strip_menu_number("1. Foo"), "Foo");
+        assert_eq!(strip_menu_number("15.1. Bar"), "Bar");
+        assert_eq!(strip_menu_number("3 Body Problem"), "3 Body Problem");
+        assert_eq!(strip_menu_number("1.Foo"), "1.Foo");
+        assert_eq!(strip_menu_number("B3Wiki Index"), "B3Wiki Index");
     }
 }
