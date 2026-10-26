@@ -157,13 +157,13 @@ a.menu-btn { text-decoration: none; }
   border-radius: var(--r-1);
 }
 a.menu-identity:hover { background: var(--accent-soft); text-decoration: none; }
-.menu-edit { font-size: .78rem; color: var(--accent); margin-top: 3px; }
+.menu-edit { font-size: .82rem; color: var(--accent); margin-top: 3px; }
 .menu-identity strong { font-size: .92rem; }
-.menu-email { font-size: .78rem; color: var(--muted); word-break: break-all; }
+.menu-email { font-size: .82rem; color: var(--muted); word-break: break-all; }
 .menu-sep { border: 0; border-top: 1px solid var(--border); margin: 4px -6px; }
 .menu-label {
   display: block;
-  font-size: .72rem;
+  font-size: .82rem;
   font-weight: 650;
   color: var(--muted);
   text-transform: uppercase;
@@ -223,9 +223,23 @@ li small { opacity: .85; }
 .vault-actions {
   margin-left: auto;
   display: flex;
+  align-items: center;
   gap: 6px;
 }
 .vault-actions button { padding: 5px 12px; font-size: .84rem; }
+/* Action-row forms are invisible wrappers around a button — the global
+   form rule (card background, padding, margin) must not leak in here,
+   otherwise Refresh/Delete render bigger than the link-buttons. */
+.vault-actions form { margin: 0; padding: 0; background: transparent; border: 0; }
+.vault-actions a.btn-ghost, .vault-actions a.btn-quiet {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  font-size: .84rem;
+  font-weight: 600;
+  border-radius: var(--r-1);
+  text-decoration: none;
+}
 
 /* ---------- forms ---------- */
 form {
@@ -316,7 +330,7 @@ code {
 .picker-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 #picker-path {
   font-family: ui-monospace, monospace;
-  font-size: .8rem;
+  font-size: .82rem;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;

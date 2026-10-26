@@ -870,7 +870,7 @@ async fn account_menu(state: &SharedState, claims: &Claims) -> String {
     // next to a menu that says "admin" read as two admin buttons (clutter).
     let admin_entry = if is_admin {
         r#"<hr class="menu-sep">
-        <a class="menu-link menu-admin" href="/admin">&#9881; Admin</a>"#
+        <a class="menu-link menu-admin" href="/admin">&#9881; Settings</a>"#
     } else {
         ""
     };
@@ -1090,7 +1090,7 @@ async fn admin_page(state: &SharedState, claims: &Claims, title: &str, body: Str
 <link rel="stylesheet" href="/assets/style.css"></head>
 <body>
   {header}
-  <h1 class="page-title">Admin</h1>
+  <h1 class="page-title">Settings</h1>
   <nav class="subnav"><a{users} href="/admin/users">Users</a><a{groups} href="/admin/groups">Groups</a><a{vaults} href="/admin/vaults">Vaults</a><a{about} href="/admin/about">About</a></nav>
   <h2>{title}</h2>
   {body}
