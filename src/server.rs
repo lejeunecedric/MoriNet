@@ -602,6 +602,32 @@ async fn vault_file(
 }
 
 /// ACL check + safe file serving from the vault's compiled book directory.
+/// Issue #9: every served vault page must carry the vault chrome (zoom +
+/// Close vault). Converted vaults already wire `theme/zoom.css` +
+/// `theme/morinet.js` via mdBook's `additional-css`/`additional-js`; native
+/// mdBook vaults have no `theme/` files at all, so inline the chrome assets
+/// at serve time. Pages that already reference the chrome get nothing extra.
+fn inject_vault_chrome(bytes: Vec<u8>) -> Vec<u8> {
+    let Ok(html) = std::str::from_utf8(&bytes) else {
+        return bytes; // not UTF-8: leave binary/odd payloads alone
+    };
+    if html.contains("zoom.css") || html.contains("morinet.js") {
+        return bytes;
+    }
+    let Some(pos) = html.rfind("</body>") else {
+        return bytes;
+    };
+    let mut out = Vec::with_capacity(bytes.len() + 8192);
+    out.extend_from_slice(&bytes[..pos]);
+    out.extend_from_slice(b"<style>");
+    out.extend_from_slice(crate::obsidian::tree::ZOOM_CSS.as_bytes());
+    out.extend_from_slice(b"</style><script>");
+    out.extend_from_slice(crate::obsidian::tree::MORINET_JS.as_bytes());
+    out.extend_from_slice(b"</script>");
+    out.extend_from_slice(&bytes[pos..]);
+    out
+}
+
 async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str) -> Response {
     // Access gate (REQ-VAULT-004): admin, owner of a personal vault, or a group
     // grant. Reading only needs read; writing (WebDAV PUT) needs write.
@@ -643,7 +669,7 @@ async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str)
                     log_web_access(state, email, slug, rel);
                     (
                         [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                        bytes,
+                        inject_vault_chrome(bytes),
                     )
                         .into_response()
                 }
@@ -654,7 +680,12 @@ async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str)
             Ok(bytes) => {
                 log_web_access(state, email, slug, rel);
                 let ct = content_type(rel);
-                ([(axum::http::header::CONTENT_TYPE, ct)], bytes).into_response()
+                let body = if ct.starts_with("text/html") {
+                    inject_vault_chrome(bytes)
+                } else {
+                    bytes
+                };
+                ([(axum::http::header::CONTENT_TYPE, ct)], body).into_response()
             }
             Err(_) => StatusCode::NOT_FOUND.into_response(),
         },
@@ -1114,6 +1145,7 @@ async fn admin_page(state: &SharedState, claims: &Claims, title: &str, body: Str
 <body>
   {header}
   <h1 class="page-title">Settings</h1>
+  <p class="settings-exit"><a href="/">Exit Settings</a></p>
   <nav class="subnav"><a{users} href="/admin/users">Users</a><a{groups} href="/admin/groups">Groups</a><a{vaults} href="/admin/vaults">Vaults</a><a{about} href="/admin/about">About</a></nav>
   <h2>{title}</h2>
   {body}
@@ -5405,6 +5437,71 @@ mod tests {
             let body = body_text(res).await;
             assert!(body.contains("mori-nav"), "global header on {path}: {body}");
         }
+    }
+
+    // Issue #9: every served vault page must carry the vault chrome (zoom +
+    // Close vault), including native mdBook vaults that were not built by the
+    // converter. Pages that already ship the chrome must not get it twice.
+    #[tokio::test]
+    async fn served_vault_pages_get_vault_chrome() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(
+            app.clone(),
+            "GET",
+            "/vault/mine/",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("morinet-zoom") && body.contains("</body>"),
+            "chrome injected before </body>: {body}"
+        );
+        // A page that already references the chrome (converted tree) is untouched.
+        let accessible = state
+            .store
+            .accessible_vaults("pal@example.com")
+            .await
+            .unwrap();
+        let book = std::path::PathBuf::from(
+            accessible
+                .iter()
+                .find(|a| a.vault.slug == "mine")
+                .unwrap()
+                .vault
+                .book_path
+                .clone(),
+        );
+        std::fs::write(
+            book.join("index.html"),
+            "<html><head><link href=\"theme/zoom.css\"></head><body>page</body></html>",
+        )
+        .unwrap();
+        let res = req(app, "GET", "/vault/mine/", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert_eq!(
+            body.matches("morinet-zoom").count(),
+            0,
+            "no double chrome: {body}"
+        );
+    }
+
+    // Issue #8: the Settings section needs an explicit way back to the app.
+    #[tokio::test]
+    async fn admin_pages_offer_exit_button() {
+        let (app, _) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/admin/users", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("Exit Settings") && body.contains("href=\"/\""),
+            "exit button back to main menu: {body}"
+        );
     }
 
     #[tokio::test]
