@@ -63,7 +63,7 @@ morinet serve --config ./config.toml
 
 ## Status
 
-**v1.0.0 stable.** Shipped: multi-vault hosting with groups and personal vaults, llm-wiki/Obsidian conversion, admin UI, email invites and reset, WebDAV, MCP server with API tokens, and a built-in docs vault.
+**v1.0.2 stable.** Shipped: multi-vault hosting with groups and personal vaults, llm-wiki/Obsidian conversion, admin UI, email invites and reset, WebDAV, MCP server with API tokens, and a built-in docs vault. 1.0.1–1.0.2: global header on Share/Statistics/Edit pages, vault chrome (zoom + Close vault) on every served page — native mdBook vaults included — and an "Exit Settings" link back to the main menu.
 
 **Live demo**: [morinet.treklair.fr](https://morinet.treklair.fr) — public demo instance, no real data; credentials are not in this repo.
 
