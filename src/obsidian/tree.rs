@@ -505,4 +505,20 @@ mod tests {
         assert_eq!(strip_menu_number("1.Foo"), "1.Foo");
         assert_eq!(strip_menu_number("B3Wiki Index"), "B3Wiki Index");
     }
+
+    // Issue #7 root cause: mdBook 0.5 renders its OWN chapter numbers in the
+    // sidebar (toc.js: <strong aria-hidden="true">1.</strong> inside each
+    // chapter link) — independent of the title text. The chrome CSS inlined
+    // into every served page must hide them.
+    #[test]
+    fn zoom_css_hides_mdbook_chapter_numbers() {
+        assert!(
+            ZOOM_CSS.contains("strong[aria-hidden=\"true\"]"),
+            "chrome CSS must target mdBook's injected chapter numbers"
+        );
+        assert!(
+            ZOOM_CSS.contains("display: none"),
+            "the numbers must be hidden"
+        );
+    }
 }

@@ -61,3 +61,8 @@
     transition: opacity .15s ease, background .15s ease;
 }
 #morinet-close-vault:hover { opacity: 1; background: rgba(128, 128, 128, 0.28); }
+
+/* Issue #7: mdBook 0.5 injects its own chapter numbers into sidebar links
+   (toc.js: <strong aria-hidden="true">1.</strong>) regardless of the title
+   text. The menu must show labels only — hide them. */
+.chapter-item a > strong[aria-hidden="true"] { display: none; }
