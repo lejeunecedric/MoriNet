@@ -28,3 +28,4 @@ Thumbs.db
 # Local-only infra notes (host, SSH, creds) — NEVER commit
 .planning/DEPLOY-LOCAL.md
 .deploy.env
+/.config/
