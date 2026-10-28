@@ -16,6 +16,10 @@ MoriNet hosts one or more **llm-wiki / Obsidian vaults** — plain markdown with
 - 🎛️ **Admin UI**: invite users, manage vaults, grants, and groups
 - 🏠 Built-in **docs vault** served out of the box
 
+
+<img width="759" height="648" alt="image" src="https://github.com/user-attachments/assets/78860577-55b9-49d0-9d5c-d86492f98fa6" />
+
+
 Architecture and design decisions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Install
@@ -60,6 +64,9 @@ morinet serve --config ./config.toml
 
 # 3. Log in at http://localhost:8080 with the admin account you just chose
 ```
+
+<img width="1177" height="1205" alt="image" src="https://github.com/user-attachments/assets/e80f1da8-2151-4492-95c0-b53e690e9ca8" />
+
 
 ## Status
 
