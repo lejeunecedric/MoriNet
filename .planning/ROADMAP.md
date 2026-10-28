@@ -24,7 +24,10 @@
 - [x] **Phase 08.1: obsidian-format** - In-pipeline llm-wiki → mdBook converter (v0.1.8)
 - [x] **Phase 09: ux-nav** - Nav shell + design system (v0.1.14..20)
 - [x] **Phase 10: mcp** - MCP StreamableHttp on `/mcp`, list/read/search tools (2026-10-25)
-- [ ] **Phase 11: polish** - Installer, README, `morinet init`, release v1.0.0
+- [x] **Phase 11: polish** - Installer, README, `morinet init`, release v1.0.0 (2026-10-25)
+- [ ] **Phase 12: demo-lock + vault display options** - demo account guard; per-vault page-numbers toggle + mdBook theme (v1.1.0)
+- [ ] **Phase 13: wiki-changes log** - record vault file changes at refresh; "Wiki changes" section in Statistics (v1.1.0)
+- [ ] **Phase 14: local-vault-upload** - "Local vault" button: client file picker → upload → register (v1.1.0)
 
 ## Progress
 
@@ -324,6 +327,40 @@ Plans:
 - Cargo.lock committed
 - Tag `v1.0.0` set, GitHub release created via cargo-dist
 - Announcement on the user's channel
+
+**Done 2026-10-25** (v1.0.0). Post-release hotfixes: **v1.0.1** (global header on Share/Statistics/Edit pages), **v1.0.2** (vault chrome on every served page — native mdBook vaults included — + Exit Settings button; issues #8, #9), **v1.0.3** (strip numeric prefixes from SUMMARY menu titles; issue #7 partial — see Phase 12).
+
+## Phase 12: demo-lock + vault display options (v1.1.0)
+
+**Goal**: the public demo cannot be defaced, and each vault owner controls how its pages render.
+
+**Criteria**:
+
+- Demo account guard: a configurable list of locked accounts (demo instance: `demo`); any attempt to load or delete a vault is refused server-side (clear error page) AND the home page shows a popup "demo account can't add or suppress vaults" when Load vault / Delete is clicked — REQ-DEMO-001..002
+- Per-vault display options stored on the `vaults` row and edited on the Edit page:
+  - **Keep page numbers** toggle — mdBook 0.5 injects its own chapter numbers in the sidebar (`toc.js` `<strong aria-hidden="true">`); v1.0.3 chrome CSS hides them globally, v1.1.0 makes it per-vault (default: hidden) — REQ-VOPT-001
+  - **Theme** select — mdBook built-ins (light, navy, rust, coal, ayu) applied via `book.toml [output.html] default-theme` at build time; converted vaults rebuild on refresh — REQ-VOPT-002
+- Issue #7 closes when this ships (the hide-numbers CSS rule from 2f1bcf1 becomes the toggle's "off" state)
+
+## Phase 13: wiki-changes log (v1.1.0)
+
+**Goal**: owners see what a refresh actually changed.
+
+**Criteria**:
+
+- New `vault_changes` table (vault, timestamp, kind added/modified/removed, path); populated when Refresh rebuilds a vault (git: diff old→new commit; local: hash-diff source tree before/after) — REQ-CHG-001
+- Statistics page gains a "Wiki changes" section: latest entries, newest first, grouped per refresh event — REQ-CHG-002
+- Best-effort: a logging failure never fails the refresh (same rule as access_log)
+
+## Phase 14: local-vault-upload (v1.1.0)
+
+**Goal**: load a vault straight from the user's machine, no server-side path picking.
+
+**Criteria**:
+
+- "Local vault" button next to "Load vault": client-side file/directory picker (`<input type=file>` + `webkitdirectory`, or zip) uploading the markdown tree to the server — REQ-LOC-001
+- Server stores the upload under the owner's space, runs the normal convert/build pipeline, registers the vault (quota + ACL identical to GitHub load) — REQ-LOC-002
+- Size limits enforced (request body cap, sane per-vault ceiling); non-markdown junk ignored or rejected with a clear error
 
 ---
 

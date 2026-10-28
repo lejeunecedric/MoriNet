@@ -27,13 +27,17 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 - ✓ Groups + personal vaults (`scope`/`owner_id`, `vault_group_acl`), per-group quotas (`free`=2, `admin`=∞) — REQ-GRP-*, REQ-VLT-005..008 (v0.1.9..v0.1.12)
 - ✓ Vault UX: server-side folder picker, browser import, GitHub URL auto-name, owner Refresh/Delete — REQ-UX-* (v0.1.10..v0.1.15)
 - ✓ Nav shell + design system (1 single header control, pill nav, zoom + Close vault on mdBook pages) — REQ-ACC-*, REQ-NAV-* (v0.1.14..v0.1.20)
+- ✓ MCP StreamableHttp on `/mcp`: Bearer tokens, list/read/search tools on accessible vaults — REQ-MCP-* (v1.0.0)
+- ✓ Polish + ship: minimal README, `morinet init`, local gate/release/deploy scripts — REQ-OPS-* (v1.0.0, 2026-10-25)
+- ✓ Post-release fixes: global header on sub-pages (v1.0.1), vault chrome on every served page + Exit Settings (v1.0.2, issues #8/#9), numeric menu prefixes stripped (v1.0.3, issue #7 partial)
 
 ### Active
 
-<!-- Milestone v1.0 — current scope. -->
+<!-- Milestone v1.1.0 — current scope (2026-10-28). -->
 
-- [ ] Phase 10 — MCP StreamableHttp on `/mcp`: Bearer auth, `list_vaults`, `list_notes`, `read_note`, `search_notes` tools on accessible vaults — REQ-MCP-*
-- [ ] Phase 11 — Polish v1.0: minimal README, `morinet init` (example config.toml), committed Cargo.lock, tag `v1.0.0` — REQ-OPS-*
+- [ ] Phase 12 — Demo account lock (server refuse + popup) + per-vault display options: keep-page-numbers toggle, mdBook theme select — REQ-DEMO-*, REQ-VOPT-*
+- [ ] Phase 13 — Wiki-changes log: `vault_changes` table fed at refresh + "Wiki changes" section in Statistics — REQ-CHG-*
+- [ ] Phase 14 — Local vault upload: client file picker → convert/build/register — REQ-LOC-*
 
 ### Out of Scope
 

@@ -106,6 +106,12 @@
 
 - **2026-10-25 (v1.0.0)** — RELEASE v1.0.0: scripts/release.sh fixed (lib.rs guard bumped atomically, no-op tolerated), check.sh gate, tag v1.0.0, GitHub release draft→assets→publish (id 423655496, x86_64 asset + sha256), direct deploy to holldemo → server on 1.0.0, /mcp 401, docs vault seeded on the demo, home 3 sections live. Frictions: fine-grained PAT created read-only (403 until Contents=Read and write); --follow-tags does not push lightweight tags.
 
+- **2026-10-26 (v1.0.2)** — RELEASE v1.0.2 (issues #8, #9): inject_vault_chrome() inlines zoom.css/zoom.js before `</body>` of every served vault page (native mdBook vaults had no chrome; converted trees untouched — no double); "Exit Settings" link on all admin pages. TDD: both tests written RED first from the user's issue reports. Pitfall: release.sh refuses a dirty tree — Cargo.lock must be amended into the bump commit.
+
+- **2026-10-28 (v1.0.3)** — RELEASE v1.0.3 (issue #7, partial): menu_link_text() strips llm-wiki decimal prefixes ("1. ", "15.1. ") from SUMMARY display text; sort keeps numbered order. **Root cause found after deploy**: the numbers the user still saw were mdBook 0.5's OWN sidebar numbering (toc.js injects `<strong aria-hidden="true">1.</strong>` per chapter link) — SUMMARY was already clean. Follow-up commit 2f1bcf1 hides them via chrome CSS (serve-time, no vault refresh needed) → ships in 1.1.0 with a per-vault toggle.
+
+- **2026-10-28 (v1.1.0 scoping)** — Milestone v1.1.0 opened from live-demo feedback: Phase 12 demo-account lock (server refuse + popup "demo account can't add or suppress vaults") + per-vault display options (keep-page-numbers toggle, mdBook theme select); Phase 13 wiki-changes log (`vault_changes` fed at refresh, "Wiki changes" section in Statistics); Phase 14 local vault upload (client file picker). ROADMAP/REQUIREMENTS/PROJECT/STATE updated. Note: repo-local `.config/` token file gitignored (never commit).
+
 ## Stats
 
 - Planning files: 5 (ROADMAP, REQUIREMENTS, STATE, index, Phase 0 PLAN)

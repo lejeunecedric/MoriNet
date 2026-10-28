@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.1.9
-milestone_name: → v0.1.13)
-status: executing
-stopped_at: GSD bootstrap complete (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modified, pending commit (user edit).
-last_updated: "2026-10-25T14:57:35.505Z"
-last_activity: 2026-10-25 -- Phase 10.1 planning complete
+milestone: v1.1.0
+milestone_name: demo hardening + vault options
+status: planning
+stopped_at: v1.0.3 released + deployed; v1.1.0 scoped (phases 12-14), planning docs updated 2026-10-28
+last_updated: "2026-10-28T08:39:16Z"
+last_activity: 2026-10-28 -- v1.1.0 milestone scoped into ROADMAP/REQUIREMENTS/PROJECT
 progress:
-  total_phases: 7
-  completed_phases: 1
-  total_plans: 10
-  completed_plans: 2
-  percent: 14
+  total_phases: 3
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 ## Current Position
 
-Phase: 11 of 12 COMPLETE — v1.0.0 released 2026-10-25
-Plan: Phase 11 executed 3/3 — v1.0.0 released (GitHub release + assets) and deployed to demo (270 tests green)
-Status: Ready to execute
-Last activity: 2026-10-25 -- Phase 10.1 planning complete
+Phase: none yet — v1.1.0 milestone scoped 2026-10-28 (phases 12-14)
+Plan: v1.0.0 released 2026-10-25; hotfixes v1.0.1 (header), v1.0.2 (chrome + Exit Settings, issues #8/#9), v1.0.3 (SUMMARY number strip) all released + deployed; issue #7 real fix (hide mdBook toc.js numbers via chrome CSS) committed, ships in 1.1.0
+Status: Ready to plan Phase 12
+Last activity: 2026-10-28 -- v1.1.0 milestone scoped into ROADMAP/REQUIREMENTS/PROJECT
 
-Progress: [█████████░] 93% (13/14 phases)
+Progress: [░░░░░░░░░░] 0% (0/3 phases of v1.1.0)
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ Progress: [█████████░] 93% (13/14 phases)
 ### Roadmap Evolution
 
 - Phase 10.1 inserted after Phase 10: Home UX: vault actions, share by email, statistics (URGENT)
+- 2026-10-28: v1.1.0 milestone opened — Phase 12 (demo lock + per-vault page-numbers toggle + mdBook theme), Phase 13 (wiki-changes log in Statistics), Phase 14 (local vault upload). Driven by user feedback on the live demo (issues #7/#8/#9 + new requests).
 
 ### Decisions
 

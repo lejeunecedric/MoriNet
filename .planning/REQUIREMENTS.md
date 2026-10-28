@@ -194,6 +194,17 @@
 | REQ-OBSFMT-005   | SUMMARY.md + book.toml regenerated on every sync from the directory tree (index.md = Home); source never modified (output in `.morinet-build/`) | unit + convert tempdir    |
 | REQ-OBSFMT-006   | WebDAV PUT + rebuild go through the conversion on the source; the new note appears | e2e route + curl          |
 
+## V11 — v1.1.0 milestone (demo hardening + vault options)
+
+- [ ] REQ-DEMO-001: locked accounts (config list; demo instance: `demo`) cannot load or delete vaults — server refuses with a clear error page
+- [ ] REQ-DEMO-002: home page shows popup "demo account can't add or suppress vaults" when a locked account clicks Load vault or Delete
+- [ ] REQ-VOPT-001: per-vault "keep page numbers" toggle on the Edit page (default off = mdBook sidebar chapter numbers hidden; on = shown)
+- [ ] REQ-VOPT-002: per-vault mdBook theme select on the Edit page (light, navy, rust, coal, ayu) via `book.toml [output.html] default-theme`
+- [ ] REQ-CHG-001: refresh records vault file changes (added/modified/removed paths) in a `vault_changes` table; best-effort, never fails the refresh
+- [ ] REQ-CHG-002: Statistics page shows a "Wiki changes" section (latest changes, newest first, grouped per refresh event)
+- [ ] REQ-LOC-001: "Local vault" button opens a client-side file/directory picker and uploads the markdown tree
+- [ ] REQ-LOC-002: uploaded tree is stored under the owner's space and goes through the normal convert/build/register pipeline (quota + ACL as GitHub load)
+
 ## Breakdown per phase
 
 - Phase 0: REQ-INFRA-001, 002, 003, 005, 006, REQ-OPS-001
@@ -211,3 +222,6 @@
 - Phase 9: REQ-OPS-002..005, REQ-OBS-001..005 (visual mods + finalization)
 - Phase 8b: REQ-OBSFMT-001..006 (llm-wiki/Obsidian → mdBook converter)
 - Phase 9 pull-forward (2026-10-21, user feedback): REQ-ACC-003 (`POST /logout`), REQ-NAV-006 (clear nav), REQ-ADMIN-007 (About button: version + repo)
+- Phase 12 (v1.1.0): REQ-DEMO-001..002, REQ-VOPT-001..002
+- Phase 13 (v1.1.0): REQ-CHG-001..002
+- Phase 14 (v1.1.0): REQ-LOC-001..002
