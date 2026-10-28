@@ -6543,4 +6543,135 @@ mod tests {
             "chrome not injected twice: {body}"
         );
     }
+
+    /// Seed a vault whose book dir holds `page` as its index.html. Slug must
+    /// be unique per test (pitfalls #16/#23: parallel tests, shared tmpdir).
+    async fn seed_options_vault(state: &SharedState, slug: &str, page: &str) {
+        let dir = std::env::temp_dir().join(format!("morinet-opt-{slug}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), page).unwrap();
+        state
+            .store
+            .seed_vault(slug, "Options vault", &dir)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn serve_page_numbers_off_hides_by_default() {
+        let (app, state) = test_router().await;
+        seed_options_vault(&state, "optoff", MDBOOK_PAGE).await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/optoff/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        // D-09/D-12 "off" state: no override — the global zoom.css hide rule
+        // remains the only rule touching chapter numbers.
+        assert!(
+            !body.contains(PAGE_NUMBERS_OVERRIDE),
+            "default vault must not get the override: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_page_numbers_on_injects_override() {
+        let (app, state) = test_router().await;
+        seed_options_vault(&state, "opton", MDBOOK_PAGE).await;
+        state
+            .store
+            .set_keep_page_numbers("opton", true)
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/opton/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        let chrome = body
+            .find("morinet-zoom")
+            .expect("vault chrome present (both passes coexist)");
+        let override_pos = body
+            .find(PAGE_NUMBERS_OVERRIDE)
+            .expect("override style injected");
+        let body_end = body.rfind("</body>").unwrap();
+        assert!(
+            chrome < override_pos && override_pos < body_end,
+            "override appears after chrome injection and before </body>"
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_theme_rewrite_applied() {
+        let (app, state) = test_router().await;
+        seed_options_vault(&state, "opttheme", MDBOOK_PAGE).await;
+        state.store.set_theme("opttheme", "rust").await.unwrap();
+        let cookie = login_cookie(&app).await;
+        // Directory→index branch and direct file branch both apply the pass.
+        for uri in ["/vault/opttheme/", "/vault/opttheme/index.html"] {
+            let res = req(app.clone(), "GET", uri, cookie_hdr(&cookie), None).await;
+            assert_eq!(res.status(), StatusCode::OK, "{uri}");
+            let body = body_text(res).await;
+            assert!(
+                body.contains(r#"default_light_theme = "rust";"#)
+                    && body.contains(r#"default_dark_theme = "rust";"#),
+                "theme rewritten in {uri}: {body}"
+            );
+            assert!(
+                !body.contains(r#"default_light_theme = "light";"#)
+                    && !body.contains(r#"default_dark_theme = "navy";"#),
+                "original literals gone in {uri}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_theme_unset_leaves_page_untouched() {
+        let (app, state) = test_router().await;
+        seed_options_vault(&state, "optunset", MDBOOK_PAGE).await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/optunset/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains(r#"default_light_theme = "light";"#)
+                && body.contains(r#"default_dark_theme = "navy";"#),
+            "theme unset: both original literals intact: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_converted_vault_page_still_gets_options() {
+        let (app, state) = test_router().await;
+        // Simulates the converted-vault early-return path: the page already
+        // wires morinet.js, so chrome injection skips it — the option pass
+        // must still rewrite the theme literals.
+        let page = MDBOOK_PAGE.replace(
+            "</head>",
+            "<script src=\"theme/morinet.js\"></script></head>",
+        );
+        seed_options_vault(&state, "optconv", &page).await;
+        state.store.set_theme("optconv", "coal").await.unwrap();
+        state
+            .store
+            .set_keep_page_numbers("optconv", true)
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/optconv/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains(r#"default_light_theme = "coal";"#)
+                && body.contains(r#"default_dark_theme = "coal";"#),
+            "converted page still gets the theme rewrite: {body}"
+        );
+        assert!(
+            body.contains(PAGE_NUMBERS_OVERRIDE),
+            "converted page still gets the page-numbers override"
+        );
+        assert!(
+            !body.contains("morinet-zoom"),
+            "chrome not double-injected on converted page"
+        );
+    }
 }
