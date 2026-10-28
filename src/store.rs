@@ -21,6 +21,12 @@ pub struct Vault {
     pub scope: String,
     /// Owner email for a personal vault; None for a global one.
     pub owner_email: Option<String>,
+    /// Owner display option: keep mdBook chapter page numbers visible
+    /// (REQ-VOPT-001; default false = hidden by the global CSS rule).
+    pub keep_page_numbers: bool,
+    /// Owner display option: mdBook theme name; `""` = mdBook default/auto
+    /// (REQ-VOPT-002; whitelisted server-side to light|navy|rust|coal|ayu).
+    pub theme: String,
 }
 
 #[derive(Debug, Clone)]
@@ -198,37 +204,62 @@ impl Store {
             None => Ok(vec![]),
             Some((r,)) if r == "admin" => self.list_all_vaults().await,
             Some(_) => {
-                let rows: Vec<(i64, String, String, String, String, Option<String>)> =
-                    sqlx::query_as(
-                        "SELECT v.id, v.slug, v.name, v.book_path, v.scope, owner.email \
+                let rows: Vec<(
+                    i64,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    bool,
+                    String,
+                )> = sqlx::query_as(
+                    "SELECT v.id, v.slug, v.name, v.book_path, v.scope, owner.email, \
+                     v.keep_page_numbers, v.theme \
                      FROM vaults v \
                      JOIN vault_acl a ON a.vault_id = v.id \
                      JOIN users u ON u.id = a.user_id \
                      LEFT JOIN users owner ON owner.id = v.owner_id \
                      WHERE u.email = ? \
                      ORDER BY v.slug",
-                    )
-                    .bind(email)
-                    .fetch_all(&self.pool)
-                    .await?;
+                )
+                .bind(email)
+                .fetch_all(&self.pool)
+                .await?;
                 Ok(rows
                     .into_iter()
-                    .map(|(id, slug, name, book_path, scope, owner_email)| Vault {
-                        id,
-                        slug,
-                        name,
-                        book_path,
-                        scope,
-                        owner_email,
-                    })
+                    .map(
+                        |(id, slug, name, book_path, scope, owner_email, keep_page_numbers, theme)| {
+                            Vault {
+                                id,
+                                slug,
+                                name,
+                                book_path,
+                                scope,
+                                owner_email,
+                                keep_page_numbers,
+                                theme,
+                            }
+                        },
+                    )
                     .collect())
             }
         }
     }
 
     pub async fn list_all_vaults(&self) -> anyhow::Result<Vec<Vault>> {
-        let rows: Vec<(i64, String, String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT v.id, v.slug, v.name, v.book_path, v.scope, u.email
+        let rows: Vec<(
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            bool,
+            String,
+        )> = sqlx::query_as(
+            "SELECT v.id, v.slug, v.name, v.book_path, v.scope, u.email, \
+             v.keep_page_numbers, v.theme
              FROM vaults v LEFT JOIN users u ON u.id = v.owner_id
              ORDER BY v.scope, v.slug",
         )
@@ -236,14 +267,18 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, slug, name, book_path, scope, owner_email)| Vault {
-                id,
-                slug,
-                name,
-                book_path,
-                scope,
-                owner_email,
-            })
+            .map(
+                |(id, slug, name, book_path, scope, owner_email, keep_page_numbers, theme)| Vault {
+                    id,
+                    slug,
+                    name,
+                    book_path,
+                    scope,
+                    owner_email,
+                    keep_page_numbers,
+                    theme,
+                },
+            )
             .collect())
     }
 
@@ -701,26 +736,31 @@ impl Store {
 
         // Admins: everything.
         if is_admin {
-            let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
-                "SELECT v.id, v.slug, v.name, v.book_path, v.scope
+            let rows: Vec<(i64, String, String, String, String, bool, String)> = sqlx::query_as(
+                "SELECT v.id, v.slug, v.name, v.book_path, v.scope, \
+                 v.keep_page_numbers, v.theme
                  FROM vaults v ORDER BY v.scope DESC, v.slug",
             )
             .fetch_all(&self.pool)
             .await?;
             return Ok(rows
                 .into_iter()
-                .map(|(id, slug, name, book_path, scope)| AccessibleVault {
-                    vault: Vault {
-                        id,
-                        slug,
-                        name,
-                        book_path,
-                        scope: scope.clone(),
-                        owner_email: None,
-                    },
-                    role: "write".to_string(),
-                    personal: scope == "personal",
-                    direct_share: false,
+                .map(|(id, slug, name, book_path, scope, keep_page_numbers, theme)| {
+                    AccessibleVault {
+                        vault: Vault {
+                            id,
+                            slug,
+                            name,
+                            book_path,
+                            scope: scope.clone(),
+                            owner_email: None,
+                            keep_page_numbers,
+                            theme,
+                        },
+                        role: "write".to_string(),
+                        personal: scope == "personal",
+                        direct_share: false,
+                    }
                 })
                 .collect());
         }
@@ -728,8 +768,9 @@ impl Store {
         let mut out: Vec<AccessibleVault> = Vec::new();
 
         // Personal vaults owned by this user.
-        let own: Vec<(i64, String, String, String, String)> = sqlx::query_as(
-            "SELECT v.id, v.slug, v.name, v.book_path, u.email
+        let own: Vec<(i64, String, String, String, String, bool, String)> = sqlx::query_as(
+            "SELECT v.id, v.slug, v.name, v.book_path, u.email, \
+             v.keep_page_numbers, v.theme
              FROM vaults v JOIN users u ON u.id = v.owner_id
              WHERE v.scope = 'personal' AND v.owner_id = ?
              ORDER BY v.slug",
@@ -737,7 +778,7 @@ impl Store {
         .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
-        for (id, slug, name, book_path, email) in own {
+        for (id, slug, name, book_path, email, keep_page_numbers, theme) in own {
             out.push(AccessibleVault {
                 vault: Vault {
                     id,
@@ -746,6 +787,8 @@ impl Store {
                     book_path,
                     scope: "personal".to_string(),
                     owner_email: Some(email),
+                    keep_page_numbers,
+                    theme,
                 },
                 role: "write".to_string(),
                 personal: true,
@@ -755,10 +798,11 @@ impl Store {
 
         // Global vaults granted through any of the user's groups. The strongest
         // role per vault wins, hence the GROUP BY + MAX-like CASE.
-        let globals: Vec<(i64, String, String, String, String)> = sqlx::query_as(
+        let globals: Vec<(i64, String, String, String, String, bool, String)> = sqlx::query_as(
             "SELECT v.id, v.slug, v.name, v.book_path,
                     CASE WHEN MAX(CASE a.role WHEN 'write' THEN 1 ELSE 0 END) = 1
-                         THEN 'write' ELSE 'read' END AS role
+                         THEN 'write' ELSE 'read' END AS role,
+                    v.keep_page_numbers, v.theme
              FROM vaults v
              JOIN vault_group_acl a ON a.vault_id = v.id
              JOIN group_members m ON m.group_id = a.group_id
@@ -769,7 +813,7 @@ impl Store {
         .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
-        for (id, slug, name, book_path, role) in globals {
+        for (id, slug, name, book_path, role, keep_page_numbers, theme) in globals {
             out.push(AccessibleVault {
                 vault: Vault {
                     id,
@@ -778,6 +822,8 @@ impl Store {
                     book_path,
                     scope: "global".to_string(),
                     owner_email: None,
+                    keep_page_numbers,
+                    theme,
                 },
                 role,
                 personal: false,
@@ -788,9 +834,20 @@ impl Store {
         // Direct email shares (not hidden). A vault already present (personal
         // or group-granted) is NOT duplicated — the stronger role wins; a
         // share-only row carries direct_share=true for the web layer.
-        type ShareRow = (i64, String, String, String, String, String, Option<String>);
+        type ShareRow = (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            bool,
+            String,
+        );
         let shares: Vec<ShareRow> = sqlx::query_as(
-            "SELECT v.id, v.slug, v.name, v.book_path, v.scope, s.role, ou.email \
+            "SELECT v.id, v.slug, v.name, v.book_path, v.scope, s.role, ou.email, \
+                 v.keep_page_numbers, v.theme \
                  FROM vault_shares s \
                  JOIN vaults v ON v.id = s.vault_id \
                  LEFT JOIN users ou ON ou.id = v.owner_id \
@@ -800,7 +857,18 @@ impl Store {
         .bind(email)
         .fetch_all(&self.pool)
         .await?;
-        for (id, slug, name, book_path, scope, share_role, owner_email) in shares {
+        for (
+            id,
+            slug,
+            name,
+            book_path,
+            scope,
+            share_role,
+            owner_email,
+            keep_page_numbers,
+            theme,
+        ) in shares
+        {
             let role = if share_role == "writer" {
                 "write"
             } else {
@@ -820,6 +888,8 @@ impl Store {
                     book_path,
                     scope,
                     owner_email,
+                    keep_page_numbers,
+                    theme,
                 },
                 role: role.to_string(),
                 personal: false,
@@ -1216,6 +1286,46 @@ impl Store {
     pub async fn set_allow_reshare(&self, slug: &str, on: bool) -> anyhow::Result<()> {
         sqlx::query("UPDATE vaults SET allow_reshare = ? WHERE slug = ?")
             .bind(on)
+            .bind(slug)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Current value of the keep-page-numbers toggle (prefills the Edit form).
+    pub async fn keep_page_numbers(&self, slug: &str) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT keep_page_numbers FROM vaults WHERE slug = ?")
+                .bind(slug)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(v,)| v != 0).unwrap_or(false))
+    }
+
+    /// Per-vault keep-page-numbers toggle (part of the owner's Edit form).
+    pub async fn set_keep_page_numbers(&self, slug: &str, on: bool) -> anyhow::Result<()> {
+        sqlx::query("UPDATE vaults SET keep_page_numbers = ? WHERE slug = ?")
+            .bind(on)
+            .bind(slug)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Current mdBook theme choice (`""` = auto; prefills the Edit form).
+    pub async fn theme(&self, slug: &str) -> anyhow::Result<String> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT theme FROM vaults WHERE slug = ?")
+            .bind(slug)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(t,)| t).unwrap_or_default())
+    }
+
+    /// Per-vault mdBook theme (part of the owner's Edit form; the caller is
+    /// responsible for the server-side whitelist — D-07).
+    pub async fn set_theme(&self, slug: &str, theme: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE vaults SET theme = ? WHERE slug = ?")
+            .bind(theme)
             .bind(slug)
             .execute(&self.pool)
             .await?;
@@ -1810,6 +1920,57 @@ mod tests {
             .fetch_all(&s.pool)
             .await
             .unwrap();
+    }
+
+    // ---------- Phase 12 / PLAN 12-02 Task 1: migration 0009 shape ----------
+
+    #[tokio::test]
+    async fn display_options_migration_shape() {
+        let s = store().await;
+        s.seed_vault("dispshape", "DispShape", Path::new("/tmp/dispshape/book"))
+            .await
+            .unwrap();
+        // New vaults columns: keep_page_numbers defaults to 0, theme defaults
+        // to '' (mdBook default/auto behavior).
+        let (keep, theme): (i64, String) = sqlx::query_as(
+            "SELECT keep_page_numbers, theme FROM vaults WHERE slug = 'dispshape'",
+        )
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(keep, 0, "keep_page_numbers defaults to 0");
+        assert_eq!(theme, "", "theme defaults to '' (auto)");
+    }
+
+    #[tokio::test]
+    async fn keep_page_numbers_roundtrip() {
+        let s = store().await;
+        s.seed_vault("keepnum", "KeepNum", Path::new("/tmp/keepnum/book"))
+            .await
+            .unwrap();
+        assert!(
+            !s.keep_page_numbers("keepnum").await.unwrap(),
+            "defaults to false"
+        );
+        s.set_keep_page_numbers("keepnum", true).await.unwrap();
+        assert!(s.keep_page_numbers("keepnum").await.unwrap());
+        // A vault seeded in a fresh store still defaults to false.
+        let s2 = store().await;
+        s2.seed_vault("keepnum2", "KeepNum2", Path::new("/tmp/keepnum2/book"))
+            .await
+            .unwrap();
+        assert!(!s2.keep_page_numbers("keepnum2").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn theme_roundtrip() {
+        let s = store().await;
+        s.seed_vault("themert", "ThemeRt", Path::new("/tmp/themert/book"))
+            .await
+            .unwrap();
+        assert_eq!(s.theme("themert").await.unwrap(), "", "default is ''");
+        s.set_theme("themert", "coal").await.unwrap();
+        assert_eq!(s.theme("themert").await.unwrap(), "coal");
     }
 
     #[tokio::test]
