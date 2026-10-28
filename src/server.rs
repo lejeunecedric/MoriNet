@@ -2011,6 +2011,14 @@ struct EditForm {
     #[serde(default)]
     url: String,
     allow_reshare: Option<String>,
+    /// Checkbox semantics: field present = on, absent = off (like
+    /// `allow_reshare`). REQ-VOPT-001.
+    #[serde(default)]
+    keep_page_numbers: Option<String>,
+    /// mdBook theme name, `""` = auto (REQ-VOPT-002). Validated against the
+    /// server-side whitelist in `vault_edit_submit` — reject, never coerce.
+    #[serde(default)]
+    theme: String,
 }
 
 /// `GET /vault/{slug}/edit` — owner-only settings form (REQ-VLT-009).
@@ -2038,6 +2046,34 @@ async fn vault_edit_page(
         .flatten()
         .unwrap_or_default();
     let reshare = state.store.allow_reshare(&slug).await.unwrap_or(false);
+    let keep = state
+        .store
+        .keep_page_numbers(&slug)
+        .await
+        .unwrap_or(false);
+    let theme = state.store.theme(&slug).await.unwrap_or_default();
+    // D-11: the theme select renders only for converted (llm-wiki pipeline)
+    // vaults — converted ⇔ book_path contains the `.morinet-build` path
+    // component (precedent: `source_dir_of` in webdav.rs). A native vault's
+    // owner edits book.toml directly. The page-numbers checkbox shows for
+    // every personal vault.
+    let converted = std::path::Path::new(&a.vault.book_path)
+        .components()
+        .any(|c| c.as_os_str() == ".morinet-build");
+    let theme_field = if converted {
+        let sel = |v: &str| if theme == v { " selected" } else { "" };
+        format!(
+            r#"<div class="field"><label for="ev-theme">Theme</label><select id="ev-theme" name="theme"><option value=""{t_auto}>auto</option><option value="light"{t_light}>light</option><option value="navy"{t_navy}>navy</option><option value="rust"{t_rust}>rust</option><option value="coal"{t_coal}>coal</option><option value="ayu"{t_ayu}>ayu</option></select></div>"#,
+            t_auto = sel(""),
+            t_light = sel("light"),
+            t_navy = sel("navy"),
+            t_rust = sel("rust"),
+            t_coal = sel("coal"),
+            t_ayu = sel("ayu"),
+        )
+    } else {
+        String::new()
+    };
     let body = format!(
         r#"<section class="panel">
 <h2>Edit vault</h2>
@@ -2045,6 +2081,7 @@ async fn vault_edit_page(
   <div class="field"><label for="ev-name">Name</label><input id="ev-name" type="text" name="name" value="{n}" required></div>
   <div class="field field-wide"><label for="ev-url">Source URL <small>(next Refresh pulls this repo)</small></label><input id="ev-url" type="url" name="url" value="{u}" placeholder="https://github.com/owner/repo"></div>
   <div class="field"><label><input id="ev-reshare" type="checkbox" name="allow_reshare"{c}> Allow sharees to re-share this vault</label></div>
+  <div class="field"><label><input id="ev-keep" type="checkbox" name="keep_page_numbers"{k}> Keep chapter page numbers</label></div>{tf}
   <button type="submit">Save</button>
 </form>
 </section>
@@ -2053,6 +2090,8 @@ async fn vault_edit_page(
         n = html_escape(&a.vault.name),
         u = html_escape(&source),
         c = if reshare { " checked" } else { "" },
+        k = if keep { " checked" } else { "" },
+        tf = theme_field,
     );
     nav_page(&state, &claims, "Edit vault", &body).await
 }
@@ -2070,6 +2109,12 @@ async fn vault_edit_submit(
     }
     if is_locked(&state, &claims.email).await {
         return error_page("demo account can't add or suppress vaults");
+    }
+    // D-07: server-side theme whitelist — an unknown value rejects the whole
+    // POST (400), it is never coerced to a default. `""` = mdBook auto.
+    const THEMES: [&str; 6] = ["", "light", "navy", "rust", "coal", "ayu"];
+    if !THEMES.contains(&p.theme.as_str()) {
+        return error_page(&format!("unknown theme \"{}\"", p.theme));
     }
     let name = p.name.trim();
     if name.is_empty() {
@@ -2091,6 +2136,18 @@ async fn vault_edit_submit(
         .await
     {
         return error_page(&format!("could not update the re-share setting: {e}"));
+    }
+    if let Err(e) = state
+        .store
+        .set_keep_page_numbers(&slug, p.keep_page_numbers.is_some())
+        .await
+    {
+        return error_page(&format!(
+            "could not update the page-numbers setting: {e}"
+        ));
+    }
+    if let Err(e) = state.store.set_theme(&slug, &p.theme).await {
+        return error_page(&format!("could not update the theme: {e}"));
     }
     Redirect::to("/").into_response()
 }
@@ -3309,6 +3366,145 @@ mod tests {
             !state.store.allow_reshare("mine").await.unwrap(),
             "absent checkbox clears the toggle"
         );
+    }
+
+    // ---------- Phase 12 / PLAN 12-02 Task 2: display options on the Edit page ----------
+
+    #[tokio::test]
+    async fn edit_page_shows_display_options() {
+        // A vault loaded through the llm-wiki pipeline (converted): the Edit
+        // page shows the page-numbers checkbox AND the theme select (D-11).
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("disp@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("free").await.unwrap();
+        state.store.set_group_limit(g, Some(2)).await.unwrap();
+        state
+            .store
+            .add_group_member(g, "disp@example.com")
+            .await
+            .unwrap();
+        let url = wiki_repo("dispwiki-edit");
+        let cookie = login_as(&app, "disp@example.com", "pw").await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/create",
+            form_headers(&cookie),
+            Some(Body::from(format!("name=DispWiki&url={url}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(
+            app,
+            "GET",
+            "/vault/dispwiki/edit",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        let body = body_text(res).await;
+        assert!(
+            body.contains("name=\"keep_page_numbers\""),
+            "page-numbers checkbox missing: {body}"
+        );
+        assert!(body.contains("name=\"theme\""), "theme select missing");
+        for opt in ["light", "navy", "rust", "coal", "ayu"] {
+            assert!(
+                body.contains(&format!("option value=\"{opt}\"")),
+                "theme option {opt} missing"
+            );
+        }
+        assert!(
+            body.contains("<option value=\"\""),
+            "auto option (value='') missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_page_native_vault_hides_theme_select() {
+        // D-11: a native (non-converted) personal vault gets the checkbox but
+        // no theme select — its owner edits book.toml directly.
+        let (app, state) = test_router().await;
+        seed_edit_fixture(&state).await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/mine/edit", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(
+            body.contains("name=\"keep_page_numbers\""),
+            "page-numbers checkbox missing: {body}"
+        );
+        assert!(
+            !body.contains("name=\"theme\""),
+            "theme select must not render for a native vault"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_submit_persists_display_options() {
+        let (app, state) = test_router().await;
+        seed_edit_fixture(&state).await;
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(
+            app,
+            "POST",
+            "/vault/mine/edit",
+            form_headers(&cookie),
+            Some(Body::from(
+                "name=My+Book&url=&keep_page_numbers=on&theme=coal",
+            )),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(state.store.keep_page_numbers("mine").await.unwrap());
+        assert_eq!(state.store.theme("mine").await.unwrap(), "coal");
+    }
+
+    #[tokio::test]
+    async fn edit_submit_without_checkbox_clears_keep_page_numbers() {
+        let (app, state) = test_router().await;
+        seed_edit_fixture(&state).await;
+        state
+            .store
+            .set_keep_page_numbers("mine", true)
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(
+            app,
+            "POST",
+            "/vault/mine/edit",
+            form_headers(&cookie),
+            Some(Body::from("name=My+Book&url=")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(
+            !state.store.keep_page_numbers("mine").await.unwrap(),
+            "absent checkbox clears the toggle"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_submit_rejects_bad_theme() {
+        let (app, state) = test_router().await;
+        seed_edit_fixture(&state).await;
+        state.store.set_theme("mine", "coal").await.unwrap();
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(
+            app,
+            "POST",
+            "/vault/mine/edit",
+            form_headers(&cookie),
+            Some(Body::from("name=My+Book&url=&theme=hacker")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // REJECT, not coerce: the stored theme is untouched.
+        assert_eq!(state.store.theme("mine").await.unwrap(), "coal");
     }
 
     #[tokio::test]

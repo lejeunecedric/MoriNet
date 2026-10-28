@@ -29,6 +29,19 @@ pub struct Vault {
     pub theme: String,
 }
 
+/// Row shape shared by the vault-list queries:
+/// `(id, slug, name, book_path, scope, owner_email, keep_page_numbers, theme)`.
+type VaultRow = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    bool,
+    String,
+);
+
 #[derive(Debug, Clone)]
 pub struct User {
     pub id: i64,
@@ -204,16 +217,7 @@ impl Store {
             None => Ok(vec![]),
             Some((r,)) if r == "admin" => self.list_all_vaults().await,
             Some(_) => {
-                let rows: Vec<(
-                    i64,
-                    String,
-                    String,
-                    String,
-                    String,
-                    Option<String>,
-                    bool,
-                    String,
-                )> = sqlx::query_as(
+                let rows: Vec<VaultRow> = sqlx::query_as(
                     "SELECT v.id, v.slug, v.name, v.book_path, v.scope, owner.email, \
                      v.keep_page_numbers, v.theme \
                      FROM vaults v \
@@ -248,16 +252,7 @@ impl Store {
     }
 
     pub async fn list_all_vaults(&self) -> anyhow::Result<Vec<Vault>> {
-        let rows: Vec<(
-            i64,
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            bool,
-            String,
-        )> = sqlx::query_as(
+        let rows: Vec<VaultRow> = sqlx::query_as(
             "SELECT v.id, v.slug, v.name, v.book_path, v.scope, u.email, \
              v.keep_page_numbers, v.theme
              FROM vaults v LEFT JOIN users u ON u.id = v.owner_id
