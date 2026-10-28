@@ -65,7 +65,8 @@ morinet serve --config ./config.toml
 # 3. Log in at http://localhost:8080 with the admin account you just chose
 ```
 
-<img width="1177" height="1205" alt="image" src="https://github.com/user-attachments/assets/e80f1da8-2151-4492-95c0-b53e690e9ca8" />
+<img width="1139" height="554" alt="image" src="https://github.com/user-attachments/assets/910c7110-1ee7-4eac-b4ce-71f0cb9070e5" />
+MoriNet Documentation as a Vault in MoriNet
 
 
 ## Status
