@@ -233,7 +233,16 @@ impl Store {
                 Ok(rows
                     .into_iter()
                     .map(
-                        |(id, slug, name, book_path, scope, owner_email, keep_page_numbers, theme)| {
+                        |(
+                            id,
+                            slug,
+                            name,
+                            book_path,
+                            scope,
+                            owner_email,
+                            keep_page_numbers,
+                            theme,
+                        )| {
                             Vault {
                                 id,
                                 slug,
@@ -740,23 +749,25 @@ impl Store {
             .await?;
             return Ok(rows
                 .into_iter()
-                .map(|(id, slug, name, book_path, scope, keep_page_numbers, theme)| {
-                    AccessibleVault {
-                        vault: Vault {
-                            id,
-                            slug,
-                            name,
-                            book_path,
-                            scope: scope.clone(),
-                            owner_email: None,
-                            keep_page_numbers,
-                            theme,
-                        },
-                        role: "write".to_string(),
-                        personal: scope == "personal",
-                        direct_share: false,
-                    }
-                })
+                .map(
+                    |(id, slug, name, book_path, scope, keep_page_numbers, theme)| {
+                        AccessibleVault {
+                            vault: Vault {
+                                id,
+                                slug,
+                                name,
+                                book_path,
+                                scope: scope.clone(),
+                                owner_email: None,
+                                keep_page_numbers,
+                                theme,
+                            },
+                            role: "write".to_string(),
+                            personal: scope == "personal",
+                            direct_share: false,
+                        }
+                    },
+                )
                 .collect());
         }
 
@@ -852,17 +863,8 @@ impl Store {
         .bind(email)
         .fetch_all(&self.pool)
         .await?;
-        for (
-            id,
-            slug,
-            name,
-            book_path,
-            scope,
-            share_role,
-            owner_email,
-            keep_page_numbers,
-            theme,
-        ) in shares
+        for (id, slug, name, book_path, scope, share_role, owner_email, keep_page_numbers, theme) in
+            shares
         {
             let role = if share_role == "writer" {
                 "write"
@@ -1927,12 +1929,11 @@ mod tests {
             .unwrap();
         // New vaults columns: keep_page_numbers defaults to 0, theme defaults
         // to '' (mdBook default/auto behavior).
-        let (keep, theme): (i64, String) = sqlx::query_as(
-            "SELECT keep_page_numbers, theme FROM vaults WHERE slug = 'dispshape'",
-        )
-        .fetch_one(&s.pool)
-        .await
-        .unwrap();
+        let (keep, theme): (i64, String) =
+            sqlx::query_as("SELECT keep_page_numbers, theme FROM vaults WHERE slug = 'dispshape'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
         assert_eq!(keep, 0, "keep_page_numbers defaults to 0");
         assert_eq!(theme, "", "theme defaults to '' (auto)");
     }

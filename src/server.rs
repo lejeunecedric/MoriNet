@@ -2046,11 +2046,7 @@ async fn vault_edit_page(
         .flatten()
         .unwrap_or_default();
     let reshare = state.store.allow_reshare(&slug).await.unwrap_or(false);
-    let keep = state
-        .store
-        .keep_page_numbers(&slug)
-        .await
-        .unwrap_or(false);
+    let keep = state.store.keep_page_numbers(&slug).await.unwrap_or(false);
     let theme = state.store.theme(&slug).await.unwrap_or_default();
     // D-11: the theme select renders only for converted (llm-wiki pipeline)
     // vaults — converted ⇔ book_path contains the `.morinet-build` path
@@ -2142,9 +2138,7 @@ async fn vault_edit_submit(
         .set_keep_page_numbers(&slug, p.keep_page_numbers.is_some())
         .await
     {
-        return error_page(&format!(
-            "could not update the page-numbers setting: {e}"
-        ));
+        return error_page(&format!("could not update the page-numbers setting: {e}"));
     }
     if let Err(e) = state.store.set_theme(&slug, &p.theme).await {
         return error_page(&format!("could not update the theme: {e}"));
