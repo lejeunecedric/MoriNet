@@ -25,7 +25,7 @@
 - [x] **Phase 09: ux-nav** - Nav shell + design system (v0.1.14..20)
 - [x] **Phase 10: mcp** - MCP StreamableHttp on `/mcp`, list/read/search tools (2026-10-25)
 - [x] **Phase 11: polish** - Installer, README, `morinet init`, release v1.0.0 (2026-10-25)
-- [ ] **Phase 12: demo-lock + vault display options** - demo account guard; per-vault page-numbers toggle + mdBook theme (v1.1.0)
+- [x] **Phase 12: demo-lock + vault display options** - demo account guard; per-vault page-numbers toggle + mdBook theme (v1.1.0) (completed 2026-10-28)
 - [ ] **Phase 13: wiki-changes log** - record vault file changes at refresh; "Wiki changes" section in Statistics (v1.1.0)
 - [ ] **Phase 14: local-vault-upload** - "Local vault" button: client file picker → upload → register (v1.1.0)
 

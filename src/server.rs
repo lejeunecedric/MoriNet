@@ -620,6 +620,11 @@ const PAGE_NUMBERS_OVERRIDE: &str =
 const THEME_LIGHT_LITERAL: &str = r#"default_light_theme = "light";"#;
 const THEME_DARK_LITERAL: &str = r#"default_dark_theme = "navy";"#;
 
+/// Review fix (LOW, defense-in-depth): the same whitelist the Edit form
+/// enforces at write time (plan 12-02) — the serve-time rewrite only ever
+/// substitutes one of these tokens, never a raw column value.
+const THEME_WHITELIST: [&str; 5] = ["light", "navy", "rust", "coal", "ayu"];
+
 /// Per-vault display options applied to served HTML at serve time (D-08:
 /// no rebuild, no book.toml change). `theme` is whitelist-bounded at write
 /// time (plan 12-02); this is a fixed-literal substitution, not templating,
@@ -630,7 +635,7 @@ fn apply_vault_display_options(html: &mut String, keep_page_numbers: bool, theme
             html.insert_str(pos, PAGE_NUMBERS_OVERRIDE);
         }
     }
-    if !theme.is_empty() {
+    if !theme.is_empty() && THEME_WHITELIST.contains(&theme) {
         // `contains` guards before any `replace` (T-12-13: no work on pages
         // without the literals, no regex engine).
         if html.contains(THEME_LIGHT_LITERAL) {
@@ -6495,6 +6500,21 @@ mod tests {
         let mut html = page.to_string();
         apply_vault_display_options(&mut html, false, "rust");
         assert_eq!(html, page, "page without literals is byte-identical");
+    }
+
+    /// Review fix (LOW, defense-in-depth): even if a bad value ever reached the
+    /// column (direct DB write, future bug), the serve-time rewrite must only
+    /// ever substitute a whitelist token — never attacker bytes.
+    #[test]
+    fn display_options_non_whitelist_theme_is_ignored() {
+        let mut html = MDBOOK_PAGE.to_string();
+        apply_vault_display_options(&mut html, false, r#"coal"; alert(1); //"#);
+        assert!(
+            html.contains(r#"default_light_theme = "light";"#)
+                && html.contains(r#"default_dark_theme = "navy";"#),
+            "non-whitelist theme must leave both literals untouched: {html}"
+        );
+        assert!(!html.contains("alert(1)"), "no attacker bytes injected");
     }
 
     #[test]

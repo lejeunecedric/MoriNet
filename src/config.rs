@@ -183,9 +183,13 @@ pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Resu
         .or_else(|| cfg.admin.password.clone().filter(|s| !s.is_empty()))
         .ok_or_else(|| anyhow::anyhow!("missing admin password: set {ENV_ADMIN_PASSWORD}"))?;
     // Phase 12 (D-01): env wins when set; never a hard error — empty default.
+    // Review fix (MEDIUM): a set-but-blank env value normalizes to an empty
+    // list — treat it as UNSET so it cannot silently shadow (fail open) the
+    // file section's lock list.
     let locked_accounts = std::env::var(ENV_LOCKED_ACCOUNTS)
         .ok()
         .map(|raw| normalize_locked_list(raw.split(',')))
+        .filter(|v| !v.is_empty())
         .or_else(|| {
             let from_file =
                 normalize_locked_list(cfg.security.locked_accounts.iter().map(String::as_str));
@@ -456,6 +460,31 @@ starttls = true
                 Some(s) => std::env::set_var(k, s),
                 None => std::env::remove_var(k),
             }
+        }
+    }
+
+    /// Review fix (MEDIUM): an env var that is set but empty/whitespace-only
+    /// must NOT shadow the `[security]` file list — a blank `ENV:` entry in
+    /// docker-compose/k8s would silently un-lock the demo account (fail-open).
+    /// A normalized-empty env result counts as unset and falls through.
+    #[test]
+    fn resolve_locked_accounts_blank_env_falls_back_to_file_section() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(ENV_LOCKED_ACCOUNTS).ok();
+        std::env::set_var(ENV_LOCKED_ACCOUNTS, "  , ");
+        let cfg: FileConfig = toml::from_str(
+            "[session]\ncookie_secret = \"filesecret\"\n[admin]\nemail = \"a@example.com\"\npassword = \"test-pass-9f3a\"\n[security]\nlocked_accounts = [\"file@example.com\"]\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("resolve with blank locked env");
+        assert_eq!(
+            rt.locked_accounts,
+            vec!["file@example.com".to_string()],
+            "blank env value is treated as unset — file section wins, never fail-open"
+        );
+        match saved {
+            Some(s) => std::env::set_var(ENV_LOCKED_ACCOUNTS, s),
+            None => std::env::remove_var(ENV_LOCKED_ACCOUNTS),
         }
     }
 
