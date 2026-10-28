@@ -26,46 +26,46 @@ preferences (this is per-VAULT, owner-set).
 ## Implementation Decisions
 
 ### Locked accounts (REQ-DEMO-001..002)
-- Config: new `[security]` section in config.toml — `locked_accounts = ["demo"]`
+- **D-01** Config: new `[security]` section in config.toml — `locked_accounts = ["demo"]`
   (`FileConfig` gets `security: SecuritySection` with `#[serde(default)]`),
   PLUS env override `MORINET_LOCKED_ACCOUNTS` (comma-separated emails) which
   wins when set. Resolved into `RuntimeConfig.locked_accounts: Vec<String>`.
   Comparison case-insensitive on email.
-- Scope (user decision 2026-10-28, WIDER than ROADMAP): a locked account is
+- **D-02** Scope (user decision 2026-10-28, WIDER than ROADMAP): a locked account is
   refused on **load + delete + edit + share** mutations:
   `POST /vaults/create` (load_personal_vault), `POST /vaults/{slug}/delete`
   (delete_my_vault), `POST /vault/{slug}/edit` (vault_edit_submit),
   `POST /vault/{slug}/share*` (share add/revoke). Reads and Refresh stay
   allowed. Admins are never locked (the demo user is a `reader` anyway).
-- Server refusal: the existing `error_page(...)` pattern with a clear message.
-- Home popup (REQ-DEMO-002): when a locked account is logged in, the home page
+- **D-03** Server refusal: the existing `error_page(...)` pattern with a clear message.
+- **D-04** Home popup (REQ-DEMO-002): when a locked account is logged in, the home page
   JS intercepts the Load-vault submit and the Delete confirm and shows
   `alert("demo account can't add or suppress vaults")` — exact string from
   REQUIREMENTS. The popup is UX only; the server gate is the security boundary
   (a scripted POST must still be refused).
-- The home page must know "current user is locked" — render a flag server-side
+- **D-05** The home page must know "current user is locked" — render a flag server-side
   into the index page (no new endpoint needed); the JS reads it.
 
 ### Per-vault display options (REQ-VOPT-001..002)
-- Storage: migration `migrations/0009_vault_display_options.sql` adds to
+- **D-06** Storage: migration `migrations/0009_vault_display_options.sql` adds to
   `vaults`: `keep_page_numbers INTEGER NOT NULL DEFAULT 0` and
   `theme TEXT NOT NULL DEFAULT ''` ('' = mdBook default/auto behavior).
   `Vault` struct in store.rs gains both fields; store setters next to
   `set_allow_reshare`.
-- Edit page (`vault_edit_page`/`vault_edit_submit`): add the toggle (checkbox,
+- **D-07** Edit page (`vault_edit_page`/`vault_edit_submit`): add the toggle (checkbox,
   same present/absent semantics as `allow_reshare`) and a `<select name="theme">`
   with options auto (value ""), light, navy, rust, coal, ayu. Server validates
   the value against that whitelist — reject anything else.
-- **No rebuild, ever** (user decision 2026-10-28): both options apply at SERVE
+- **D-08** **No rebuild, ever** (user decision 2026-10-28): both options apply at SERVE
   time inside `inject_vault_chrome` (server.rs), which must become
   vault-aware (pass the two option values in from `serve_vault_file` — it
   already has the `vault` row).
-- **Keep page numbers** (REQ-VOPT-001): default OFF = numbers hidden (the
+- **D-09** **Keep page numbers** (REQ-VOPT-001): default OFF = numbers hidden (the
   global rule in assets/zoom.css stays). When ON, inject a serve-time override
   `<style>.chapter-item a > strong[aria-hidden="true"]{display:inline;}</style>`
   before `</body>`. This works for converted AND native vaults (the rule
   targets mdBook's toc.js-injected `<strong aria-hidden="true">`).
-- **Theme** (REQ-VOPT-002): mdBook 0.5 ships all five themes in
+- **D-10** **Theme** (REQ-VOPT-002): mdBook 0.5 ships all five themes in
   `css/variables-*.css` and picks at runtime: visitor's
   `localStorage['mdbook-theme']` wins, else "auto" resolves via
   `default_light_theme = "light"` / `default_dark_theme = "navy"` — two
@@ -79,15 +79,15 @@ preferences (this is per-VAULT, owner-set).
   The ROADMAP's book.toml `default-theme` approach is SUPERSEDED by this
   serve-time rewrite: no rebuild, no Refresh needed, applies to already-built
   books immediately.
-- Edit-page visibility: show display options only where they make sense —
+- **D-11** Edit-page visibility: show display options only where they make sense —
   theme select for converted vaults (llm-wiki pipeline; native mdBook owners
   edit their own book.toml), page-numbers toggle for all personal vaults.
   (Claude's discretion, recorded here.)
 
 ### Issue #7 closure
-- `zoom_css_hides_mdbook_chapter_numbers` (tree.rs) stays green — the global
+- **D-12** `zoom_css_hides_mdbook_chapter_numbers` (tree.rs) stays green — the global
   hide rule remains the default; the toggle only adds the serve-time override.
-- Close GitHub issue #7 when 1.1.0 ships (post-deploy, not at plan time).
+- **D-13** Close GitHub issue #7 when 1.1.0 ships (post-deploy, not at plan time).
 </decisions>
 
 ## Code Anchors (scouted 2026-10-28)
