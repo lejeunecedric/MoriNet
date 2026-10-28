@@ -11,6 +11,9 @@ pub const DEFAULT_COOKIE_NAME: &str = "morinet_session";
 pub const ENV_COOKIE_SECRET: &str = "MORINET_COOKIE_SECRET";
 pub const ENV_ADMIN_EMAIL: &str = "MORINET_ADMIN_EMAIL";
 pub const ENV_ADMIN_PASSWORD: &str = "MORINET_ADMIN_PASSWORD";
+/// Phase 12 (D-01): comma-separated emails whose vault mutations are refused
+/// on the public demo instance. Wins over the `[security]` file section.
+pub const ENV_LOCKED_ACCOUNTS: &str = "MORINET_LOCKED_ACCOUNTS";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileConfig {
@@ -29,6 +32,18 @@ pub struct FileConfig {
     /// Bootstrap admin credentials (fallback when the env vars are absent).
     #[serde(default)]
     pub admin: AdminSection,
+    /// Phase 12: locked-account guard (demo instance). Absent = nobody locked.
+    #[serde(default)]
+    pub security: SecuritySection,
+}
+
+/// `[security]` section: `locked_accounts = ["demo@x"]` — emails whose vault
+/// mutations (load/delete/edit/share) are refused server-side. Env
+/// `MORINET_LOCKED_ACCOUNTS` (comma-separated) takes precedence.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SecuritySection {
+    #[serde(default)]
+    pub locked_accounts: Vec<String>,
 }
 
 /// `[admin]` section: bootstrap admin credentials written by `morinet init`.
@@ -123,6 +138,18 @@ pub struct RuntimeConfig {
     pub data_dir: PathBuf,
     /// Directory containing the compiled mdbook (`book/`) to serve at `/vault/demo/`.
     pub vault_book_dir: Option<PathBuf>,
+    /// Phase 12 (D-01): emails whose vault mutations are refused server-side
+    /// (lowercase, trimmed). Empty = guard disabled.
+    pub locked_accounts: Vec<String>,
+}
+
+/// Normalize a locked-accounts list: trim, lowercase, drop empties (T-12-03:
+/// whitespace/case mistakes must never silently un-lock an account).
+fn normalize_locked_list<'a>(entries: impl Iterator<Item = &'a str>) -> Vec<String> {
+    entries
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect()
 }
 
 /// Load and parse the TOML config file.
@@ -155,6 +182,16 @@ pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Resu
         .ok()
         .or_else(|| cfg.admin.password.clone().filter(|s| !s.is_empty()))
         .ok_or_else(|| anyhow::anyhow!("missing admin password: set {ENV_ADMIN_PASSWORD}"))?;
+    // Phase 12 (D-01): env wins when set; never a hard error — empty default.
+    let locked_accounts = std::env::var(ENV_LOCKED_ACCOUNTS)
+        .ok()
+        .map(|raw| normalize_locked_list(raw.split(',')))
+        .or_else(|| {
+            let from_file =
+                normalize_locked_list(cfg.security.locked_accounts.iter().map(String::as_str));
+            (!from_file.is_empty()).then_some(from_file)
+        })
+        .unwrap_or_default();
 
     Ok(RuntimeConfig {
         bind_addr: cfg.server.bind_addr,
@@ -169,6 +206,7 @@ pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Resu
         smtp: cfg.smtp,
         data_dir: PathBuf::from(cfg.storage.data_dir),
         vault_book_dir,
+        locked_accounts,
     })
 }
 
@@ -390,6 +428,76 @@ starttls = true
                 Some(s) => std::env::set_var(k, s),
                 None => std::env::remove_var(k),
             }
+        }
+    }
+
+    /// Phase 12 (D-01): `MORINET_LOCKED_ACCOUNTS` wins over the `[security]`
+    /// file section; entries are trimmed and lowercased.
+    #[test]
+    fn resolve_locked_accounts_env_overrides_file_section() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> =
+            [(ENV_LOCKED_ACCOUNTS, std::env::var(ENV_LOCKED_ACCOUNTS).ok())]
+                .into_iter()
+                .collect();
+        std::env::set_var(ENV_LOCKED_ACCOUNTS, " Demo@Example.com ,other@x.fr");
+        let cfg: FileConfig = toml::from_str(
+            "[session]\ncookie_secret = \"filesecret\"\n[admin]\nemail = \"a@example.com\"\npassword = \"test-pass-9f3a\"\n[security]\nlocked_accounts = [\"file@example.com\"]\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("resolve with locked env set");
+        assert_eq!(
+            rt.locked_accounts,
+            vec!["demo@example.com".to_string(), "other@x.fr".to_string()],
+            "env wins over the file section, trimmed + lowercased"
+        );
+        for (k, v) in saved {
+            match v {
+                Some(s) => std::env::set_var(k, s),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    /// Phase 12 (D-01): no env, no `[security]` section → empty list, never an
+    /// error (the guard is opt-in).
+    #[test]
+    fn resolve_locked_accounts_defaults_empty() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(ENV_LOCKED_ACCOUNTS).ok();
+        std::env::remove_var(ENV_LOCKED_ACCOUNTS);
+        let cfg: FileConfig = toml::from_str(
+            "[session]\ncookie_secret = \"filesecret\"\n[admin]\nemail = \"a@example.com\"\npassword = \"test-pass-9f3a\"\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("resolve without locked accounts");
+        assert!(rt.locked_accounts.is_empty(), "default is empty");
+        match saved {
+            Some(s) => std::env::set_var(ENV_LOCKED_ACCOUNTS, s),
+            None => std::env::remove_var(ENV_LOCKED_ACCOUNTS),
+        }
+    }
+
+    /// Phase 12 (D-01): env absent → the `[security]` file section is used
+    /// (entries lowercased so a typo cannot silently un-lock an account).
+    #[test]
+    fn resolve_locked_accounts_file_section_fallback() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(ENV_LOCKED_ACCOUNTS).ok();
+        std::env::remove_var(ENV_LOCKED_ACCOUNTS);
+        let cfg: FileConfig = toml::from_str(
+            "[session]\ncookie_secret = \"filesecret\"\n[admin]\nemail = \"a@example.com\"\npassword = \"test-pass-9f3a\"\n[security]\nlocked_accounts = [\" Demo@Example.com \"]\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("resolve with file section");
+        assert_eq!(
+            rt.locked_accounts,
+            vec!["demo@example.com".to_string()],
+            "file section used when env is absent"
+        );
+        match saved {
+            Some(s) => std::env::set_var(ENV_LOCKED_ACCOUNTS, s),
+            None => std::env::remove_var(ENV_LOCKED_ACCOUNTS),
         }
     }
 }

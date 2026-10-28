@@ -1910,6 +1910,9 @@ async fn delete_my_vault(
     Extension(claims): Extension<Claims>,
     Path(slug): Path<String>,
 ) -> Response {
+    if is_locked(&state, &claims.email).await {
+        return error_page("demo account can't add or suppress vaults");
+    }
     match state
         .store
         .delete_personal_vault(&claims.email, &slug)
@@ -1939,6 +1942,24 @@ async fn can_edit_vault(state: &SharedState, email: &str, slug: &str) -> bool {
         .unwrap_or_default()
         .iter()
         .any(|a| a.personal && a.vault.slug == slug)
+}
+
+/// Phase 12 (D-01/D-02): is `email` a locked (demo) account? Case-insensitive
+/// against `cfg.locked_accounts`; admins are NEVER locked. Async because the
+/// admin exemption needs `store.role_for` (checker fix W-3).
+async fn is_locked(state: &SharedState, email: &str) -> bool {
+    if state.cfg.locked_accounts.is_empty() {
+        return false;
+    }
+    let role = state.store.role_for(email).await.ok().flatten();
+    if role.as_deref() == Some("admin") {
+        return false;
+    }
+    state
+        .cfg
+        .locked_accounts
+        .iter()
+        .any(|locked| locked.eq_ignore_ascii_case(email))
 }
 
 /// `POST /vault/{slug}/edit` fields. `allow_reshare` follows HTML checkbox
@@ -2005,6 +2026,9 @@ async fn vault_edit_submit(
 ) -> Response {
     if !can_edit_vault(&state, &claims.email, &slug).await {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    if is_locked(&state, &claims.email).await {
+        return error_page("demo account can't add or suppress vaults");
     }
     let name = p.name.trim();
     if name.is_empty() {
@@ -2132,6 +2156,9 @@ async fn vault_share_add(
     {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
+    if is_locked(&state, &claims.email).await {
+        return error_page("demo account can't add or suppress vaults");
+    }
     let email = p.email.trim();
     if email.is_empty() {
         return error_page("the email is required");
@@ -2162,6 +2189,9 @@ async fn vault_share_revoke(
         .unwrap_or(false)
     {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    if is_locked(&state, &claims.email).await {
+        return error_page("demo account can't add or suppress vaults");
     }
     let email = p.email.trim();
     if email.is_empty() {
@@ -2415,6 +2445,9 @@ async fn load_personal_vault(
     Extension(claims): Extension<Claims>,
     Form(p): Form<LoadVaultParams>,
 ) -> Response {
+    if is_locked(&state, &claims.email).await {
+        return error_page("demo account can't add or suppress vaults");
+    }
     let url = p.url.trim();
     if url.is_empty() {
         return error_page("the GitHub URL is required");
@@ -2790,6 +2823,7 @@ mod tests {
             smtp: Default::default(), // Phase 5: no SMTP in tests unless asked
             data_dir: std::env::temp_dir().join("morinet-test-data"),
             vault_book_dir: None, // Phase 2: book dirs live in the vaults table
+            locked_accounts: Vec::new(), // Phase 12: guard off unless a test opts in
         }
     }
 
@@ -5881,5 +5915,222 @@ mod tests {
         );
         assert!(!root.join("src/h.md").exists(), "no file written");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ---------- Phase 12 (12-01): locked-account demo guard (REQ-DEMO-001/002) ----------
+
+    /// The EXACT refusal/popup string from REQUIREMENTS (D-03/D-04).
+    const LOCK_MSG: &str = "demo account can't add or suppress vaults";
+
+    /// Router whose config locks `demo@example.com` (D-01/D-02 fixture).
+    async fn locked_router() -> (Router, SharedState) {
+        let mut cfg = test_config();
+        cfg.locked_accounts = vec!["demo@example.com".to_string()];
+        let (app, state, _sender) = test_router_with_email(cfg).await;
+        (app, state)
+    }
+
+    /// Locked user `demo@example.com` (creds `test-pass-9f3a`) owning personal
+    /// vault `slug`. Each test passes its own slug (pitfalls #16/#23).
+    async fn seed_locked_fixture(state: &SharedState, slug: &str) {
+        state
+            .store
+            .create_user("demo@example.com", "test-pass-9f3a", "reader")
+            .await
+            .unwrap();
+        let book = std::env::temp_dir().join(format!(
+            "morinet-vault-{}-locked-{}-{}",
+            std::process::id(),
+            slug,
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&book).unwrap();
+        std::fs::write(
+            book.join("index.html"),
+            "<html><body>locked page</body></html>",
+        )
+        .unwrap();
+        state
+            .store
+            .create_personal_vault("demo@example.com", slug, "Locked Book", &book)
+            .await
+            .unwrap();
+    }
+
+    /// T-12-01: a scripted POST (no JS) to /vaults/create is refused with the
+    /// error page carrying the exact string — proves the server gate.
+    #[tokio::test]
+    async fn locked_account_create_refused() {
+        let (app, state) = locked_router().await;
+        state
+            .store
+            .create_user("demo@example.com", "test-pass-9f3a", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "demo@example.com", "test-pass-9f3a").await;
+        let res = req(
+            app,
+            "POST",
+            "/vaults/create",
+            form_headers(&cookie),
+            Some(Body::from(
+                "name=lockedx&url=https%3A%2F%2Fgithub.com%2Fo%2Fr",
+            )),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_text(res).await;
+        assert!(
+            body.contains(LOCK_MSG),
+            "error page carries the exact refusal string: {body}"
+        );
+        let vaults = state
+            .store
+            .accessible_vaults("demo@example.com")
+            .await
+            .unwrap();
+        assert!(vaults.is_empty(), "refused load created nothing");
+    }
+
+    #[tokio::test]
+    async fn locked_account_delete_refused() {
+        let (app, state) = locked_router().await;
+        seed_locked_fixture(&state, "lockdel").await;
+        let cookie = login_as(&app, "demo@example.com", "test-pass-9f3a").await;
+        let res = req(
+            app,
+            "POST",
+            "/vaults/lockdel/delete",
+            form_headers(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_text(res).await;
+        assert!(body.contains(LOCK_MSG), "refusal string: {body}");
+        let vaults = state
+            .store
+            .accessible_vaults("demo@example.com")
+            .await
+            .unwrap();
+        assert!(
+            vaults.iter().any(|a| a.vault.slug == "lockdel"),
+            "vault survives the refused delete"
+        );
+    }
+
+    #[tokio::test]
+    async fn locked_account_edit_submit_refused() {
+        let (app, state) = locked_router().await;
+        seed_locked_fixture(&state, "lockedit").await;
+        let cookie = login_as(&app, "demo@example.com", "test-pass-9f3a").await;
+        let res = req(
+            app,
+            "POST",
+            "/vault/lockedit/edit",
+            form_headers(&cookie),
+            Some(Body::from("name=Renamed&url=")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_text(res).await;
+        assert!(body.contains(LOCK_MSG), "refusal string: {body}");
+        let vaults = state
+            .store
+            .accessible_vaults("demo@example.com")
+            .await
+            .unwrap();
+        assert_eq!(vaults[0].vault.name, "Locked Book", "name unchanged");
+    }
+
+    #[tokio::test]
+    async fn locked_account_share_add_refused() {
+        let (app, state) = locked_router().await;
+        seed_locked_fixture(&state, "lockshare").await;
+        let cookie = login_as(&app, "demo@example.com", "test-pass-9f3a").await;
+        let res = req(
+            app,
+            "POST",
+            "/vault/lockshare/share",
+            form_headers(&cookie),
+            Some(Body::from("email=friend%40example.com&role=reader")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_text(res).await;
+        assert!(body.contains(LOCK_MSG), "refusal string: {body}");
+        let shares = state.store.list_shares("lockshare").await.unwrap();
+        assert!(shares.is_empty(), "no share row created");
+    }
+
+    #[tokio::test]
+    async fn locked_account_share_revoke_refused() {
+        let (app, state) = locked_router().await;
+        seed_locked_fixture(&state, "lockrevoke").await;
+        state
+            .store
+            .share_vault("lockrevoke", "friend@example.com", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "demo@example.com", "test-pass-9f3a").await;
+        let res = req(
+            app,
+            "POST",
+            "/vault/lockrevoke/share/revoke",
+            form_headers(&cookie),
+            Some(Body::from("email=friend%40example.com")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_text(res).await;
+        assert!(body.contains(LOCK_MSG), "refusal string: {body}");
+        let shares = state.store.list_shares("lockrevoke").await.unwrap();
+        assert_eq!(shares.len(), 1, "share survives the refused revoke");
+    }
+
+    /// D-02: Refresh is NOT part of the locked scope. The seeded vault has no
+    /// upstream, so the handler answers its own "no upstream" error page —
+    /// reaching that code at all proves the lock gate let the request through.
+    #[tokio::test]
+    async fn locked_account_refresh_still_allowed() {
+        let (app, state) = locked_router().await;
+        seed_locked_fixture(&state, "lockrefresh").await;
+        let cookie = login_as(&app, "demo@example.com", "test-pass-9f3a").await;
+        let res = req(
+            app,
+            "POST",
+            "/vaults/lockrefresh/refresh",
+            form_headers(&cookie),
+            None,
+        )
+        .await;
+        let body = body_text(res).await;
+        assert!(
+            !body.contains(LOCK_MSG),
+            "refresh must not hit the lock gate: {body}"
+        );
+    }
+
+    /// D-02: admins are never locked, even if their email is in the list.
+    #[tokio::test]
+    async fn locked_admin_email_not_locked() {
+        let mut cfg = test_config();
+        cfg.locked_accounts = vec!["admin@example.com".to_string()];
+        let (app, state, _sender) = test_router_with_email(cfg).await;
+        seed_edit_fixture(&state).await;
+        let cookie = login_cookie(&app).await;
+        let res = req(
+            app,
+            "POST",
+            "/vault/mine/edit",
+            form_headers(&cookie),
+            Some(Body::from("name=Renamed+By+Admin&url=")),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::SEE_OTHER,
+            "admin mutation succeeds despite the lock list"
+        );
     }
 }
