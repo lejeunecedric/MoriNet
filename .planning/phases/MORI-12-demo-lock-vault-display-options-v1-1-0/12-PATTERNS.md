@@ -115,7 +115,7 @@ for `keep_page_numbers()/set_keep_page_numbers()` (bool ↔ INTEGER) and a
 
 **Row-mapping sites that must gain the new columns** (tuple `query_as` + manual
 struct construction — every one of these breaks until updated):
-`accessible_vaults` (`src/store.rs:201-224`), `list_all_vaults` (`:229-248`),
+`accessible_vaults` (`src/store.rs` — checker fix W-1: authoritative site list is `grep -n "Vault {" src/store.rs`; mappings inside `accessible_vaults` at ~:691-770, the :201-224 excerpt is a different function), `list_all_vaults`,
 and the other `FROM vaults` selects at `:232`, `:270`. Example (`:214-224`):
 
 ```rust
@@ -369,7 +369,7 @@ locked — `role_for` pattern at `can_edit_vault`, `src/server.rs:1931-1934`).
 
 ## 7. Route-test style — oneshot + login cookie (quote for executor)
 
-**Helpers** (`src/server.rs:2865-2908`, `3152-3156`): `test_router()` →
+**Helpers** (`test_router` at `src/server.rs:2818`, `form_headers` at `:3152`, `login_as` at `:3388` — checker fix W-2): `test_router()` →
 `(Router, SharedState)`; `req(app, method, uri, headers, body)` wraps
 `app.oneshot(...)`; `login_cookie(app)` / `login_as(app, email, pw)` POST
 `/login` and return the `Set-Cookie` value; `form_headers(&cookie)` =
@@ -445,9 +445,9 @@ call; insert the locked check before it, same position as
 (`src/server.rs:2413-2421`) puts its first validation right after the
 signature — the locked check goes there, before quota/clone (no network on
 refusal, same principle as the quota-first comment at `:2434`).
-Helper location (discretion): a cheap `fn is_locked(state: &AppState, email: &str) -> bool`
+Helper location (discretion): a cheap **async** `async fn is_locked(state: &AppState, email: &str) -> bool` (fix W-3r — `role_for` is async, so the helper must be too; call sites `.await` it)
 on `AppState`/free fn in server.rs reading `state.cfg.locked_accounts`
-(case-insensitive `eq_ignore_ascii_case`) + `role_for(email) != Some("admin")`
+(case-insensitive `eq_ignore_ascii_case`) + `role_for(email).await != Some("admin".into())`
 — `role_for` usage pattern at `src/server.rs:1931`.
 
 ---

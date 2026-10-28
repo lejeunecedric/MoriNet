@@ -82,7 +82,10 @@ preferences (this is per-VAULT, owner-set).
 - **D-11** Edit-page visibility: show display options only where they make sense —
   theme select for converted vaults (llm-wiki pipeline; native mdBook owners
   edit their own book.toml), page-numbers toggle for all personal vaults.
-  (Claude's discretion, recorded here.)
+  Converted-vs-native signal is computed at render time from the book_path —
+  converted ⇔ path contains the `.morinet-build` component (fix B-1r: a
+  book.toml-next-to-book check misclassifies, converted book.toml lives INSIDE
+  `.morinet-build/`) — no new column. (Claude's discretion, recorded here.)
 
 ### Issue #7 closure
 - **D-12** `zoom_css_hides_mdbook_chapter_numbers` (tree.rs) stays green — the global

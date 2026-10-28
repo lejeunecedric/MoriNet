@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1.0
 milestone_name: demo hardening + vault options
-status: planning
-stopped_at: Phase 12 planning in progress — CONTEXT.md + PATTERNS.md committed, planner agent writing 12-01..12-03-PLAN.md
-last_updated: "2026-10-28T08:39:16Z"
-last_activity: 2026-10-28 -- v1.1.0 milestone scoped into ROADMAP/REQUIREMENTS/PROJECT
+status: executing
+stopped_at: GSD bootstrap complete (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modified, pending commit (user edit).
+last_updated: "2026-10-28T20:19:45.882Z"
+last_activity: 2026-10-28 -- Phase 12 planning complete
 progress:
   total_phases: 3
   completed_phases: 0
-  total_plans: 0
+  total_plans: 3
   completed_plans: 0
   percent: 0
 ---
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 Phase: none yet — v1.1.0 milestone scoped 2026-10-28 (phases 12-14)
 Plan: v1.0.0 released 2026-10-25; hotfixes v1.0.1 (header), v1.0.2 (chrome + Exit Settings, issues #8/#9), v1.0.3 (SUMMARY number strip) all released + deployed; issue #7 real fix (hide mdBook toc.js numbers via chrome CSS) committed, ships in 1.1.0
-Status: Ready to plan Phase 12
-Last activity: 2026-10-28 -- Phase 12 context locked (D-01..D-13), pattern map done, planning dispatched
+Status: Ready to execute
+Last activity: 2026-10-28 -- Phase 12 planning complete
 
 Progress: [░░░░░░░░░░] 0% (0/3 phases of v1.1.0)
 
