@@ -20,7 +20,7 @@ MoriNet hosts one or more **llm-wiki / Obsidian vaults** — plain markdown with
 MoriNet Documentation as a Vault in MoriNet
 
 <img width="759" height="648" alt="image" src="https://github.com/user-attachments/assets/78860577-55b9-49d0-9d5c-d86492f98fa6" />
-
+Main menu
 
 Architecture and design decisions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
