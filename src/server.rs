@@ -546,6 +546,13 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
             format!(r#"<ul class="vault-list">{items}</ul>"#)
         }
     };
+    // Phase 12 (D-05): server-rendered locked flag — the popup script is
+    // rendered ONLY for a locked account; other users' pages stay byte-identical.
+    let locked_script = if is_locked(&state, &claims.email).await {
+        LOCKED_ACCOUNT_JS
+    } else {
+        ""
+    };
     // The shared header carries the admin menu (role=admin only) — no extra
     // admin link here. The "Load a vault" panel is always rendered: it is how
     // a user with no vault yet (e.g. the demo account) loads one (REQ-VLT-005).
@@ -573,7 +580,7 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
   <div class="field"><label for="lv-token">Token <small>(optional)</small></label><input id="lv-token" type="text" name="token" placeholder="private repos only"></div>
   <button type="submit">Load vault</button>
 </form>
-{autofill}
+{autofill}{locked}
 </section>
 </body>
 </html>"#,
@@ -581,6 +588,7 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
         own = list(&own_items, "No personal vaults yet."),
         shared = list(&shared_items, "No shared vaults yet."),
         autofill = AUTOFILL_NAME_JS,
+        locked = locked_script,
     );
     Html(html).into_response()
 }
@@ -1879,6 +1887,39 @@ const AUTOFILL_NAME_JS: &str = r#"<script>
   url.addEventListener("input", sync);
   url.addEventListener("paste", function () { setTimeout(sync, 0); });
   sync();
+})();
+</script>"#;
+
+/// Phase 12 (D-04/D-05): rendered ONLY for a locked account — intercepts the
+/// Load-vault submit and the Delete confirm with the required popup. UX only;
+/// the server-side `is_locked` gates are the security boundary (T-12-01).
+/// Raw-string const: brace-bearing JS never goes inside a `format!` (pitfall #25).
+const LOCKED_ACCOUNT_JS: &str = r#"<script>
+// morinet-locked-account: demo guard popup (UX only; the server refuses too).
+(function () {
+  var MSG = "demo account can't add or suppress vaults";
+  function block(form) {
+    // Strip the inline confirm FIRST: removeAttribute("onsubmit") unregisters
+    // the handler slot, so assigning the property before stripping would be
+    // wiped (checker fix W-4, order corrected — see 12-01-SUMMARY).
+    form.removeAttribute("onsubmit");
+    form.onsubmit = function (e) {
+      e.preventDefault();
+      alert(MSG);
+      return false;
+    };
+  }
+  function init() {
+    var load = document.querySelector('form[action="/vaults/create"]');
+    if (load) block(load);
+    var dels = document.querySelectorAll('form[action$="/delete"]');
+    for (var i = 0; i < dels.length; i++) block(dels[i]);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 })();
 </script>"#;
 
@@ -6131,6 +6172,44 @@ mod tests {
             res.status(),
             StatusCode::SEE_OTHER,
             "admin mutation succeeds despite the lock list"
+        );
+    }
+
+    /// D-04/D-05: the locked user's home page carries the popup script with
+    /// the exact string and the two form selectors.
+    #[tokio::test]
+    async fn home_page_shows_locked_popup_script() {
+        let (app, state) = locked_router().await;
+        seed_locked_fixture(&state, "lockhome").await;
+        let cookie = login_as(&app, "demo@example.com", "test-pass-9f3a").await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains(LOCK_MSG),
+            "locked home page carries the alert string: {body}"
+        );
+        assert!(
+            body.contains(r#"form[action="/vaults/create"]"#),
+            "script targets the Load-vault form"
+        );
+        assert!(
+            body.contains(r#"form[action$="/delete"]"#),
+            "script targets the Delete forms"
+        );
+    }
+
+    /// D-05: non-locked users see no new script — the page is unregressed.
+    #[tokio::test]
+    async fn home_page_clean_for_unlocked_user() {
+        let (app, _state) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            !body.contains(LOCK_MSG),
+            "unlocked home page must not contain the alert string"
         );
     }
 }
