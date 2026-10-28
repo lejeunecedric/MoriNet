@@ -26,15 +26,20 @@ A Rust server that exposes Obsidian second brains as mdBook sites with multi-use
 | Server-side directory picker (`<dialog>` over `/admin/browse`) + browser-side import | `/admin/vaults` |
 | mdBook pages: zoom toolbar + "Close vault" (top right, below the print button), book formatting (1.65 line-height, full-contrast wikilinks) | `/vault/<slug>/` |
 | Account page (display-name editing — NOT inside the dropdown) | `/account` |
+| MCP server (StreamableHttp, rmcp 3.7): `list_vaults` / `list_notes` / `read_note` / `search_notes`, Bearer auth, ACL-scoped to the token's user | `/mcp` |
+| API tokens (create/revoke, sha256-hashed) | `/account` |
+| Per-vault sharing (email grants, re-share opt-in) + access statistics | `/vault/<slug>/share`, `/vault/<slug>/stats` |
+| Owner Edit page (rename, re-source URL, re-share toggle) | `/vault/<slug>/edit` |
 
 **Delivery pipeline (since 2026-10-25: EVERYTHING builds HERE, no more GitHub CI)**: `scripts/check.sh` (fmt+clippy+test+build release), `scripts/release.sh vX.Y.Z` (gate + bump + tag + GitHub release with the `morinet-x86_64-unknown-linux-gnu.tar.xz` asset + `.sha256`, draft→assets→publish), `scripts/deploy.sh` (local build + scp staging + atomic mv + restart + /health, env `DEPLOY_HOST`). Only remaining GitHub workflow: `deploy.yml` (unchanged — it consumes the assets of the release created locally, or `workflow_dispatch`).
 
 ## Current state at handoff time
 
-- Latest release: **v0.1.20** (anti-clutter UI; design system shipped v0.1.16→v0.1.20). Live: **https://morinet.treklair.fr**.
-- `main` is clean and every phase through 09 (ux-nav + design system) is **shipped and deployed**. What is genuinely left: **Phase 10 (MCP)** and **Phase 11 (polish v1.0)** — see ROADMAP.
+- Latest release: **v1.0.3** (2026-10-28), deployed and live: **https://morinet.treklair.fr** (`morinet 1.0.3`, systemd active, /health ok). GitHub releases v1.0.1–v1.0.3 published with assets.
+- `main` is clean. Phases 00–11 are **shipped** (v1.0.0 on 2026-10-25; hotfixes v1.0.1 header, v1.0.2 chrome + Exit Settings — issues #8/#9, v1.0.3 SUMMARY number strip — issue #7 partial). **Milestone v1.1.0 is open**: Phase 12 (demo-account lock + per-vault display options), Phase 13 (wiki-changes log in Statistics), Phase 14 (local vault upload) — see ROADMAP.
+- Issue #7 (duplicate sidebar numbers) is still open: the real fix (hide mdBook 0.5's own `toc.js`-injected numbers via chrome CSS, commit `2f1bcf1`) is committed but NOT yet deployed — it ships in 1.1.0, where it becomes the "off" state of a per-vault page-numbers toggle. Close #7 when 1.1.0 ships.
 - The local release publishes the asset BEFORE publishing the release (draft → assets → publish): no more tag/deploy race. If a deploy falls back to "latest release", re-trigger `gh workflow run deploy.yml -f tag=<v>` or `scripts/deploy.sh`.
-- treklair has B3Wiki loaded (demo's personal vault). **mdBook themes are written at build time** — after any change to `assets/zoom.*` or `MORINET_CSS`, existing vaults serve old assets until someone clicks **Refresh** (pitfall #24).
+- treklair has B3Wiki loaded (demo's personal vault). **Chrome CSS/JS now also applies at SERVE time** (`inject_vault_chrome`), so chrome changes ship with a deploy — no vault refresh needed. `book.toml`-level build settings (theme, additional-css wiring) still need a **Refresh** (pitfall #24).
 
 ## Vault contract (IMPORTANT)
 
@@ -110,42 +115,56 @@ curl -u admin@example.com:PASS -X PUT http://localhost:8080/webdav/demo/src/new.
 19. **Your model of a tool's schema can be out of date — the tool is the oracle.** `mdbook` 0.5 REMOVED `multilingual` from `[book]` ("unknown field") and REJECTS a draft SUMMARY parent that has children ("link items for nested chapters must only contain a hyperlink"). Both bugs passed my unit tests because my fixtures encoded my (wrong) model of mdBook. Only running the real binary on a real corpus found them. Same class of bug as the WebDAV date formatter (pitfall #13) — the fix is the same: an `#[ignore]`d oracle against the real tool + a real corpus.
 20. **The demo fixture can be a legitimately-flagged vault.** The `demo` test vault is a bare compiled-HTML dir → it matches NEITHER format, so the PRD-6 warning applies to it too. Don't write a test that assumes "the demo vault is never flagged" — assert per-row instead.
 21. **A title is not plain text.** Real wikis put markdown IN titles (`# [Rockasteria](http://…/)`); using a title as `[title](target)` link text then breaks mdBook's parser in ways unit tests with plain titles never see. Sanitize at the boundary (`tree::md_link_text`) and test with a bracketed/link title — same lesson as pitfall #19: the real corpus is the oracle.
-22. **"The admin button shows for a non-admin" is usually a role-in-DB problem, not a nav bug.** `index` and `require_admin` both gate on `role_for(email) == "admin"` and are consistent. If a user sees Admin, they ARE admin in the DB — MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env, so on treklair the `demo` login is the admin. Check the role in the DB before touching the nav logic.
+22. **"The admin button shows for a non-admin" is usually a role-in-DB problem, not a nav bug.** `index` and `require_admin` both gate on `role_for(email) == "admin"` and are consistent. If a user sees Admin, they ARE admin in the DB — MoriNet's bootstrap creates the admin from the `ADMIN_EMAIL` env. (Historical: on treklair the `demo` login used to BE the admin; as of v1.1.0-era hardening `demo` is a `reader` and a locked account — Phase 12. Check the role in the DB before touching the nav logic.)
 
 23. **Shared temp dirs + parallel tests = flaky clone races.** Several route tests deriving the same vault slug (`b3wiki`) into ONE shared `data_dir` clobbered each other's git clones (pitfall #16 family). Give each test its own vault NAME (the slug derives from it) so the clone dirs differ.
 24. **mdBook themes are written at BUILD time, and asset constants are compile-time.** After editing `assets/zoom.*` / `MORINET_CSS` (now `include_str!`'d in `tree.rs`), a running server keeps serving the OLD assets — it holds the constants it was compiled with. Order of operations: rebuild → **restart the server** → **Refresh the vault** (only then does `<build>/theme/` regenerate). Fingerprinted URLs (`theme/zoom-<hash>.css`) mean the plain filename 404s — resolve the hash from the served HTML before fetching.
 25. **JS/CSS braces inside a Rust `format!` break the string.** A `<script>` block with `{ ... }` inlined in an HTML `format!` produces "invalid format string". Put brace-bearing content in a raw-string const or `include_str!`, never inline.
 26. **Fuzzy patch tools corrupt large HTML-template regions** (an eaten closing `"#,`, merged indentation) and the file stops compiling. For big template edits use exact scripted replacement (python, match the current text verbatim) and run `cargo check` immediately after. Also note `write_file` refuses stale content: re-read any file modified through `terminal` before overwriting it.
+27. **mdBook 0.5 injects its OWN sidebar numbers at runtime** — `book/toc.js` renders `<strong aria-hidden="true">1.</strong>` inside each chapter link, independent of SUMMARY titles. Stripping numbers from SUMMARY (v1.0.3) was necessary but NOT sufficient; the complete fix is the chrome CSS rule `.chapter-item a > strong[aria-hidden="true"] { display: none; }` (`2f1bcf1`). Grep the built book dir (toc.js), not index.html, when debugging the sidebar.
+28. **`scripts/release.sh` pushes the tag BEFORE creating the release**: a failed API call leaves `vX.Y.Z` existing locally AND on origin, and a plain retry dies with `tag already exists`. Verify the tag points at the release commit, `git tag -d vX.Y.Z`, re-run (the script re-creates and re-pushes it). Probe the token first: `curl -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOK" https://api.github.com/repos/lejeunecedric/MoriNet` — 401 means expired, format looks identical either way.
+29. **The live DB has no sqlite3 CLI on the server** — inspect `/var/lib/morinet/morinet.db` with `sudo -n python3` and the stdlib `sqlite3` module. Converted vaults: the served book is `<repo>/.morinet-build/book`, and SUMMARY/book.toml changes only land after a **Refresh**.
 
 ## What's left (ROADMAP)
 
-Everything through Phase 9b (design system) is done — v0.1.20 is the current
-release. The roadmap body keeps the phase history; this section lists only
-what is genuinely open:
+Everything through Phase 11 is done — v1.0.3 is the current release and v1.0.0
+shipped 2026-10-25. The roadmap body keeps the phase history; this section
+lists only what is genuinely open (**milestone v1.1.0**, opened 2026-10-28):
 
-**Phase 10 — MCP**: `/mcp` StreamableHttp, Bearer auth (token derived from the
-password), tools `list_vaults` / `list_notes` / `read_note` / `search_notes`
-scoped to the accessible vaults. Not started.
+**Phase 12 — demo-lock + vault display options**: configurable locked accounts
+(demo instance: `demo`) refused server-side on load/delete (plus edit/share per
+2026-10-28 decision) with a home-page popup; per-vault "keep page numbers"
+toggle (the `2f1bcf1` hide rule becomes its "off" state — closes issue #7);
+per-vault mdBook theme select applied at serve time by rewriting the generated
+`default_light_theme`/`default_dark_theme` pair (converted vaults only).
 
-**Phase 11 — polish (v1.0)**: `cargo install morinet` end-to-end check, README
-5 sections, `morinet init`, Cargo.lock committed, `v1.0.0` tag, announcement.
+**Phase 13 — wiki-changes log**: `vault_changes` table fed at Refresh (git
+diff old→new commit, else source-tree hash diff); "Wiki changes" section in
+Statistics. Best-effort like access_log.
+
+**Phase 14 — local vault upload**: "Local vault" button, browser directory
+picker (`webkitdirectory`) → upload → normal convert/build/register pipeline
+(quota + ACL as GitHub load).
+
+**Open GitHub issues**: #7 (fix committed, close when 1.1.0 ships), #10
+(web+MCP stats — not scheduled).
 
 **Design**: the UI is in its designed state (v0.1.16→v0.1.20). The rules that
-keep it consistent are in the `ui-design-passes` skill (no faded text, body
-≥ 13px / line-height 1.55–1.7, no card-in-card, nav links exactly once,
-identity strings rendered once, fixed overlays never cover incumbent controls,
-one accent, close/back → the parent surface). Run an Impeccable pass
-(`/extract`, `/critique`) when the user flags repetition or clutter; the
-detector recipe (CSS-inlined snapshots) is in the skill's
-`references/detector.md`.
+keep it consistent (no faded text, body ≥ 13px / line-height 1.55–1.7, no
+card-in-card, nav links exactly once, identity strings rendered once, fixed
+overlays never cover incumbent controls, one accent, close/back → the parent
+surface). Run an Impeccable audit pass (`impeccable-ui-audit` skill) when the
+user flags repetition or clutter; the detector recipe (CSS-inlined snapshots)
+is in that skill.
 
-**Deploy-side leftover (vops, not code)**: `demo` is a `reader` in `free`
-(quota 2) on treklair; the anti-lockout fallback `admin`/`admin` exists. Set
-real `MORINET_ADMIN_EMAIL`/`MORINET_ADMIN_PASSWORD` on the server long-term.
+**Deploy-side leftover (vops, not code)**: on treklair, `demo` is a `reader`
+in `free` (quota 2) — Phase 12 adds a locked-accounts list that will pin it
+further. The anti-lockout fallback `admin`/`admin` exists. Set real
+`MORINET_ADMIN_EMAIL`/`MORINET_ADMIN_PASSWORD` on the server long-term.
 
 ## Testing conventions
 
-- TDD strict, `cargo test` (197 tests green at handoff), clippy `-D warnings`, fmt.
+- TDD strict, `cargo test` (276 tests green at handoff), clippy `-D warnings`, fmt.
 - sqlite fixtures: `Store::connect_memory()`, bcrypt cost default (tests take ~15-25s, that's normal).
 - e2e via `tower::ServiceExt::oneshot` on the Router — no network.
 - UI verification: run `morinet serve` on :8099 with a throwaway config, then drive Chromium — click the real buttons, follow the real links, screenshot each page. Two unstyled-page bugs were only findable this way. **Measure, don't impress**: compare `getBoundingClientRect()` of competing controls (this is how the Close-vault-over-Print overlap was proven) and read computed styles for typography claims.
