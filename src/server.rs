@@ -609,31 +609,75 @@ async fn vault_file(
     serve_vault_file(&state, &claims.email, &slug, &rest).await
 }
 
+/// Serve-time override re-showing mdBook's toc.js chapter numbers (D-09):
+/// the exact inverse of the global hide rule in `assets/zoom.css`. Static
+/// raw-string const — no interpolation (pitfall #25, T-12-12).
+const PAGE_NUMBERS_OVERRIDE: &str =
+    r#"<style>.chapter-item a > strong[aria-hidden="true"]{display:inline;}</style>"#;
+
+/// The two inline-theme literals present in EVERY built mdBook page (D-10),
+/// verified verbatim on a real built book. Exact-match replace only.
+const THEME_LIGHT_LITERAL: &str = r#"default_light_theme = "light";"#;
+const THEME_DARK_LITERAL: &str = r#"default_dark_theme = "navy";"#;
+
+/// Per-vault display options applied to served HTML at serve time (D-08:
+/// no rebuild, no book.toml change). `theme` is whitelist-bounded at write
+/// time (plan 12-02); this is a fixed-literal substitution, not templating,
+/// and is inert when the literals are absent (T-12-11).
+fn apply_vault_display_options(html: &mut String, keep_page_numbers: bool, theme: &str) {
+    if keep_page_numbers {
+        if let Some(pos) = html.rfind("</body>") {
+            html.insert_str(pos, PAGE_NUMBERS_OVERRIDE);
+        }
+    }
+    if !theme.is_empty() {
+        // `contains` guards before any `replace` (T-12-13: no work on pages
+        // without the literals, no regex engine).
+        if html.contains(THEME_LIGHT_LITERAL) {
+            let replacement = format!(r#"default_light_theme = "{theme}";"#);
+            *html = html.replace(THEME_LIGHT_LITERAL, &replacement);
+        }
+        if html.contains(THEME_DARK_LITERAL) {
+            let replacement = format!(r#"default_dark_theme = "{theme}";"#);
+            *html = html.replace(THEME_DARK_LITERAL, &replacement);
+        }
+    }
+}
+
 /// ACL check + safe file serving from the vault's compiled book directory.
 /// Issue #9: every served vault page must carry the vault chrome (zoom +
 /// Close vault). Converted vaults already wire `theme/zoom.css` +
 /// `theme/morinet.js` via mdBook's `additional-css`/`additional-js`; native
 /// mdBook vaults have no `theme/` files at all, so inline the chrome assets
 /// at serve time. Pages that already reference the chrome get nothing extra.
-fn inject_vault_chrome(bytes: Vec<u8>) -> Vec<u8> {
+///
+/// Two distinct passes (D-08, CONTEXT pitfall): PASS 1 injects the chrome
+/// (skipped for converted pages that already wire it — the early-return must
+/// NOT gate the options); PASS 2 applies the per-vault display options to
+/// ALL HTML pages, converted or native.
+fn inject_vault_chrome(bytes: Vec<u8>, keep_page_numbers: bool, theme: &str) -> Vec<u8> {
     let Ok(html) = std::str::from_utf8(&bytes) else {
         return bytes; // not UTF-8: leave binary/odd payloads alone
     };
-    if html.contains("zoom.css") || html.contains("morinet.js") {
-        return bytes;
+    let mut html = html.to_string();
+    // PASS 1 — vault chrome. Converted pages already reference zoom.css /
+    // morinet.js: skip injection, but fall through to the option pass.
+    if !html.contains("zoom.css") && !html.contains("morinet.js") {
+        if let Some(pos) = html.rfind("</body>") {
+            let mut out = String::with_capacity(html.len() + 8192);
+            out.push_str(&html[..pos]);
+            out.push_str("<style>");
+            out.push_str(crate::obsidian::tree::ZOOM_CSS);
+            out.push_str("</style><script>");
+            out.push_str(crate::obsidian::tree::MORINET_JS);
+            out.push_str("</script>");
+            out.push_str(&html[pos..]);
+            html = out;
+        }
     }
-    let Some(pos) = html.rfind("</body>") else {
-        return bytes;
-    };
-    let mut out = Vec::with_capacity(bytes.len() + 8192);
-    out.extend_from_slice(&bytes[..pos]);
-    out.extend_from_slice(b"<style>");
-    out.extend_from_slice(crate::obsidian::tree::ZOOM_CSS.as_bytes());
-    out.extend_from_slice(b"</style><script>");
-    out.extend_from_slice(crate::obsidian::tree::MORINET_JS.as_bytes());
-    out.extend_from_slice(b"</script>");
-    out.extend_from_slice(&bytes[pos..]);
-    out
+    // PASS 2 — per-vault display options, for every HTML page.
+    apply_vault_display_options(&mut html, keep_page_numbers, theme);
+    html.into_bytes()
 }
 
 async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str) -> Response {
@@ -677,7 +721,11 @@ async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str)
                     log_web_access(state, email, slug, rel);
                     (
                         [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                        inject_vault_chrome(bytes),
+                        inject_vault_chrome(
+                            bytes,
+                            vault.vault.keep_page_numbers,
+                            &vault.vault.theme,
+                        ),
                     )
                         .into_response()
                 }
@@ -689,7 +737,7 @@ async fn serve_vault_file(state: &AppState, email: &str, slug: &str, rest: &str)
                 log_web_access(state, email, slug, rel);
                 let ct = content_type(rel);
                 let body = if ct.starts_with("text/html") {
-                    inject_vault_chrome(bytes)
+                    inject_vault_chrome(bytes, vault.vault.keep_page_numbers, &vault.vault.theme)
                 } else {
                     bytes
                 };
@@ -6400,6 +6448,99 @@ mod tests {
         assert!(
             !body.contains(LOCK_MSG),
             "unlocked home page must not contain the alert string"
+        );
+    }
+
+    // ---- Plan 12-03: serve-time display options (D-08..D-10) ----
+
+    /// A realistic built-mdBook page: inline theme script carrying the two
+    /// exact literals (D-10) and toc.js chapter-item markup (D-09), modeled
+    /// on `data/repos/b3wiki/.morinet-build/book/index.html`.
+    const MDBOOK_PAGE: &str = r#"<!DOCTYPE html>
+<html class="light no-js" dir="ltr" lang="en">
+<head><script>
+(function testFunction() {
+    var default_light_theme = "light";
+    var default_dark_theme = "navy";
+    var preferredTheme;
+})();
+</script></head>
+<body>
+<nav role="sidebar"><ul class="chapter"><li class="chapter-item expanded"><a href="intro.html"><strong aria-hidden="true">1.</strong>Intro</a></li></ul></nav>
+</body></html>
+"#;
+
+    #[test]
+    fn display_options_theme_rewrite_applied() {
+        let mut html = MDBOOK_PAGE.to_string();
+        apply_vault_display_options(&mut html, false, "coal");
+        assert!(
+            html.contains(r#"default_light_theme = "coal";"#)
+                && html.contains(r#"default_dark_theme = "coal";"#),
+            "both literals rewritten to coal: {html}"
+        );
+        assert!(
+            !html.contains(r#"default_light_theme = "light";"#)
+                && !html.contains(r#"default_dark_theme = "navy";"#),
+            "original literals gone: {html}"
+        );
+        // Nothing else touched: the chapter markup is intact.
+        assert!(html.contains(r#"<strong aria-hidden="true">1.</strong>Intro"#));
+        assert!(!html.contains(PAGE_NUMBERS_OVERRIDE));
+    }
+
+    #[test]
+    fn display_options_theme_rewrite_inert_when_absent() {
+        let page = "<html><body>plain page, no mdBook script</body></html>";
+        let mut html = page.to_string();
+        apply_vault_display_options(&mut html, false, "rust");
+        assert_eq!(html, page, "page without literals is byte-identical");
+    }
+
+    #[test]
+    fn display_options_page_numbers_style_injected_before_body_end() {
+        let mut html = MDBOOK_PAGE.to_string();
+        apply_vault_display_options(&mut html, true, "");
+        let expected = format!("{PAGE_NUMBERS_OVERRIDE}</body>");
+        assert!(
+            html.contains(&expected),
+            "override style immediately before </body>: {html}"
+        );
+        assert!(
+            !html.contains(r#"default_light_theme = "coal";"#),
+            "theme untouched when unset"
+        );
+    }
+
+    #[test]
+    fn display_options_off_is_inert() {
+        let mut html = MDBOOK_PAGE.to_string();
+        apply_vault_display_options(&mut html, false, "");
+        assert_eq!(html, MDBOOK_PAGE, "both options off: byte-identical");
+    }
+
+    #[test]
+    fn display_options_runs_on_chrome_early_return_page() {
+        // Converted vault: the page already wires zoom.css + morinet.js, so
+        // the chrome pass early-returns — the option pass must still run.
+        let page = MDBOOK_PAGE.replace(
+            "</head>",
+            "<link rel=\"stylesheet\" href=\"theme/zoom.css\"><script src=\"theme/morinet.js\"></script></head>",
+        );
+        let out = inject_vault_chrome(page.into_bytes(), true, "coal");
+        let body = String::from_utf8(out).unwrap();
+        assert!(
+            body.contains(r#"default_light_theme = "coal";"#)
+                && body.contains(r#"default_dark_theme = "coal";"#),
+            "theme rewrite applied despite chrome early-return: {body}"
+        );
+        assert!(
+            body.contains(PAGE_NUMBERS_OVERRIDE),
+            "page-numbers override applied despite chrome early-return"
+        );
+        assert!(
+            !body.contains("morinet-zoom"),
+            "chrome not injected twice: {body}"
         );
     }
 }
