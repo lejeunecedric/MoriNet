@@ -2532,6 +2532,50 @@ async fn vault_stats(
             )
         })
         .collect();
+    // Wiki changes section (D-06): best-effort like the sibling stats
+    // queries — a read error degrades to the empty state, never breaks the
+    // page. ts/kind/path all get html_escape: paths come from repo filenames
+    // and WebDAV PUT targets (attacker-controlled, T-13-08, same rule as
+    // T-10.1-09 above).
+    let changes = state
+        .store
+        .recent_vault_changes(&slug, 5, 30)
+        .await
+        .unwrap_or_default();
+    // Group consecutive rows sharing event_id (query is already newest-first).
+    let mut groups: Vec<(String, String, Vec<String>)> = Vec::new();
+    for (event_id, ts, kind, path) in changes {
+        // D-08: display prettification only; stored vocabulary stays exact.
+        let mut label = kind;
+        if let Some(first) = label.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        let row = format!(
+            r#"<tr><td>{k}</td><td>{p}</td></tr>"#,
+            k = html_escape(&label),
+            p = html_escape(&path)
+        );
+        match groups.last_mut() {
+            Some((eid, _, rows)) if *eid == event_id => rows.push(row),
+            _ => groups.push((event_id, ts, vec![row])),
+        }
+    }
+    let changes_html: String = if groups.is_empty() {
+        "<p>No changes recorded yet.</p>".to_string()
+    } else {
+        groups
+            .iter()
+            .map(|(_, ts, rows)| {
+                format!(
+                    r#"<h3>{ts} — {n} change(s)</h3>
+<table><thead><tr><th>Change</th><th>Path</th></tr></thead><tbody>{rows}</tbody></table>"#,
+                    ts = html_escape(ts),
+                    n = rows.len(),
+                    rows = rows.concat(),
+                )
+            })
+            .collect()
+    };
     let body = format!(
         r#"<section class="panel">
 <h2>Statistics</h2>
@@ -2545,6 +2589,8 @@ async fn vault_stats(
 <table><thead><tr><th>Day</th><th>Source</th><th>Hits</th></tr></thead><tbody>{day_rows}</tbody></table>
 <h2>Top pages</h2>
 <table><thead><tr><th>Page</th><th>Hits</th></tr></thead><tbody>{top_rows}</tbody></table>
+<h2>Wiki changes</h2>
+{changes_html}
 </section>
 "#,
         pages = pages,
@@ -2553,6 +2599,7 @@ async fn vault_stats(
         src = html_escape(&source),
         day_rows = day_rows,
         top_rows = top_rows,
+        changes_html = changes_html,
     );
     nav_page(&state, &claims, "Statistics", &body).await
 }
@@ -6352,6 +6399,110 @@ mod tests {
         let cookie = login_as(&app, "stranger@example.com", "pw").await;
         let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ---------- Phase 13: Wiki changes section (13-02 Task 1) ----------
+
+    #[tokio::test]
+    async fn stats_shows_wiki_changes_section() {
+        let (app, state) = test_router().await;
+        // Event A (older): added + removed. Event B (newer): modified.
+        state
+            .store
+            .log_vault_change("demo", "ev-a", "added", "alpha.md")
+            .await
+            .unwrap();
+        state
+            .store
+            .log_vault_change("demo", "ev-a", "removed", "gone.md")
+            .await
+            .unwrap();
+        state
+            .store
+            .log_vault_change("demo", "ev-b", "modified", "beta.md")
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("Wiki changes"), "section heading: {body}");
+        for p in ["alpha.md", "gone.md", "beta.md"] {
+            assert!(body.contains(p), "change path {p}: {body}");
+        }
+        // D-08: prettified display labels, rows only inside the section table.
+        assert!(body.contains(">Added<"), "Added label: {body}");
+        assert!(body.contains(">Modified<"), "Modified label: {body}");
+        assert!(body.contains(">Removed<"), "Removed label: {body}");
+        // Per-event headers show their counts.
+        assert!(body.contains("2 change(s)"), "event A count: {body}");
+        assert!(body.contains("1 change(s)"), "event B count: {body}");
+        // Newest event first: event B's row precedes event A's rows.
+        let pos_b = body.find("beta.md").expect("beta.md present");
+        let pos_a = body.find("alpha.md").expect("alpha.md present");
+        assert!(pos_b < pos_a, "newest event first: {body}");
+    }
+
+    #[tokio::test]
+    async fn stats_wiki_changes_empty_state() {
+        let (app, _state) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("No changes recorded yet."),
+            "D-06 empty state: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stats_wiki_changes_escapes_paths() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .log_vault_change("demo", "ev-x", "added", "<script>alert(1)</script>")
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("&lt;script&gt;"), "escaped path: {body}");
+        assert!(
+            !body.contains("<script>alert"),
+            "raw script payload leaked: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stats_sharee_branch_unchanged() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        // Even with changes recorded, a sharee must not see the section (D-07).
+        state
+            .store
+            .log_vault_change("demo", "ev-a", "added", "secret.md")
+            .await
+            .unwrap();
+        state
+            .store
+            .log_access("pal@example.com", "demo", "web", "index.html")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("You have accessed this vault 1 time(s)"),
+            "own count line: {body}"
+        );
+        assert!(
+            !body.contains("Wiki changes"),
+            "no section for sharee: {body}"
+        );
+        assert!(!body.contains("secret.md"), "no change leak: {body}");
     }
 
     #[tokio::test]
