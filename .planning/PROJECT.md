@@ -30,12 +30,12 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 - ✓ MCP StreamableHttp on `/mcp`: Bearer tokens, list/read/search tools on accessible vaults — REQ-MCP-* (v1.0.0)
 - ✓ Polish + ship: minimal README, `morinet init`, local gate/release/deploy scripts — REQ-OPS-* (v1.0.0, 2026-10-25)
 - ✓ Post-release fixes: global header on sub-pages (v1.0.1), vault chrome on every served page + Exit Settings (v1.0.2, issues #8/#9), numeric menu prefixes stripped (v1.0.3, issue #7 partial)
+- ✓ Demo account lock (server refuse + home popup) + per-vault display options: keep-page-numbers toggle, mdBook theme select — REQ-DEMO-*, REQ-VOPT-* (Phase 12, 2026-10-29)
 
 ### Active
 
 <!-- Milestone v1.1.0 — current scope (2026-10-28). -->
 
-- [ ] Phase 12 — Demo account lock (server refuse + popup) + per-vault display options: keep-page-numbers toggle, mdBook theme select — REQ-DEMO-*, REQ-VOPT-*
 - [ ] Phase 13 — Wiki-changes log: `vault_changes` table fed at refresh + "Wiki changes" section in Statistics — REQ-CHG-*
 - [ ] Phase 14 — Local vault upload: client file picker → convert/build/register — REQ-LOC-*
 
@@ -77,4 +77,4 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 | GSD adopted as the planning mode (2026-10-25) | Toolled plan/execute/verify workflows; existing docs kept (ROADMAP/REQUIREMENTS/HANDOFF/STATE-LOG) | — Pending |
 
 ---
-*Last updated: 2026-10-25 — GSD bootstrapped from the existing planning docs (v0.1.20, phases 00→09b shipped).*
+*Last updated: 2026-10-29 — Phase 12 complete (demo lock + vault display options, v1.1.0 milestone).*

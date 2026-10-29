@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.1.0
 milestone_name: demo hardening + vault options
-status: executing
-stopped_at: GSD bootstrap complete (PROJECT.md, config.json, STATE.md GSD, ROADMAP GSD-parseable). IDEA.md modified, pending commit (user edit).
-last_updated: "2026-10-28T20:19:45.882Z"
+status: ready_to_plan
+stopped_at: Phase 12 complete (3/3) — ready to discuss Phase 13
+last_updated: 2026-10-29T00:00:35.598Z
 last_activity: 2026-10-28 -- Phase 12 planning complete
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 3
-  completed_plans: 0
+  completed_plans: 24
   percent: 0
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
-**Current focus:** v1.0.0 LIVE — milestone complete; next: post v1.0 backlog
+**Current focus:** Phase 13 — wiki changes log (v1.1.0)
 
 ## Current Position
 
-Phase: none yet — v1.1.0 milestone scoped 2026-10-28 (phases 12-14)
-Plan: v1.0.0 released 2026-10-25; hotfixes v1.0.1 (header), v1.0.2 (chrome + Exit Settings, issues #8/#9), v1.0.3 (SUMMARY number strip) all released + deployed; issue #7 real fix (hide mdBook toc.js numbers via chrome CSS) committed, ships in 1.1.0
-Status: Ready to execute
-Last activity: 2026-10-28 -- Phase 12 planning complete
+Phase: 13
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-29
 
 Progress: [░░░░░░░░░░] 0% (0/3 phases of v1.1.0)
 

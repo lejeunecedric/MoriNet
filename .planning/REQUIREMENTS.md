@@ -196,10 +196,10 @@
 
 ## V11 — v1.1.0 milestone (demo hardening + vault options)
 
-- [ ] REQ-DEMO-001: locked accounts (config list; demo instance: `demo`) cannot load or delete vaults — server refuses with a clear error page
-- [ ] REQ-DEMO-002: home page shows popup "demo account can't add or suppress vaults" when a locked account clicks Load vault or Delete
-- [ ] REQ-VOPT-001: per-vault "keep page numbers" toggle on the Edit page (default off = mdBook sidebar chapter numbers hidden; on = shown)
-- [ ] REQ-VOPT-002: per-vault mdBook theme select on the Edit page (light, navy, rust, coal, ayu) via `book.toml [output.html] default-theme`
+- [x] REQ-DEMO-001: locked accounts (config list; demo instance: `demo`) cannot load or delete vaults — server refuses with a clear error page
+- [x] REQ-DEMO-002: home page shows popup "demo account can't add or suppress vaults" when a locked account clicks Load vault or Delete
+- [x] REQ-VOPT-001: per-vault "keep page numbers" toggle on the Edit page (default off = mdBook sidebar chapter numbers hidden; on = shown)
+- [x] REQ-VOPT-002: per-vault mdBook theme select on the Edit page (light, navy, rust, coal, ayu) via `book.toml [output.html] default-theme`
 - [ ] REQ-CHG-001: refresh records vault file changes (added/modified/removed paths) in a `vault_changes` table; best-effort, never fails the refresh
 - [ ] REQ-CHG-002: Statistics page shows a "Wiki changes" section (latest changes, newest first, grouped per refresh event)
 - [ ] REQ-LOC-001: "Local vault" button opens a client-side file/directory picker and uploads the markdown tree
