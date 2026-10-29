@@ -55,6 +55,37 @@ Sharing to an email that is not registered creates a *pending* share. The
 moment someone registers (or is invited) with that exact email address, the
 share resolves automatically and the vault appears in their list.
 
+## Loading your own vault
+
+Signed-in users can load a personal vault from the home page, within their
+group's quota:
+
+- **From GitHub** — paste the repository URL; it is cloned, converted and
+  rebuilt automatically on the background sync, and can be **Refresh**ed on
+  demand.
+- **From your machine** — the *Local vault* form picks a directory in your
+  browser and uploads its markdown files. Uploaded vaults have no upstream:
+  Refresh is not available for them — to update one, delete it and upload it
+  again (under the same name once deleted).
+
+## Vault display options
+
+The owner can tune how a vault renders from its **Edit** page:
+
+- **Keep page numbers** — off by default, which hides mdBook's own sidebar
+  chapter numbers; tick it to show them again.
+- **Theme** — pick the mdBook theme (auto, light, navy, rust, coal, ayu).
+
+Both apply at serve time to the vault's pages — no rebuild needed.
+
+## Statistics & wiki changes
+
+Every owner (and admin) sees a **Statistics** page per vault: access hits per
+day, top pages, and a **Wiki changes** section listing what each Refresh
+actually changed — files added, modified or removed, newest events first.
+Change logging is best-effort telemetry: it never affects the Refresh itself,
+and entries are kept for 90 days.
+
 ## Instance-wide vaults
 
 Some vaults — like this documentation — are marked global by the admin and

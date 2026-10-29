@@ -9,7 +9,10 @@
 MoriNet hosts one or more **llm-wiki / Obsidian vaults** — plain markdown with `[[wikilinks]]` and YAML frontmatter — converts them to mdBook sites, and serves them to your team or your AI agents. Everything runs in a single Rust binary.
 
 - 📚 **llm-wiki / Obsidian conversion**: wikilinks, frontmatter, and auto-generated `SUMMARY.md` — no `book.toml` hand-editing
-- 📂 **Multi-vault** with groups, per-group quotas, and personal vaults (load your own from GitHub)
+- 📂 **Multi-vault** with groups, per-group quotas, and personal vaults — load your own from GitHub **or upload a local folder** from the browser
+- 🎛️ **Per-vault display options**: keep/hide sidebar page numbers, mdBook theme select (light/navy/rust/coal/ayu)
+- 📈 **Per-vault statistics** including a **Wiki changes** log: what each Refresh added/modified/removed
+- 🔒 **Locked accounts** (e.g. a public demo login) can read but never add or modify vaults
 - 🔐 **Email + password auth** (HttpOnly signed cookies), `admin` / `reader` roles, invitations and password reset by email
 - 📡 **WebDAV** access — put a note, it goes live
 - 🤖 **MCP server** (StreamableHttp) with per-user **API tokens** — for AI agents
@@ -74,7 +77,7 @@ morinet serve --config ./config.toml
 
 ## Status
 
-**v1.0.3 stable.** Shipped: multi-vault hosting with groups and personal vaults, llm-wiki/Obsidian conversion, admin UI, email invites and reset, WebDAV, MCP server with API tokens, and a built-in docs vault. 1.0.1–1.0.3: global header on Share/Statistics/Edit pages, vault chrome (zoom + Close vault) on every served page — native mdBook vaults included — an "Exit Settings" link back to the main menu, and a clean sidebar with no duplicated chapter numbers.
+**v1.1.0 stable.** Shipped: multi-vault hosting with groups and personal vaults (GitHub load + local folder upload), llm-wiki/Obsidian conversion, admin UI, email invites and reset, WebDAV, MCP server with API tokens, a built-in docs vault, per-vault display options (page numbers, theme), a wiki-changes log in Statistics, and locked-account guards. 1.0.1–1.0.3: global header on Share/Statistics/Edit pages, vault chrome (zoom + Close vault) on every served page — native mdBook vaults included — an "Exit Settings" link back to the main menu, and a clean sidebar with no duplicated chapter numbers.
 
 **Live demo**: [morinet.treklair.fr](https://morinet.treklair.fr) — public demo instance, no real data; credentials are not in this repo.
 

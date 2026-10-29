@@ -58,12 +58,23 @@ token = "ghp_..."          # github only: optional token for private repos
 `src/SUMMARY.md`) or an Obsidian / llm-wiki vault — both are detected and
 built automatically.
 
+## [security]
+
+Optional. Guards accounts that must never modify vaults (e.g. a public demo
+login). A locked account is refused on load, upload, delete, edit and share
+mutations — reads and Refresh stay allowed. Admins are never locked.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `locked_accounts` | `[]` | List of account emails that cannot add or modify vaults. Can be overridden by the `MORINET_LOCKED_ACCOUNTS` environment variable (comma-separated), which wins when set to a non-blank value. |
+
 ## Environment variables
 
 | Variable | Meaning |
 | --- | --- |
 | `MORINET_COOKIE_SECRET` | Overrides `[session].cookie_secret`. |
 | `MORINET_ADMIN_EMAIL` / `MORINET_ADMIN_PASSWORD` | Bootstrap admin, created or updated on every boot. Required to start the server. |
+| `MORINET_LOCKED_ACCOUNTS` | Comma-separated emails, overrides `[security].locked_accounts` when non-blank. |
 
 Because the environment wins over the file, you can keep secrets out of
 `config.toml` entirely. See also the [Quick start](quickstart.md) and the

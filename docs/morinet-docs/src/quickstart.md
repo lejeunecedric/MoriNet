@@ -69,7 +69,8 @@ changes when it is rebuilt. Push to a GitHub vault is picked up automatically
 by the background sync; for local vaults (or after editing files through
 [WebDAV](webdav.md)), press **Refresh** on the vault card to rebuild it from
 its source. Themes and assets are also applied at build time, so a theme
-change needs a Refresh too.
+change needs a Refresh too. Vaults uploaded from your own machine have no
+upstream, so they offer no Refresh — re-upload them to update their content.
 
 Once logged in, share a vault with your teammates from the **Share** button —
 see [Sharing & roles](sharing-and-roles.md).
