@@ -10,6 +10,17 @@ A Rust server that exposes Obsidian / llm-wiki second brains as mdBook sites, wi
 
 Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site — without the user ever having to touch mdBook themselves.
 
+## Current Milestone: v1.2 Team Access
+
+**Goal:** a team can sign in through its own OIDC identity provider, read its vaults programmatically through a REST API, and edit in parallel without clobbering each other's work.
+
+**Target features:**
+- **Generic OIDC SSO** — any OIDC-compliant IdP (Keycloak / Authentik / Authelia) configured in `config.toml`; coexists with password login (SSO button on the login page); account auto-created at first SSO login when the email matches an existing account or an allowed domain; OIDC groups claim → MoriNet groups (e.g. admin)
+- **Read-only REST API** — list vaults / list notes / read note / search, authenticated with the existing `/account` API tokens, ACL-scoped like MCP
+- **Safe asynchronous co-editing** — conflict detection via hash/ETag before overwrite: WebDAV `If-Match`/`If-None-Match` + upload-time check; no locks, no CRDT
+
+**Key context:** all three were Out of Scope in v1 — real-time CRDT editing stays out (replaced by conflict detection); the IdP is external to MoriNet; phase numbering continues from 14 → Phase 15+.
+
 ## Requirements
 
 ### Validated
@@ -36,16 +47,17 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 
 ### Active
 
-<!-- Next milestone not yet planned — run /gsd-new-milestone to define scope. -->
+<!-- Milestone v1.2 Team Access — scope being defined (2026-10-29). -->
 
-(None yet — v1.1.0 shipped 2026-10-29.)
+- [ ] OIDC SSO coexisting with password auth (IdP in config, auto-provisioning, group claim mapping)
+- [ ] Read-only REST API on existing API tokens (vaults, notes, read, search)
+- [ ] Conflict-safe async co-editing (WebDAV If-Match + upload hash check)
 
 ### Out of Scope
 
-- Real-time collaborative editing — out of v1, WebSocket/CRDT complexity not justified
+- Real-time collaborative editing (CRDT/shared editor) — v1.2 ships conflict detection instead; CRDT complexity still not justified
 - Native mobile apps — responsive web is enough
-- SSO (Google/Microsoft OAuth) — bcrypt + email covers the self-hosted need
-- Webhooks / public API for vault management — WebDAV + admin UI cover the use case
+- Webhooks / public API to **manage** vaults — v1.2 adds a read-only REST API; management stays on WebDAV + admin UI
 - Encryption at rest — relying on the server's FS
 
 ## Context
@@ -81,5 +93,22 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 | WebDAV PUT records the single changed path instead of a full-tree hash-diff (Phase 13, D-02) | Full-tree hashing impractical at that call site; git refresh keeps the full tree-diff | ✓ Good (v1.1.0) |
 | Uploaded vaults keep `vault_source = None` (Phase 14, D-04) | No upstream → Refresh correctly answers "no upstream"; re-upload is the update path | ✓ Good (v1.1.0) |
 
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
 ---
-*Last updated: 2026-10-29 — v1.1.0 milestone shipped and archived (Phases 12–14).*
+*Last updated: 2026-10-29 — milestone v1.2 Team Access started (OIDC SSO + read-only REST API + conflict-safe co-editing).*

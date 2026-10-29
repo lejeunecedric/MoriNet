@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1.0
-milestone_name: demo hardening + vault options
-status: Awaiting next milestone
-stopped_at: Milestone v1.1.0 archived — awaiting next milestone
-last_updated: "2026-10-29T19:45:31.361Z"
-last_activity: 2026-10-29 — Milestone v1.1.0 completed and archived
+milestone: v1.2
+milestone_name: Team Access
+status: planning
+last_updated: "2026-10-29T23:19:46.385Z"
+last_activity: 2026-10-29
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 ## Current Position
 
-Phase: Milestone v1.1.0 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-10-29 — Milestone v1.1.0 completed and archived
+Status: Defining requirements
+Last activity: 2026-10-29 — Milestone v1.2 started
 
 ## Performance Metrics
 
