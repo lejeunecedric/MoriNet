@@ -200,8 +200,8 @@
 - [x] REQ-DEMO-002: home page shows popup "demo account can't add or suppress vaults" when a locked account clicks Load vault or Delete
 - [x] REQ-VOPT-001: per-vault "keep page numbers" toggle on the Edit page (default off = mdBook sidebar chapter numbers hidden; on = shown)
 - [x] REQ-VOPT-002: per-vault mdBook theme select on the Edit page (light, navy, rust, coal, ayu) via `book.toml [output.html] default-theme`
-- [ ] REQ-CHG-001: refresh records vault file changes (added/modified/removed paths) in a `vault_changes` table; best-effort, never fails the refresh
-- [ ] REQ-CHG-002: Statistics page shows a "Wiki changes" section (latest changes, newest first, grouped per refresh event)
+- [x] REQ-CHG-001: refresh records vault file changes (added/modified/removed paths) in a `vault_changes` table; best-effort, never fails the refresh
+- [x] REQ-CHG-002: Statistics page shows a "Wiki changes" section (latest changes, newest first, grouped per refresh event)
 - [ ] REQ-LOC-001: "Local vault" button opens a client-side file/directory picker and uploads the markdown tree
 - [ ] REQ-LOC-002: uploaded tree is stored under the owner's space and goes through the normal convert/build/register pipeline (quota + ACL as GitHub load)
 
