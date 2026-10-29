@@ -2065,7 +2065,12 @@ async fn delete_my_vault(
         Ok(true) => {
             // Phase 14 (D-05): remove the uploaded source tree (repos/ dirs
             // are intentionally not removed here — unchanged behavior).
-            let _ = tokio::fs::remove_dir_all(state.cfg.data_dir.join("uploads").join(&slug)).await;
+            // Defensive MEDIUM-1 guard: an owned row already implies a DB
+            // slug, but never hand an unvalidated slug to remove_dir_all.
+            if slug_is_upload_safe(&slug) {
+                let _ =
+                    tokio::fs::remove_dir_all(state.cfg.data_dir.join("uploads").join(&slug)).await;
+            }
             Redirect::to("/").into_response()
         }
         Ok(false) => StatusCode::FORBIDDEN.into_response(),
@@ -2919,6 +2924,16 @@ async fn fail_upload(dir: &std::path::Path, msg: &str) -> Response {
     error_page(msg)
 }
 
+/// True when `slug` is upload-safe: the exact charset `vault_slug_from_name`
+/// emits. Delete flows must never hand an unvalidated path slug (matchit
+/// matches `/admin/vaults/../delete` with slug `..`) to `remove_dir_all`.
+fn slug_is_upload_safe(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 /// `POST /vaults/upload` — load a vault from the user's own machine (Phase 14,
 /// D-01..D-05). Mirrors `load_personal_vault`'s gate order; the tree lands in
 /// `data_dir/uploads/<slug>` and goes through the SAME `LocalSource` build
@@ -3377,7 +3392,12 @@ async fn admin_delete_vault(
         Ok(()) => {
             // Phase 14 (D-05): remove the uploaded source tree (repos/ dirs
             // are intentionally not removed here — unchanged behavior).
-            let _ = tokio::fs::remove_dir_all(state.cfg.data_dir.join("uploads").join(&slug)).await;
+            // MEDIUM-1: only DB-charset slugs may reach the filesystem —
+            // matchit hands `..` to this handler for /admin/vaults/../delete.
+            if slug_is_upload_safe(&slug) {
+                let _ =
+                    tokio::fs::remove_dir_all(state.cfg.data_dir.join("uploads").join(&slug)).await;
+            }
             Redirect::to("/admin/vaults").into_response()
         }
         Err(e) => error_page(&format!("delete failed: {e}")),
@@ -7979,5 +7999,35 @@ mod tests {
             "orphan content must be wiped on recovery"
         );
         let _ = std::fs::remove_dir_all(orphan);
+    }
+
+    #[tokio::test]
+    async fn admin_delete_dotdot_slug_does_not_wipe_data() {
+        // MEDIUM-1 regression: matchit matches `/admin/vaults/../delete` with
+        // slug = ".." (no normalization), and store.delete_vault is a no-op
+        // that still returns Ok — the uploads cleanup must NEVER feed such a
+        // slug to remove_dir_all (it would unlink the whole data_dir).
+        let (app, state) = test_router().await;
+        let admin_cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let uploads_root = state.cfg.data_dir.join("uploads");
+        std::fs::create_dir_all(&uploads_root).unwrap();
+        let res = req(
+            app,
+            "POST",
+            "/admin/vaults/../delete",
+            cookie_hdr(&admin_cookie),
+            None,
+        )
+        .await;
+        // The status code is not the point — the filesystem is.
+        let _ = res;
+        assert!(
+            state.cfg.data_dir.exists(),
+            "data_dir must survive a `..` slug delete"
+        );
+        assert!(
+            uploads_root.exists(),
+            "uploads root must survive a `..` slug delete"
+        );
     }
 }
