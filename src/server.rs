@@ -2977,26 +2977,41 @@ async fn upload_local_vault(
         Ok(None) => {}
         Err(e) => return error_page(&format!("quota check failed: {e}")),
     }
-    let dir = state.cfg.data_dir.join("uploads").join(&slug);
+    let uploads_root = state.cfg.data_dir.join("uploads");
+    let dir = uploads_root.join(&slug);
     // Slug-collision pre-check BEFORE any disk touch (T-14-07): an uploaded
-    // vault's served book lives INSIDE uploads/<slug>, so wiping the dir
-    // before the UNIQUE check could destroy a live vault's tree.
-    if state.store.vault_name(&slug).await.ok().flatten().is_some()
-        || tokio::fs::try_exists(&dir).await.unwrap_or(false)
-    {
+    // vault's served book lives INSIDE uploads/<slug>, so a registered vault
+    // must be refused here (sequential UX). Dir existence is deliberately NOT
+    // checked — the exclusive create_dir below owns that race instead.
+    if state.store.vault_name(&slug).await.ok().flatten().is_some() {
         return error_page(&format!(
             "the slug '{slug}' is already taken — rename the vault"
         ));
     }
-    // Only now touch disk. The remove_dir_all is orphan defense only — the
-    // pre-check above guarantees no live vault owns this dir.
-    let _ = tokio::fs::remove_dir_all(&dir).await;
-    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+    // HIGH-1: EXCLUSIVE creation — exactly one concurrent upload can win
+    // uploads/<slug>, so every path that reaches writing provably owns the
+    // dir and fail_upload's wipe can never destroy another request's tree.
+    if let Err(e) = tokio::fs::create_dir_all(&uploads_root).await {
         return error_page(&format!("could not create the upload dir: {e}"));
+    }
+    if let Err(e) = tokio::fs::create_dir(&dir).await {
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            // LOW-2: best-effort cleanup even though create_dir failed.
+            return fail_upload(&dir, &format!("could not create the upload dir: {e}")).await;
+        }
+        // No vault row owns the slug (pre-check above), so the dir is an
+        // orphan from a crashed upload or a concurrent in-flight request.
+        // One-shot recovery: wipe once and retry exclusively; if the retry
+        // also fails, another request is actively recreating the dir.
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        if tokio::fs::create_dir(&dir).await.is_err() {
+            return error_page("an upload for this name is already in progress — rename the vault");
+        }
     }
     let root = match dir.canonicalize() {
         Ok(r) => r,
-        Err(e) => return error_page(&format!("could not create the upload dir: {e}")),
+        // LOW-2: we own the dir at this point — clean it up before erroring.
+        Err(e) => return fail_upload(&dir, &format!("could not create the upload dir: {e}")).await,
     };
     // Stream each file part to disk (never buffered in RAM, D-02).
     let mut wrote_markdown = false;
@@ -7927,5 +7942,42 @@ mod tests {
         .await;
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
         assert!(!uploads_dir_for(&state, "adm-del").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_recovers_orphan_dir() {
+        // HIGH-1/LOW-1 regression: an orphan `uploads/<slug>` dir left by a
+        // crashed upload (NO vault row owns the slug) must not block the name
+        // forever — the upload recovers the dir and registers normally.
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let orphan = uploads_dir_for(&state, "orphan-book");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("stale.md"), b"stale orphan junk").unwrap();
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Orphan Book"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        // The recovered vault serves and the orphan content is gone.
+        let res = req(app, "GET", "/vault/orphan-book/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(orphan.join("index.md").is_file());
+        assert!(
+            !orphan.join("stale.md").exists(),
+            "orphan content must be wiped on recovery"
+        );
+        let _ = std::fs::remove_dir_all(orphan);
     }
 }
