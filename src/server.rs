@@ -885,7 +885,9 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 }
             }
-            let existed = tokio::fs::metadata(&full).await.is_ok();
+            // Review LOW-02: on a metadata error assume the file existed
+            // ("modified") rather than silently mislabeling as "added".
+            let existed = tokio::fs::try_exists(&full).await.unwrap_or(true);
             if tokio::fs::write(&full, &bytes).await.is_err() {
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
@@ -2636,7 +2638,10 @@ fn diff_commit_trees(
             _ => delta.new_file().path(),
         };
         if let Some(p) = path {
-            out.push((kind, p.to_string_lossy().replace('\\', "/")));
+            // Review LOW-01: git paths are slash-separated on every platform,
+            // so no backslash normalization — a backslash is a legal Linux
+            // filename character and must survive untouched.
+            out.push((kind, p.to_string_lossy().into_owned()));
         }
     }
     Ok(out)
@@ -4128,6 +4133,9 @@ mod tests {
         // Commit 2: adds c.md, modifies a.md, deletes b.md.
         std::fs::write(dir.join("a.md"), "two\n").unwrap();
         std::fs::write(dir.join("c.md"), "c\n").unwrap();
+        // Review LOW-01: a backslash is a legal Linux filename character —
+        // git paths are slash-separated, so it must survive untouched.
+        std::fs::write(dir.join("back\\slash.md"), "x\n").unwrap();
         std::fs::remove_file(dir.join("b.md")).unwrap();
         let oid2 = commit_all(&repo, "c2");
 
@@ -4136,6 +4144,7 @@ mod tests {
         assert_eq!(
             changes,
             vec![
+                ("added", "back\\slash.md".to_string()),
                 ("added", "c.md".to_string()),
                 ("modified", "a.md".to_string()),
                 ("removed", "b.md".to_string()),
