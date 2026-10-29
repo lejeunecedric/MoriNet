@@ -1430,6 +1430,66 @@ impl Store {
         Ok(r.rows_affected())
     }
 
+    // ─── Vault changes log (Phase 13, REQ-CHG-001) ───────────────────────
+
+    /// Record one vault file change. Callers treat this as best-effort:
+    /// errors must be logged and swallowed, never propagated into a response
+    /// (D-04). `kind` is 'added', 'modified' or 'removed' (CHECK-enforced by
+    /// migration 0010, D-08); all rows of one refresh share one `event_id`.
+    pub async fn log_vault_change(
+        &self,
+        slug: &str,
+        event_id: &str,
+        kind: &str,
+        path: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO vault_changes (vault_slug, event_id, kind, path) VALUES (?, ?, ?, ?)",
+        )
+        .bind(slug)
+        .bind(event_id)
+        .bind(kind)
+        .bind(path)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Latest change rows for a vault, newest first: at most `max_events`
+    /// distinct events (grouped by event_id, newest event first) capped at
+    /// `max_rows` flat rows (D-06's ~5 events / 30 rows). Grouping per event
+    /// happens in the caller, not in SQL. Returns `(event_id, ts, kind, path)`.
+    pub async fn recent_vault_changes(
+        &self,
+        slug: &str,
+        max_events: i64,
+        max_rows: i64,
+    ) -> anyhow::Result<Vec<(String, String, String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT event_id, ts, kind, path FROM vault_changes \
+             WHERE vault_slug = ? AND event_id IN (\
+                 SELECT event_id FROM vault_changes WHERE vault_slug = ? \
+                 GROUP BY event_id ORDER BY MAX(ts) DESC, MAX(id) DESC LIMIT ?) \
+             ORDER BY ts DESC, id DESC LIMIT ?",
+        )
+        .bind(slug)
+        .bind(slug)
+        .bind(max_events)
+        .bind(max_rows)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// 90-day retention sweep (D-05, REQ-CHG-001): delete rows older than 90
+    /// days, return the deleted count. Called once at boot from `main::serve`,
+    /// right after `prune_access_log`.
+    pub async fn prune_vault_changes(&self) -> anyhow::Result<u64> {
+        let r = sqlx::query("DELETE FROM vault_changes WHERE ts < datetime('now', '-90 days')")
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
     fn unix_now(&self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3128,5 +3188,140 @@ mod access_log_tests {
 
         // Idempotent: a second prune deletes nothing.
         assert_eq!(s.prune_access_log().await.unwrap(), 0);
+    }
+}
+
+// ---------- Phase 13 / PLAN 13-01 Task 1: vault_changes (REQ-CHG-001) ----------
+
+#[cfg(test)]
+mod vault_changes_tests {
+    use super::*;
+
+    async fn st() -> Store {
+        Store::connect_memory().await.expect("store")
+    }
+
+    #[tokio::test]
+    async fn vault_changes_migration_shape() {
+        let s = st().await;
+        s.seed_vault("vcshape", "VCShape", Path::new("/tmp/vcshape/book"))
+            .await
+            .unwrap();
+        // Raw INSERT with explicit columns; ts falls back to datetime('now').
+        sqlx::query(
+            "INSERT INTO vault_changes (vault_slug, event_id, kind, path) \
+             VALUES ('vcshape', 'e-1', 'added', 'src/new.md')",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        let (kind, path, ts): (String, String, String) =
+            sqlx::query_as("SELECT kind, path, ts FROM vault_changes WHERE vault_slug = 'vcshape'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(kind, "added");
+        assert_eq!(path, "src/new.md");
+        assert!(!ts.is_empty(), "ts defaults via datetime('now')");
+    }
+
+    #[tokio::test]
+    async fn vault_changes_rejects_bad_kind() {
+        let s = st().await;
+        let bad = sqlx::query(
+            "INSERT INTO vault_changes (vault_slug, event_id, kind, path) \
+             VALUES ('v', 'e', 'renamed', '/x')",
+        )
+        .execute(&s.pool)
+        .await;
+        assert!(bad.is_err(), "kind CHECK must reject 'renamed' (D-08)");
+        // The three D-08 tokens are all accepted.
+        for kind in ["added", "modified", "removed"] {
+            sqlx::query(
+                "INSERT INTO vault_changes (vault_slug, event_id, kind, path) \
+                 VALUES ('v', 'e', ?, '/x')",
+            )
+            .bind(kind)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn vault_changes_roundtrip_and_grouping() {
+        let s = st().await;
+        // Event A: 2 rows (older). Event B: 1 row (newer). Explicit distinct
+        // ts values so ordering is deterministic.
+        for (event_id, ts, kind, path) in [
+            ("e-a", "2026-01-01 10:00:00", "added", "src/a1.md"),
+            ("e-a", "2026-01-01 10:00:00", "modified", "src/a2.md"),
+            ("e-b", "2026-01-02 10:00:00", "removed", "src/b1.md"),
+        ] {
+            sqlx::query(
+                "INSERT INTO vault_changes (vault_slug, event_id, kind, path, ts) \
+                 VALUES ('vcwiki', ?, ?, ?, ?)",
+            )
+            .bind(event_id)
+            .bind(kind)
+            .bind(path)
+            .bind(ts)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        }
+        // A second vault's rows must never leak into this slug's result.
+        sqlx::query(
+            "INSERT INTO vault_changes (vault_slug, event_id, kind, path, ts) \
+             VALUES ('other', 'e-z', 'added', 'x.md', '2026-01-03 10:00:00')",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+        let rows = s.recent_vault_changes("vcwiki", 5, 30).await.unwrap();
+        assert_eq!(rows.len(), 3, "other vault's row excluded");
+        assert_eq!(rows[0].0, "e-b", "newest event first");
+        assert_eq!(rows[0].2, "removed");
+        assert_eq!(rows[0].3, "src/b1.md");
+        // Event A's rows are adjacent and share one event_id.
+        assert_eq!(rows[1].0, "e-a");
+        assert_eq!(rows[2].0, "e-a");
+        assert_eq!(rows[1].2, "modified");
+        assert_eq!(rows[2].2, "added");
+        assert!(!rows[0].1.is_empty(), "ts column returned");
+
+        // max_rows caps the flat row count.
+        let capped = s.recent_vault_changes("vcwiki", 5, 2).await.unwrap();
+        assert_eq!(capped.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn prune_vault_changes_removes_only_old_rows() {
+        let s = st().await;
+        s.log_vault_change("vcwiki", "e-fresh", "added", "src/fresh.md")
+            .await
+            .unwrap();
+
+        // One row 91 days old — beyond the 90-day retention window (D-05).
+        sqlx::query(
+            "INSERT INTO vault_changes (vault_slug, event_id, kind, path, ts) \
+             VALUES ('vcwiki', 'e-old', 'added', 'src/old.md', datetime('now', '-91 days'))",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(s.prune_vault_changes().await.unwrap(), 1);
+
+        let remaining: Vec<(String,)> =
+            sqlx::query_as("SELECT path FROM vault_changes ORDER BY path")
+                .fetch_all(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, vec![("src/fresh.md".to_string(),)]);
+
+        // Idempotent: a second prune deletes nothing.
+        assert_eq!(s.prune_vault_changes().await.unwrap(), 0);
     }
 }
