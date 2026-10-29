@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.1.0
 milestone_name: demo hardening + vault options
-status: executing
-stopped_at: Phase 13 context gathered (auto)
-last_updated: "2026-10-29T01:27:37.243Z"
+status: milestone_complete
+stopped_at: Milestone complete (Phase 14 was final phase)
+last_updated: 2026-10-29T02:20:57.096Z
 last_activity: 2026-10-29 -- Phase 14 planning complete
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 27
   percent: 67
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
-**Current focus:** Phase 14 — local vault upload (v1.1.0)
+**Current focus:** Milestone complete
 
 ## Current Position
 
 Phase: 14
 Plan: Not started
-Status: Ready to execute
-Last activity: 2026-10-29 -- Phase 14 planning complete
+Status: Milestone complete
+Last activity: 2026-10-29
 
 Progress: [░░░░░░░░░░] 0% (0/3 phases of v1.1.0)
 
