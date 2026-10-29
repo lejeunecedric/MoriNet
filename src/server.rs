@@ -584,7 +584,12 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
   <div class="field"><label for="lv-token">Token <small>(optional)</small></label><input id="lv-token" type="text" name="token" placeholder="private repos only"></div>
   <button type="submit">Load vault</button>
 </form>
-{autofill}{locked}
+<form method="post" action="/vaults/upload" enctype="multipart/form-data" class="stacked">
+  <div class="field"><label for="up-name">Name</label><input id="up-name" type="text" name="name" required placeholder="e.g. My Wiki"></div>
+  <div class="field field-wide"><label for="up-files">Folder</label><input id="up-files" type="file" name="files" webkitdirectory multiple required><span id="up-count" class="empty"></span></div>
+  <button type="submit">Upload vault</button>
+</form>
+{autofill}{upload}{locked}
 </section>
 </body>
 </html>"#,
@@ -592,6 +597,7 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
         own = list(&own_items, "No personal vaults yet."),
         shared = list(&shared_items, "No shared vaults yet."),
         autofill = AUTOFILL_NAME_JS,
+        upload = LOCAL_UPLOAD_COUNT_JS,
         locked = locked_script,
     );
     Html(html).into_response()
@@ -1969,6 +1975,22 @@ const AUTOFILL_NAME_JS: &str = r#"<script>
 })();
 </script>"#;
 
+/// Plan 14-01 (D-06): live count of the files picked by the Local vault
+/// directory picker, shown next to the input before submit. Raw-string const:
+/// brace-bearing JS never goes inside a `format!` (pitfall #25).
+const LOCAL_UPLOAD_COUNT_JS: &str = r#"<script>
+// morinet-upload-count: show how many files the folder picker selected.
+(function () {
+  var input = document.querySelector('form[action="/vaults/upload"] input[name="files"]');
+  var out = document.getElementById("up-count");
+  if (!input || !out) return;
+  input.addEventListener("change", function () {
+    var n = input.files ? input.files.length : 0;
+    out.textContent = n === 0 ? "" : n + " files selected";
+  });
+})();
+</script>"#;
+
 /// Phase 12 (D-04/D-05): rendered ONLY for a locked account — intercepts the
 /// Load-vault submit and the Delete confirm with the required popup. UX only;
 /// the server-side `is_locked` gates are the security boundary (T-12-01).
@@ -1991,6 +2013,8 @@ const LOCKED_ACCOUNT_JS: &str = r#"<script>
   function init() {
     var load = document.querySelector('form[action="/vaults/create"]');
     if (load) block(load);
+    var up = document.querySelector('form[action="/vaults/upload"]');
+    if (up) block(up);
     var dels = document.querySelectorAll('form[action$="/delete"]');
     for (var i = 0; i < dels.length; i++) block(dels[i]);
   }
@@ -7161,6 +7185,32 @@ mod tests {
             body.contains(r#"form[action$="/delete"]"#),
             "script targets the Delete forms"
         );
+        assert!(
+            body.contains(r#"form[action="/vaults/upload"]"#),
+            "script targets the Local vault upload form"
+        );
+    }
+
+    /// Plan 14-01 Task 2 (D-06): the home page carries the "Local vault"
+    /// upload form — multipart, directory picker, picked-file-count script.
+    #[tokio::test]
+    async fn index_has_local_upload_form() {
+        let (app, _) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains(r#"action="/vaults/upload""#),
+            "upload form present: {body}"
+        );
+        assert!(
+            body.contains(r#"enctype="multipart/form-data""#),
+            "multipart enctype present"
+        );
+        assert!(body.contains("webkitdirectory"), "directory picker present");
+        assert!(body.contains(r#"name="files""#), "files input present");
+        assert!(body.contains("up-count"), "picked-file-count span present");
     }
 
     /// D-05: non-locked users see no new script — the page is unregressed.
