@@ -885,8 +885,28 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 }
             }
+            let existed = tokio::fs::metadata(&full).await.is_ok();
             if tokio::fs::write(&full, &bytes).await.is_err() {
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            // One event per PUT for the single written path (D-02): added on
+            // first write, modified on rewrite. Fire-and-forget like
+            // log_web_access — the 201 never depends on it (D-04). WebDAV
+            // exposes no DELETE verb, so no `removed` rows here.
+            {
+                let store = state.store.clone();
+                let slug_c = slug.clone();
+                let rel_c = rel.clone();
+                tokio::spawn(async move {
+                    let event_id = uuid::Uuid::new_v4().to_string();
+                    let kind = if existed { "modified" } else { "added" };
+                    if let Err(e) = store
+                        .log_vault_change(&slug_c, &event_id, kind, &rel_c)
+                        .await
+                    {
+                        eprintln!("vault-changes: webdav PUT log failed for {slug_c}: {e}");
+                    }
+                });
             }
             // Rebuild so the served HTML reflects the new note (AD-10).
             // llm-wiki sources are re-converted first (AD-14).
@@ -2537,6 +2557,64 @@ async fn vault_stats(
     nav_page(&state, &claims, "Statistics", &body).await
 }
 
+/// HEAD oid of a clone dir; `None` if the dir is missing or unborn.
+fn git_head_oid(repo_dir: &std::path::Path) -> Option<git2::Oid> {
+    let repo = git2::Repository::open(repo_dir).ok()?;
+    let head = repo.head().ok()?;
+    let commit = head.peel_to_commit().ok()?;
+    Some(commit.id())
+}
+
+/// Diff two commit trees → `(kind, repo-relative path)` per changed file
+/// (D-01). No `find_similar`: renames surface as removed + added (D-08).
+fn diff_commit_trees(
+    repo_dir: &std::path::Path,
+    old: git2::Oid,
+    new: git2::Oid,
+) -> anyhow::Result<Vec<(&'static str, String)>> {
+    let repo = git2::Repository::open(repo_dir)?;
+    let old_tree = repo.find_commit(old)?.tree()?;
+    let new_tree = repo.find_commit(new)?.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
+    let mut out = Vec::new();
+    for delta in diff.deltas() {
+        let kind = match delta.status() {
+            git2::Delta::Added => "added",
+            git2::Delta::Modified => "modified",
+            git2::Delta::Deleted => "removed",
+            _ => continue,
+        };
+        let path = match delta.status() {
+            git2::Delta::Deleted => delta.old_file().path(),
+            _ => delta.new_file().path(),
+        };
+        if let Some(p) = path {
+            out.push((kind, p.to_string_lossy().replace('\\', "/")));
+        }
+    }
+    Ok(out)
+}
+
+/// Diff → rows: one uuid v4 `event_id` per refresh (D-03), one row per
+/// changed path. Errors propagate to the caller's best-effort `Err` arm (D-04).
+async fn record_vault_changes(
+    store: &Store,
+    slug: &str,
+    repo_dir: &std::path::Path,
+    old: git2::Oid,
+    new: git2::Oid,
+) -> anyhow::Result<()> {
+    let changes = diff_commit_trees(repo_dir, old, new)?;
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let event_id = uuid::Uuid::new_v4().to_string();
+    for (kind, path) in changes {
+        store.log_vault_change(slug, &event_id, kind, &path).await?;
+    }
+    Ok(())
+}
+
 async fn refresh_my_vault(
     State(state): State<SharedState>,
     Extension(claims): Extension<Claims>,
@@ -2569,14 +2647,28 @@ async fn refresh_my_vault(
         return error_page("unknown vault");
     };
     use crate::sources::VaultSource as _;
-    let src =
-        crate::sources::GitSource::github(url, None, state.cfg.data_dir.join("repos").join(&slug));
+    let repo_dir = state.cfg.data_dir.join("repos").join(&slug);
+    let old_head = git_head_oid(&repo_dir);
+    let src = crate::sources::GitSource::github(url, None, repo_dir.clone());
     let book_dir = match src.sync().and_then(|d| src.build(&d, &name)) {
         Ok(b) => b,
         Err(e) => return error_page(&format!("refresh failed: {e}")),
     };
     match state.store.seed_vault(&slug, &name, &book_dir).await {
-        Ok(()) => Redirect::to(&format!("/vault/{slug}/")).into_response(),
+        Ok(()) => {
+            // Best-effort change log (D-04): only when HEAD actually moved;
+            // any failure is eprintln'd and the redirect stays byte-identical.
+            if let (Some(old), Some(new)) = (old_head, git_head_oid(&repo_dir)) {
+                if old != new {
+                    if let Err(e) =
+                        record_vault_changes(&state.store, &slug, &repo_dir, old, new).await
+                    {
+                        eprintln!("vault-changes: refresh log failed for {slug}: {e}");
+                    }
+                }
+            }
+            Redirect::to(&format!("/vault/{slug}/")).into_response()
+        }
         Err(e) => error_page(&format!("could not register the refreshed book: {e}")),
     }
 }
@@ -3953,6 +4045,222 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), 65536).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("Fresh"));
+    }
+
+    // ---------- Phase 13 / PLAN 13-01 Task 2: vault_changes capture ----------
+
+    /// Stage everything (including deletions) and commit; return the new HEAD oid.
+    fn commit_all(repo: &git2::Repository, msg: &str) -> git2::Oid {
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("test", "test@test").unwrap();
+        let parents: Vec<git2::Commit> = match repo.head() {
+            Ok(h) => vec![h.peel_to_commit().unwrap()],
+            Err(_) => Vec::new(),
+        };
+        let refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &refs)
+            .unwrap()
+    }
+
+    #[test]
+    fn diff_commit_trees_maps_kinds() {
+        // D-01/D-08: added/modified/removed map exactly, repo-relative paths.
+        let dir = std::env::temp_dir().join("morinet-difftree-maps-kinds");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = git2::Repository::init(&dir).unwrap();
+        // Commit 1: a.md + b.md.
+        std::fs::write(dir.join("a.md"), "one\n").unwrap();
+        std::fs::write(dir.join("b.md"), "b\n").unwrap();
+        let oid1 = commit_all(&repo, "c1");
+        // Commit 2: adds c.md, modifies a.md, deletes b.md.
+        std::fs::write(dir.join("a.md"), "two\n").unwrap();
+        std::fs::write(dir.join("c.md"), "c\n").unwrap();
+        std::fs::remove_file(dir.join("b.md")).unwrap();
+        let oid2 = commit_all(&repo, "c2");
+
+        let mut changes = diff_commit_trees(&dir, oid1, oid2).unwrap();
+        changes.sort();
+        assert_eq!(
+            changes,
+            vec![
+                ("added", "c.md".to_string()),
+                ("modified", "a.md".to_string()),
+                ("removed", "b.md".to_string()),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Login + load a git-sourced vault; returns the cookie+form headers.
+    async fn load_git_vault(app: &Router, email: &str, name: &str, url: &str) -> HeaderMap {
+        let cookie = login_as(app, email, "pw").await;
+        let mut headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/create",
+            headers.clone(),
+            Some(Body::from(format!("name={name}&url={url}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        headers
+    }
+
+    #[tokio::test]
+    async fn refresh_records_vault_changes() {
+        // A refresh whose HEAD moved writes one grouped vault_changes event;
+        // the response itself is unchanged (D-01, D-04).
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("chg@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("free").await.unwrap();
+        state.store.set_group_limit(g, Some(2)).await.unwrap();
+        state.store.add_group_member(g, "chg@x.fr").await.unwrap();
+        let url = wiki_repo("pv-refresh-chg");
+        let headers = load_git_vault(&app, "chg@x.fr", "Refresh Chg", &url).await;
+        // Upstream moves: one new page + one modified page.
+        wiki_repo_commit("pv-refresh-chg", "new-page.md", "# New Page\n\nFresh.\n");
+        wiki_repo_commit("pv-refresh-chg", "index.md", "# Home\n\nChanged.\n");
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/refresh-chg/refresh",
+            headers,
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let rows = state
+            .store
+            .recent_vault_changes("refresh-chg", 5, 30)
+            .await
+            .unwrap();
+        let mut kinds: Vec<(String, String)> =
+            rows.iter().map(|r| (r.2.clone(), r.3.clone())).collect();
+        kinds.sort();
+        assert!(
+            kinds.contains(&("added".to_string(), "new-page.md".to_string())),
+            "expected added new-page.md, got {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&("modified".to_string(), "index.md".to_string())),
+            "expected modified index.md, got {kinds:?}"
+        );
+        // All rows of the refresh share ONE event_id (D-03).
+        let event_ids: std::collections::HashSet<&str> =
+            rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(event_ids.len(), 1, "one refresh = one event_id");
+    }
+
+    #[tokio::test]
+    async fn refresh_noop_records_nothing() {
+        // HEAD did not move → zero vault_changes rows (D-01).
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("noop@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("free").await.unwrap();
+        state.store.set_group_limit(g, Some(2)).await.unwrap();
+        state.store.add_group_member(g, "noop@x.fr").await.unwrap();
+        let url = wiki_repo("pv-refresh-noop");
+        let headers = load_git_vault(&app, "noop@x.fr", "Refresh Noop", &url).await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/refresh-noop/refresh",
+            headers,
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let rows = state
+            .store
+            .recent_vault_changes("refresh-noop", 5, 30)
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "no-op refresh must log nothing");
+    }
+
+    #[tokio::test]
+    async fn webdav_put_records_change() {
+        // D-02: one event per PUT for the single written path — added on first
+        // write, modified on rewrite; the 201 response never depends on it.
+        let (app, state) = test_router().await;
+        let src = seed_wiki_vault_named(&state, "wikidav-chg").await;
+        let res = dav_request(
+            app.clone(),
+            "PUT",
+            "/webdav/wikidav-chg/concepts/new.md",
+            basic("admin@example.com", "test-pass-9f3a"),
+            Some("---\ntitle: New Page\ntype: concept\n---\n\nFresh.\n"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        // The record is spawned fire-and-forget: poll briefly.
+        let mut rows = Vec::new();
+        for _ in 0..50 {
+            rows = state
+                .store
+                .recent_vault_changes("wikidav-chg", 5, 30)
+                .await
+                .unwrap();
+            if !rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(rows.len(), 1, "one event per PUT");
+        assert_eq!(
+            (rows[0].2.as_str(), rows[0].3.as_str()),
+            ("added", "concepts/new.md")
+        );
+        let first_event = rows[0].0.clone();
+        // Same path again → modified, its own event_id.
+        let res = dav_request(
+            app,
+            "PUT",
+            "/webdav/wikidav-chg/concepts/new.md",
+            basic("admin@example.com", "test-pass-9f3a"),
+            Some("---\ntitle: New Page\ntype: concept\n---\n\nTwice.\n"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let mut rows2 = Vec::new();
+        for _ in 0..50 {
+            rows2 = state
+                .store
+                .recent_vault_changes("wikidav-chg", 5, 30)
+                .await
+                .unwrap();
+            if rows2.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(rows2.len(), 2);
+        assert_eq!(
+            (rows2[0].2.as_str(), rows2[0].3.as_str()),
+            ("modified", "concepts/new.md"),
+            "newest row first"
+        );
+        assert_ne!(rows2[0].0, first_event, "each PUT gets its own event_id");
+        std::fs::remove_dir_all(&src).ok();
     }
 
     #[tokio::test]
