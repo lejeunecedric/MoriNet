@@ -181,6 +181,10 @@ pub fn build_router_with_email(
         .route("/account/tokens", post(create_account_token))
         .route("/account/tokens/revoke", post(revoke_account_token))
         .route("/vaults/create", post(load_personal_vault))
+        .route(
+            "/vaults/upload",
+            post(upload_local_vault).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
+        )
         .route("/vaults/{slug}/delete", post(delete_my_vault))
         .route("/vaults/{slug}/refresh", post(refresh_my_vault))
         .route(
@@ -2034,7 +2038,12 @@ async fn delete_my_vault(
         .delete_personal_vault(&claims.email, &slug)
         .await
     {
-        Ok(true) => Redirect::to("/").into_response(),
+        Ok(true) => {
+            // Phase 14 (D-05): remove the uploaded source tree (repos/ dirs
+            // are intentionally not removed here — unchanged behavior).
+            let _ = tokio::fs::remove_dir_all(state.cfg.data_dir.join("uploads").join(&slug)).await;
+            Redirect::to("/").into_response()
+        }
         Ok(false) => StatusCode::FORBIDDEN.into_response(),
         Err(e) => error_page(&format!("could not delete the vault: {e}")),
     }
@@ -2775,13 +2784,7 @@ async fn load_personal_vault(
         Err(e) => return error_page(&format!("quota check failed: {e}")),
     }
     // Slug from the name: lowercase, [a-z0-9-] only (safe in /vault/<slug>/).
-    let slug: String = name
-        .to_ascii_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
+    let slug = vault_slug_from_name(&name);
     if slug.is_empty() {
         return error_page("the name must contain letters or digits");
     }
@@ -2812,6 +2815,251 @@ async fn load_personal_vault(
             "the slug '{slug}' is already taken — rename the vault"
         )),
         Err(e) => error_page(&format!("could not register the vault: {e}")),
+    }
+}
+
+/// Phase 14 (D-02): body limit raised for the upload route ONLY — every other
+/// route keeps axum's 2 MB default. In-code caps: 5 MB per file, 2000 files.
+const UPLOAD_BODY_LIMIT: usize = 256 * 1024 * 1024;
+const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_FILES: usize = 2000;
+
+/// Shared slug derivation (Phase 14): lowercase `[a-z0-9-]`, safe in
+/// `/vault/<slug>/`. Used by BOTH the GitHub load and the local upload so the
+/// two paths can never drift.
+fn vault_slug_from_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+/// Verdict for one client-supplied multipart filename (D-03 — every name is
+/// untrusted). `Rejected` aborts the WHOLE upload; `Ignored` skips the part.
+enum SanitizedName {
+    Write(PathBuf),
+    Ignored,
+    Rejected,
+}
+
+/// Strict sanitizer for client filenames (D-03). Backslashes, drive prefixes
+/// and NUL are rejected outright, never normalized; `.`/`..`/empty segments and
+/// absolute paths abort the upload; the top-level picked directory is stripped;
+/// dotfiles, `.git/` entries and non-markdown files are silently skipped.
+fn sanitize_upload_name(raw: &str) -> SanitizedName {
+    if raw.is_empty() || raw.contains('\\') || raw.contains(':') || raw.contains('\0') {
+        return SanitizedName::Rejected;
+    }
+    if raw.starts_with('/') {
+        return SanitizedName::Rejected;
+    }
+    let segments: Vec<&str> = raw.split('/').collect();
+    if segments
+        .iter()
+        .any(|s| *s == ".." || *s == "." || s.is_empty())
+    {
+        return SanitizedName::Rejected;
+    }
+    // Strip the top-level picked directory name (`MyWiki/index.md` →
+    // `index.md`); a bare single segment (plain multi-file picker) is kept.
+    let rel: &[&str] = if segments.len() >= 2 {
+        &segments[1..]
+    } else {
+        &segments[..]
+    };
+    if rel.is_empty() {
+        return SanitizedName::Rejected;
+    }
+    // Covers `.git/...`, `.DS_Store`, `.obsidian/...` — safe to skip: the
+    // converter needs no `.obsidian` dir (obsidian::convert::detect).
+    if rel.iter().any(|s| s.starts_with('.')) {
+        return SanitizedName::Ignored;
+    }
+    let ext = std::path::Path::new(rel[rel.len() - 1])
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "md" && ext != "markdown" {
+        return SanitizedName::Ignored;
+    }
+    SanitizedName::Write(rel.iter().collect())
+}
+
+/// D-02/D-05: every post-write failure stores nothing — remove the uploads
+/// tree best-effort, then render the error page.
+async fn fail_upload(dir: &std::path::Path, msg: &str) -> Response {
+    let _ = tokio::fs::remove_dir_all(dir).await;
+    error_page(msg)
+}
+
+/// `POST /vaults/upload` — load a vault from the user's own machine (Phase 14,
+/// D-01..D-05). Mirrors `load_personal_vault`'s gate order; the tree lands in
+/// `data_dir/uploads/<slug>` and goes through the SAME `LocalSource` build
+/// dispatch (AD-14). `vault_source` is NEVER set — Refresh keeps answering
+/// "no upstream to refresh" for uploaded vaults (D-04).
+async fn upload_local_vault(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    mut mp: axum::extract::Multipart,
+) -> Response {
+    // Gate order mirrors load_personal_vault (D-05): locked refusal FIRST.
+    if is_locked(&state, &claims.email).await {
+        return error_page("demo account can't add or suppress vaults");
+    }
+    // The `name` text field must arrive before any file part (browser forms
+    // send it first per DOM order); nothing is on disk yet at this point.
+    let name = loop {
+        let field = match mp.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => return error_page("the name is required"),
+            Err(e) => return error_page(&format!("could not read the upload: {e}")),
+        };
+        if field.file_name().is_some() {
+            return error_page("the name field must come first");
+        }
+        if field.name() == Some("name") {
+            let v = field.text().await.unwrap_or_default().trim().to_string();
+            if v.is_empty() {
+                return error_page("the name is required");
+            }
+            break v;
+        }
+    };
+    let slug = vault_slug_from_name(&name);
+    if slug.is_empty() {
+        return error_page("the name must contain letters or digits");
+    }
+    // Quota BEFORE any disk write (D-05) — same messages as the GitHub load.
+    match state
+        .store
+        .effective_personal_vault_limit(&claims.email)
+        .await
+    {
+        Ok(Some(limit)) => {
+            let used = state
+                .store
+                .count_personal_vaults(&claims.email)
+                .await
+                .unwrap_or(0);
+            if used >= limit {
+                return error_page(&format!(
+                    "personal vault limit reached: {used}/{limit} — ask an admin for a larger group"
+                ));
+            }
+        }
+        Ok(None) => {}
+        Err(e) => return error_page(&format!("quota check failed: {e}")),
+    }
+    let dir = state.cfg.data_dir.join("uploads").join(&slug);
+    // Slug-collision pre-check BEFORE any disk touch (T-14-07): an uploaded
+    // vault's served book lives INSIDE uploads/<slug>, so wiping the dir
+    // before the UNIQUE check could destroy a live vault's tree.
+    if state.store.vault_name(&slug).await.ok().flatten().is_some()
+        || tokio::fs::try_exists(&dir).await.unwrap_or(false)
+    {
+        return error_page(&format!(
+            "the slug '{slug}' is already taken — rename the vault"
+        ));
+    }
+    // Only now touch disk. The remove_dir_all is orphan defense only — the
+    // pre-check above guarantees no live vault owns this dir.
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return error_page(&format!("could not create the upload dir: {e}"));
+    }
+    let root = match dir.canonicalize() {
+        Ok(r) => r,
+        Err(e) => return error_page(&format!("could not create the upload dir: {e}")),
+    };
+    // Stream each file part to disk (never buffered in RAM, D-02).
+    let mut wrote_markdown = false;
+    let mut file_count: usize = 0;
+    loop {
+        let mut field = match mp.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => return fail_upload(&dir, &format!("could not read the upload: {e}")).await,
+        };
+        let raw = match field.file_name() {
+            Some(f) => f.to_string(),
+            None => continue, // extra text fields are not files
+        };
+        let rel = match sanitize_upload_name(&raw) {
+            SanitizedName::Rejected => {
+                return fail_upload(&dir, "invalid file path in upload").await
+            }
+            SanitizedName::Ignored => continue,
+            SanitizedName::Write(p) => p,
+        };
+        file_count += 1;
+        if file_count > MAX_FILES {
+            return fail_upload(&dir, "too many files: max 2000 per upload").await;
+        }
+        let target = dir.join(&rel);
+        let parent = target.parent().unwrap_or(dir.as_path());
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            return fail_upload(&dir, &format!("could not write the upload: {e}")).await;
+        }
+        // Defense-in-depth (D-03): the joined parent must resolve inside the
+        // canonicalized uploads root before ANY byte is written.
+        match parent.canonicalize() {
+            Ok(p) if p.starts_with(&root) => {}
+            _ => return fail_upload(&dir, "invalid file path in upload").await,
+        }
+        let mut out = match tokio::fs::File::create(&target).await {
+            Ok(f) => f,
+            Err(e) => return fail_upload(&dir, &format!("could not write the upload: {e}")).await,
+        };
+        let mut total: u64 = 0;
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    total += chunk.len() as u64;
+                    if total > MAX_FILE_BYTES {
+                        return fail_upload(&dir, "file too large: max 5 MB per file").await;
+                    }
+                    if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut out, &chunk).await {
+                        return fail_upload(&dir, &format!("could not write the upload: {e}"))
+                            .await;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    return fail_upload(&dir, &format!("could not read the upload: {e}")).await
+                }
+            }
+        }
+        wrote_markdown = true; // every Write-sanitized part is markdown
+    }
+    if !wrote_markdown {
+        return fail_upload(&dir, "no markdown files found").await;
+    }
+    // Build through the SHARED dispatch (D-04) — same shape as the GitHub load.
+    use crate::sources::{LocalSource, VaultSource as _};
+    let src = LocalSource { path: dir.clone() };
+    let book_dir = match src.sync().and_then(|d| src.build(&d, &name)) {
+        Ok(b) => b,
+        Err(e) => return fail_upload(&dir, &format!("sync/build failed: {e}")).await,
+    };
+    // Register with identical owner/quota semantics; NEVER set_vault_source —
+    // uploaded vaults have no upstream (D-04).
+    match state
+        .store
+        .create_personal_vault(&claims.email, &slug, &name, &book_dir)
+        .await
+    {
+        Ok(()) => Redirect::to(&format!("/vault/{slug}/")).into_response(),
+        Err(e) if e.to_string().contains("UNIQUE") => {
+            fail_upload(
+                &dir,
+                &format!("the slug '{slug}' is already taken — rename the vault"),
+            )
+            .await
+        }
+        Err(e) => fail_upload(&dir, &format!("could not register the vault: {e}")).await,
     }
 }
 
@@ -3087,7 +3335,12 @@ async fn admin_delete_vault(
     Path(slug): Path<String>,
 ) -> Response {
     match state.store.delete_vault(&slug).await {
-        Ok(()) => Redirect::to("/admin/vaults").into_response(),
+        Ok(()) => {
+            // Phase 14 (D-05): remove the uploaded source tree (repos/ dirs
+            // are intentionally not removed here — unchanged behavior).
+            let _ = tokio::fs::remove_dir_all(state.cfg.data_dir.join("uploads").join(&slug)).await;
+            Redirect::to("/admin/vaults").into_response()
+        }
         Err(e) => error_page(&format!("delete failed: {e}")),
     }
 }
@@ -7161,5 +7414,468 @@ mod tests {
             !body.contains("morinet-zoom"),
             "chrome not double-injected on converted page"
         );
+    }
+
+    // ── Phase 14 task 1: local vault upload (D-01..D-05) ──────────────────
+
+    /// Build a multipart/form-data body: (field name, optional filename, data).
+    fn multipart_body(boundary: &str, parts: &[(&str, Option<&str>, &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (name, file_name, data) in parts {
+            buf.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            match file_name {
+                Some(f) => buf.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{f}\"\r\n\r\n"
+                    )
+                    .as_bytes(),
+                ),
+                None => buf.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+                ),
+            }
+            buf.extend_from_slice(data);
+            buf.extend_from_slice(b"\r\n");
+        }
+        buf.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        buf
+    }
+
+    fn multipart_headers(cookie: &str, boundary: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, cookie.parse().unwrap());
+        h.insert(
+            axum::http::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}")
+                .parse()
+                .unwrap(),
+        );
+        h
+    }
+
+    /// The shared `data_dir` is reused across parallel tests — always clean the
+    /// test's own slug dir, never the whole uploads root.
+    fn uploads_dir_for(state: &SharedState, slug: &str) -> PathBuf {
+        state.cfg.data_dir.join("uploads").join(slug)
+    }
+
+    #[test]
+    fn sanitize_upload_name_rules() {
+        use SanitizedName::*;
+        assert!(
+            matches!(sanitize_upload_name("MyWiki/index.md"), Write(p) if p == *"index.md"),
+            "top-level dir stripped"
+        );
+        assert!(
+            matches!(sanitize_upload_name("MyWiki/a.markdown"), Write(p) if p == *"a.markdown"),
+            ".markdown accepted"
+        );
+        for bad in [
+            "../../etc/passwd.md",
+            "/etc/x.md",
+            "C:\\evil\\x.md",
+            "a\\..\\..\\b.md",
+            "a//b.md",
+            "..",
+            "",
+        ] {
+            assert!(
+                matches!(sanitize_upload_name(bad), Rejected),
+                "{bad:?} must be rejected"
+            );
+        }
+        for skip in ["MyWiki/.DS_Store", "MyWiki/.git/config", "MyWiki/img.png"] {
+            assert!(
+                matches!(sanitize_upload_name(skip), Ignored),
+                "{skip:?} must be ignored"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_registers_personal_vault() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"My Local"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+                ("files", Some("MyWiki/notes/a.md"), b"# a\n"),
+                ("files", Some("MyWiki/.DS_Store"), b"junk"),
+                ("files", Some("MyWiki/img.png"), b"pngjunk"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/vault/my-local/"
+        );
+        let vaults = state
+            .store
+            .accessible_vaults("admin@example.com")
+            .await
+            .unwrap();
+        assert!(
+            vaults
+                .iter()
+                .any(|v| v.vault.slug == "my-local" && v.personal),
+            "uploaded vault is listed as personal"
+        );
+        // D-04: no vault_source — Refresh keeps its "no upstream" answer.
+        assert!(state
+            .store
+            .vault_source("my-local")
+            .await
+            .unwrap()
+            .is_none());
+        let dir = uploads_dir_for(&state, "my-local");
+        assert!(dir.join("index.md").is_file());
+        assert!(dir.join("notes/a.md").is_file());
+        // D-03: junk silently skipped, never written.
+        assert!(!dir.join(".DS_Store").exists());
+        assert!(!dir.join("img.png").exists());
+        // The built book is servable (mdbook is in PATH, same as refresh e2e).
+        let res = req(app, "GET", "/vault/my-local/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_traversal_path() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        for bad in ["../../evil.md", "/etc/passwd.md"] {
+            let body = multipart_body(
+                "bnd",
+                &[("name", None, b"Trav Test"), ("files", Some(bad), b"x")],
+            );
+            let res = req(
+                app.clone(),
+                "POST",
+                "/vaults/upload",
+                multipart_headers(&cookie, "bnd"),
+                Some(Body::from(body)),
+            )
+            .await;
+            assert_eq!(
+                res.status(),
+                StatusCode::BAD_REQUEST,
+                "{bad} must be refused"
+            );
+            let text = body_text(res).await;
+            assert!(
+                text.contains("invalid file path"),
+                "error names the invalid path: {text}"
+            );
+        }
+        // T-14-01: nothing stored, no row created.
+        assert!(!uploads_dir_for(&state, "trav-test").exists());
+        assert!(state.store.vault_name("trav-test").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_oversized_file() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let big = vec![b'x'; 6 * 1024 * 1024];
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Big Book"),
+                ("files", Some("MyWiki/index.md"), &big),
+            ],
+        );
+        let res = req(
+            app,
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = body_text(res).await;
+        assert!(
+            text.contains("too large"),
+            "error names the size cap: {text}"
+        );
+        // D-02: abort stores nothing.
+        assert!(!uploads_dir_for(&state, "big-book").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_requires_markdown() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Pic Book"),
+                ("files", Some("MyWiki/img.png"), b"pngjunk"),
+            ],
+        );
+        let res = req(
+            app,
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = body_text(res).await;
+        assert!(
+            text.contains("no markdown files found"),
+            "D-03 rule: {text}"
+        );
+        assert!(!uploads_dir_for(&state, "pic-book").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_locked_account_refused() {
+        let (app, state) = locked_router().await;
+        state
+            .store
+            .create_user("demo@example.com", "test-pass-9f3a", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "demo@example.com", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Lock Up"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+            ],
+        );
+        let res = req(
+            app,
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = body_text(res).await;
+        assert!(
+            text.contains(LOCK_MSG),
+            "error page carries the exact refusal string: {text}"
+        );
+        let vaults = state
+            .store
+            .accessible_vaults("demo@example.com")
+            .await
+            .unwrap();
+        assert!(vaults.is_empty(), "refused upload created nothing");
+        assert!(!uploads_dir_for(&state, "lock-up").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_quota_enforced_before_disk() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("quota@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("quota-grp").await.unwrap();
+        state.store.set_group_limit(g, Some(1)).await.unwrap();
+        state.store.add_group_member(g, "quota@x.fr").await.unwrap();
+        // Fill the slot with one personal vault (dummy book dir, no build).
+        let book = std::env::temp_dir().join("morinet-quota-book-upload");
+        std::fs::create_dir_all(&book).unwrap();
+        state
+            .store
+            .create_personal_vault("quota@x.fr", "first-slot", "First Slot", &book)
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "quota@x.fr", "pw").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Second Book"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+            ],
+        );
+        let res = req(
+            app,
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = body_text(res).await;
+        assert!(text.contains("limit reached"), "quota refusal: {text}");
+        // D-05: the quota gate ran BEFORE any disk write.
+        assert!(!uploads_dir_for(&state, "second-book").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_body_limit_scoped() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        // 3 MB md file: over axum's 2 MB default, under the 5 MB per-file cap —
+        // the route-scoped 256 MB limit must let it through (D-02).
+        let mid = vec![b'x'; 3 * 1024 * 1024];
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Mid Book"),
+                ("files", Some("MyWiki/index.md"), &mid),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::SEE_OTHER,
+            "3 MB upload beats the 2 MB default on /vaults/upload"
+        );
+        // Every other route keeps the 2 MB default: >2 MB form POST → 413.
+        let big_form = format!("name=Huge&url={}", "a".repeat(3 * 1024 * 1024));
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/create",
+            form_headers(&cookie),
+            Some(Body::from(big_form)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let _ = std::fs::remove_dir_all(uploads_dir_for(&state, "mid-book"));
+    }
+
+    #[tokio::test]
+    async fn upload_unique_slug_conflict() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Dup Book"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body.clone())),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        // Second upload with the same slug: refused BEFORE any disk touch...
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = body_text(res).await;
+        assert!(
+            text.contains("rename the vault"),
+            "conflict asks for a rename: {text}"
+        );
+        // ...so the FIRST vault's tree is intact and still serves (checker fix:
+        // the pre-check must run before any disk touch — T-14-07).
+        let res = req(app, "GET", "/vault/dup-book/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(uploads_dir_for(&state, "dup-book")
+            .join("index.md")
+            .is_file());
+        let _ = std::fs::remove_dir_all(uploads_dir_for(&state, "dup-book"));
+    }
+
+    #[tokio::test]
+    async fn delete_my_vault_removes_uploads_dir() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Del Up"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(uploads_dir_for(&state, "del-up").is_dir());
+        let res = req(
+            app,
+            "POST",
+            "/vaults/del-up/delete",
+            form_headers(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(!uploads_dir_for(&state, "del-up").exists());
+    }
+
+    #[tokio::test]
+    async fn admin_delete_vault_removes_uploads_dir() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("up@x.fr", "pw", "reader")
+            .await
+            .unwrap();
+        let up_cookie = login_as(&app, "up@x.fr", "pw").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Adm Del"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&up_cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(uploads_dir_for(&state, "adm-del").is_dir());
+        let admin_cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let res = req(
+            app,
+            "POST",
+            "/admin/vaults/adm-del/delete",
+            cookie_hdr(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(!uploads_dir_for(&state, "adm-del").exists());
     }
 }
