@@ -46,7 +46,8 @@ changes, admin-side change dashboards.
   conventions (plain sqlx queries, no migrations table beyond the existing
   mechanism).
 - **D-04** Best-effort rule (hard requirement): every write to `vault_changes`
-  is wrapped so errors are logged (tracing) and swallowed — the refresh
+  is wrapped so errors are logged (`eprintln!("vault-changes: …")` — tracing
+  is NOT a dependency of this project; do not add it) and swallowed — the refresh
   response must not change if logging fails. Same discipline as the
   `access_log` insert (store.rs).
 - **D-05** Retention: prune `vault_changes` older than 90 days alongside
