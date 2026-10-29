@@ -30,14 +30,15 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 - ✓ MCP StreamableHttp on `/mcp`: Bearer tokens, list/read/search tools on accessible vaults — REQ-MCP-* (v1.0.0)
 - ✓ Polish + ship: minimal README, `morinet init`, local gate/release/deploy scripts — REQ-OPS-* (v1.0.0, 2026-10-25)
 - ✓ Post-release fixes: global header on sub-pages (v1.0.1), vault chrome on every served page + Exit Settings (v1.0.2, issues #8/#9), numeric menu prefixes stripped (v1.0.3, issue #7 partial)
-- ✓ Demo account lock (server refuse + home popup) + per-vault display options: keep-page-numbers toggle, mdBook theme select — REQ-DEMO-*, REQ-VOPT-* (Phase 12, 2026-10-29)
+- ✓ Demo account lock (server refuse + home popup) + per-vault display options: keep-page-numbers toggle, mdBook theme select — REQ-DEMO-*, REQ-VOPT-* (v1.1.0, Phase 12)
+- ✓ Wiki-changes log: `vault_changes` table fed at Refresh (git tree-diff) + WebDAV PUT, "Wiki changes" section in Statistics grouped per event — REQ-CHG-* (v1.1.0, Phase 13)
+- ✓ Local vault upload: browser directory picker → sanitized multipart endpoint, quota/lock gates, shared convert/build/register pipeline — REQ-LOC-* (v1.1.0, Phase 14)
 
 ### Active
 
-<!-- Milestone v1.1.0 — current scope (2026-10-28). -->
+<!-- Next milestone not yet planned — run /gsd-new-milestone to define scope. -->
 
-- [ ] Phase 13 — Wiki-changes log: `vault_changes` table fed at refresh + "Wiki changes" section in Statistics — REQ-CHG-*
-- [ ] Phase 14 — Local vault upload: client file picker → convert/build/register — REQ-LOC-*
+(None yet — v1.1.0 shipped 2026-10-29.)
 
 ### Out of Scope
 
@@ -51,7 +52,8 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 
 - Stack: Rust stable, axum, sqlx (SQLite), mdbook (upstream CLI, called as a subprocess), rmcp (coming), lettre. Deployed with systemd + nginx on holldemo.
 - Vault pipeline: sync → mirror in `<source>/.morinet-build/` (frontmatter consumed, wikilinks resolved, SUMMARY.md + book.toml generated) → `mdbook build` → served. mdBook themes are frozen at build: after changing `assets/zoom.*` or `MORINET_CSS`, you must click **Refresh** (pitfall #24).
-- 197 tests, clippy `-D warnings`, fmt clean on every push. CI Linux-only since v0.1.16 (flaky Mac runners).
+- 334 tests, clippy `-D warnings`, fmt clean on every release (`scripts/check.sh`). CI Linux-only since v0.1.16 (flaky Mac runners).
+- v1.1.0 live on holldemo (2026-10-29): locked demo account, per-vault display options, wiki-changes log, local vault upload. Issue #7 closed.
 - Detailed version-by-version history: `.planning/STATE-LOG.md` and `.planning/HANDOFF.md`.
 - Catalog of verifiable requirements: `.planning/REQUIREMENTS.md`.
 
@@ -74,7 +76,10 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 | CI Linux-only (dist 2 linux targets) | Flaky Mac runners = broken releases | ✓ Good (v0.1.16, no more re-dispatch) |
 | `ensure_fallback_admin()` at boot | ADMIN_EMAIL bootstrap alone locked /admin if the only admin was demoted (treklair incident) | ✓ Good |
 | 100% local compilation, GitHub ci/release workflows removed (2026-10-25) | GitHub runners useless/unstable; `scripts/check.sh` + `release.sh` (assets with the same names as cargo-dist) + `deploy.sh`; `deploy.yml` kept as-is | — Pending |
-| GSD adopted as the planning mode (2026-10-25) | Toolled plan/execute/verify workflows; existing docs kept (ROADMAP/REQUIREMENTS/HANDOFF/STATE-LOG) | — Pending |
+| GSD adopted as the planning mode (2026-10-25) | Toolled plan/execute/verify workflows; existing docs kept (ROADMAP/REQUIREMENTS/HANDOFF/STATE-LOG) | ✓ Good (v1.1.0 shipped through the full GSD loop) |
+| Display options applied at SERVE time, not `book.toml` build time (Phase 12, D-08/D-10) | Theme/number changes take effect without Refresh/rebuild; visitor localStorage still wins | ✓ Good (v1.1.0) |
+| WebDAV PUT records the single changed path instead of a full-tree hash-diff (Phase 13, D-02) | Full-tree hashing impractical at that call site; git refresh keeps the full tree-diff | ✓ Good (v1.1.0) |
+| Uploaded vaults keep `vault_source = None` (Phase 14, D-04) | No upstream → Refresh correctly answers "no upstream"; re-upload is the update path | ✓ Good (v1.1.0) |
 
 ---
-*Last updated: 2026-10-29 — Phase 12 complete (demo lock + vault display options, v1.1.0 milestone).*
+*Last updated: 2026-10-29 — v1.1.0 milestone shipped and archived (Phases 12–14).*
