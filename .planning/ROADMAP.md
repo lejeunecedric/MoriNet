@@ -131,7 +131,7 @@
 | 12. demo-lock + display options | v1.1.0 | 3/3 | Complete | 2026-10-28 |
 | 13. wiki-changes log | v1.1.0 | 2/2 | Complete | 2026-10-29 |
 | 14. local-vault-upload | v1.1.0 | 1/1 | Complete | 2026-10-29 |
-| 15. etag-conflict | v1.2 | 4/5 | In Progress|  |
+| 15. etag-conflict | v1.2 | 5/5 | Complete   | 2026-10-30 |
 | 16. rest-api | v1.2 | 0/TBD | Planned | - |
 | 17. oidc-sso | v1.2 | 0/TBD | Planned | - |
 
