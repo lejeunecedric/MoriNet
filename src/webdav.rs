@@ -364,6 +364,67 @@ pub fn depth_of(headers: &HeaderMap) -> u8 {
         _ => 0,
     }
 }
+
+/// Parsed state of an `If-Match` / `If-None-Match` precondition header
+/// (RFC 9110 §13.1/§13.2). Unlike `depth_of`, preconditions NEVER default on
+/// garbage: an unreadable or invalid value is `Malformed` and the caller
+/// (15-03) must answer 400 with nothing written — fail closed (PITFALLS C2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Precondition {
+    /// Header absent — unconditional request (CONF-05 backward compat).
+    Absent,
+    /// `*` — the wildcard precondition.
+    Any,
+    /// One or more quoted strong tags. Quotes are KEPT so tags compare
+    /// directly against the quoted [`etag_of`] wire form.
+    Tags(Vec<String>),
+    /// Unreadable (invalid UTF-8) or invalid syntax — caller returns 400.
+    Malformed,
+}
+
+fn precondition_of(headers: &HeaderMap, name: &str) -> Precondition {
+    let Some(value) = headers.get(name) else {
+        return Precondition::Absent;
+    };
+    // An unreadable precondition header is NEVER treated as Absent.
+    let Ok(raw) = value.to_str() else {
+        return Precondition::Malformed;
+    };
+    let raw = raw.trim();
+    if raw == "*" {
+        return Precondition::Any;
+    }
+    let mut tags = Vec::new();
+    for token in raw.split(',') {
+        let t = token.trim();
+        // Strong validators only: every token must be a plain quoted string.
+        // `W/...` weak tags, bare tokens, and empty entries are refused.
+        if t.len() < 2
+            || !t.starts_with('"')
+            || !t.ends_with('"')
+            || t[1..t.len() - 1].contains('"')
+        {
+            return Precondition::Malformed;
+        }
+        tags.push(t.to_string());
+    }
+    if tags.is_empty() {
+        return Precondition::Malformed;
+    }
+    Precondition::Tags(tags)
+}
+
+/// Parse the `If-Match` header (enforced in 15-03). Pure and total: any
+/// input yields a variant, never a panic, never a silent default.
+pub fn if_match_of(headers: &HeaderMap) -> Precondition {
+    precondition_of(headers, "if-match")
+}
+
+/// Parse the `If-None-Match` header (enforced in 15-03). Same fail-closed
+/// contract as [`if_match_of`].
+pub fn if_none_match_of(headers: &HeaderMap) -> Precondition {
+    precondition_of(headers, "if-none-match")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
