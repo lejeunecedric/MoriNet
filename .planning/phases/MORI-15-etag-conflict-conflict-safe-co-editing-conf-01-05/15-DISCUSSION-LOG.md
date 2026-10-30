@@ -44,6 +44,7 @@
 | Any personal vault | Re-upload onto git-sourced vaults too (fights Refresh) | |
 
 **User's choice:** all four recommended options (same-name update, merge semantics, JS two-phase, uploaded vaults only).
+**Follow-up correction (2026-10-30, mid-plan-phase):** user wants a simple "Load local" button beside the "Load vault" button instead of the Phase 14 two-form layout — recorded as CONTEXT.md D-08 (folder picker opens directly from the button; vault name derived from the picked folder name).
 
 ## Force-overwrite mechanics + audit
 
