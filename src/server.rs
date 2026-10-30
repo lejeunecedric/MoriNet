@@ -33,6 +33,26 @@ pub struct AppState {
     pub store: Store,
     /// Phase 5: outbound email. Injected so tests use `InMemorySender`.
     pub email: Arc<dyn EmailSender>,
+    /// Phase 15 (criterion 7, C3): per-vault in-process write locks keyed by
+    /// vault source-dir path, serializing check→write for WebDAV PUT (and
+    /// 15-04's upload update). The std Mutex guards ONLY the map — acquired
+    /// just to get-or-insert and clone the Arc, never held across an await;
+    /// the tokio Mutex inside is what spans the async check→write section.
+    pub vault_locks:
+        std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// Get-or-insert the per-vault write lock for a source dir (see
+/// [`AppState::vault_locks`]). The std Mutex is released before returning.
+fn vault_lock(state: &SharedState, src_dir: &std::path::Path) -> Arc<tokio::sync::Mutex<()>> {
+    let key = src_dir.display().to_string();
+    let mut map = state
+        .vault_locks
+        .lock()
+        .expect("vault_locks map mutex poisoned");
+    map.entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 pub type SharedState = Arc<AppState>;
@@ -149,6 +169,7 @@ pub fn build_router_with_email(
         cfg,
         store,
         email,
+        vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Public routes.
@@ -916,8 +937,16 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
             // Review LOW-02: on a metadata error assume the file existed
             // ("modified") rather than silently mislabeling as "added".
             let existed = tokio::fs::try_exists(&full).await.unwrap_or(true);
-            if tokio::fs::write(&full, &bytes).await.is_err() {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            // ROADMAP criterion 7 (C3/C5): the per-vault lock serializes
+            // check→write in-process; the write itself is temp-file + atomic
+            // rename via the ONE shared helper (15-04's upload reuses it).
+            // The lock is released before rebuild_book below.
+            {
+                let vlock = vault_lock(&state, &src_dir);
+                let _dav_guard = vlock.lock().await;
+                if webdav::write_source_atomic(&full, &bytes).await.is_err() {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
             }
             // One event per PUT for the single written path (D-02): added on
             // first write, modified on rewrite. Fire-and-forget like
@@ -3481,6 +3510,7 @@ mod tests {
             cfg,
             store,
             email,
+            vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
         (
             build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),
@@ -3511,6 +3541,7 @@ mod tests {
             cfg,
             store,
             email: sender.clone(),
+            vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
         (
             build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),
@@ -5830,6 +5861,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_source_atomic_roundtrip() {
+        // ROADMAP criterion 7 (C3/C5): the shared "write source file" helper
+        // writes via a sibling temp file + atomic rename, returns the quoted
+        // ETag of the bytes written, and leaves no temp files behind.
+        let dir = std::env::temp_dir().join(format!(
+            "morinet-atomic-{}-roundtrip",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("note.md");
+        let bytes = b"# Note\n\natomic\n";
+        let etag = webdav::write_source_atomic(&target, bytes).await.unwrap();
+        assert_eq!(etag, webdav::etag_of(bytes), "returns hash of written bytes");
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        // Overwrite path: rename onto an existing file also works.
+        let bytes2 = b"# Note\n\nrewritten\n";
+        let etag2 = webdav::write_source_atomic(&target, bytes2).await.unwrap();
+        assert_eq!(etag2, webdav::etag_of(bytes2));
+        assert_eq!(std::fs::read(&target).unwrap(), bytes2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn webdav_rejects_path_traversal() {
         let (app, state) = test_router().await;
         seed_dav_vault_named(&state, "webdav-rejects-path-traversal").await;
@@ -6060,6 +6122,7 @@ mod tests {
             cfg,
             store,
             email: Arc::new(InMemorySender::new()),
+            vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
         (
             build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),

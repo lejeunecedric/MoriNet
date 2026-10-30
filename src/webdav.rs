@@ -35,6 +35,42 @@ pub fn etag_of(bytes: &[u8]) -> String {
     format!("\"{}\"", hex::encode(h.finalize()))
 }
 
+/// The ONE shared "write source file" helper (ROADMAP criterion 7,
+/// PITFALLS C3/C5): writes `bytes` to a sibling temp file `.{name}.tmp-{uuid}`
+/// in the SAME directory (same filesystem under `data_dir`, so the rename is
+/// atomic), then renames it onto `path`. On any error the temp file is removed
+/// and the error propagates — no truncated or interleaved targets, ever.
+/// Returns the quoted ETag of the bytes written (recomputed from the write
+/// payload per C3, never from a pre-write hash). Callers hold the per-vault
+/// write lock across their check→write section (see `vault_lock` in server.rs);
+/// 15-04's upload path reuses this same helper.
+pub async fn write_source_atomic(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> anyhow::Result<String> {
+    use tokio::io::AsyncWriteExt;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("write target has no file name"))?
+        .to_string_lossy()
+        .to_string();
+    let tmp = path.with_file_name(format!(".{file_name}.tmp-{}", uuid::Uuid::new_v4()));
+    let result: anyhow::Result<()> = async {
+        let mut f = tokio::fs::File::create(&tmp).await?;
+        f.write_all(bytes).await?;
+        f.flush().await?;
+        drop(f);
+        tokio::fs::rename(&tmp, path).await?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    result?;
+    Ok(etag_of(bytes))
+}
+
 /// Resolve the vault source dir from the stored compiled-book dir.
 /// mdBook always writes `<src>/book`, so the parent is the source root.
 pub fn source_dir_of(book_path: &Path) -> Option<PathBuf> {
