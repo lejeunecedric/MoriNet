@@ -3166,7 +3166,9 @@ async fn upload_local_vault(
             // also fails, another request is actively recreating the dir.
             let _ = tokio::fs::remove_dir_all(&dir).await;
             if tokio::fs::create_dir(&dir).await.is_err() {
-                return error_page("an upload for this name is already in progress — rename the vault");
+                return error_page(
+                    "an upload for this name is already in progress — rename the vault",
+                );
             }
         }
     }
@@ -3241,7 +3243,9 @@ async fn upload_local_vault(
         }
         let mut out = match tokio::fs::File::create(&target).await {
             Ok(f) => f,
-            Err(e) => return fail_upload(work_dir, &format!("could not write the upload: {e}")).await,
+            Err(e) => {
+                return fail_upload(work_dir, &format!("could not write the upload: {e}")).await
+            }
         };
         let mut total: u64 = 0;
         loop {
@@ -3274,8 +3278,16 @@ async fn upload_local_vault(
         let staging = staging_dir
             .as_ref()
             .expect("update_mode always stages before writing");
-        return finish_upload_update(&state, &claims.email, &slug, &name, &dir, staging, force_flag)
-            .await;
+        return finish_upload_update(
+            &state,
+            &claims.email,
+            &slug,
+            &name,
+            &dir,
+            staging,
+            force_flag,
+        )
+        .await;
     }
     // Build through the SHARED dispatch (D-04) — same shape as the GitHub load.
     use crate::sources::{LocalSource, VaultSource as _};
@@ -3314,7 +3326,10 @@ async fn collect_rel_files(root: &std::path::Path) -> anyhow::Result<Vec<String>
             if ent.file_type().await?.is_dir() {
                 stack.push(ent.path());
             } else if let Ok(rel) = ent.path().strip_prefix(root) {
-                out.push(rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"));
+                out.push(
+                    rel.to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/"),
+                );
             }
         }
     }
@@ -3421,7 +3436,8 @@ async fn finish_upload_update(
             let bytes = match tokio::fs::read(staging.join(rel)).await {
                 Ok(b) => b,
                 Err(e) => {
-                    return abort_staging(staging, &format!("could not read the upload: {e}")).await;
+                    return abort_staging(staging, &format!("could not read the upload: {e}"))
+                        .await;
                 }
             };
             // Review LOW-02 style: on a metadata error assume "modified".
@@ -3455,7 +3471,9 @@ async fn finish_upload_update(
     // Rebuild through the SHARED dispatch so the served HTML reflects the
     // update (AD-10) — the vault row already exists, nothing to register.
     use crate::sources::{LocalSource, VaultSource as _};
-    let src = LocalSource { path: dir.to_path_buf() };
+    let src = LocalSource {
+        path: dir.to_path_buf(),
+    };
     if let Err(e) = src.sync().and_then(|d| src.build(&d, name)) {
         return error_page(&format!("sync/build failed: {e}"));
     }
@@ -8654,8 +8672,7 @@ mod tests {
 
     /// Upload a vault once (admin) so update-path tests can re-upload it.
     async fn seed_upload(app: &Router, cookie: &str, name: &str, files: &[(&str, &[u8])]) {
-        let mut parts: Vec<(&str, Option<&str>, &[u8])> =
-            vec![("name", None, name.as_bytes())];
+        let mut parts: Vec<(&str, Option<&str>, &[u8])> = vec![("name", None, name.as_bytes())];
         for (fname, data) in files {
             parts.push(("files", Some(fname), data));
         }
@@ -8770,10 +8787,7 @@ mod tests {
             .unwrap();
         let row_b = rows_b.iter().find(|r| r.1 == "added").expect("added row");
         assert_eq!(row_b.4, 1);
-        assert_eq!(
-            row_a.3, row_b.3,
-            "one event_id per update operation (D-05)"
-        );
+        assert_eq!(row_a.3, row_b.3, "one event_id per update operation (D-05)");
         assert!(staging_leftovers(&state, "force-book").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -8816,7 +8830,13 @@ mod tests {
     async fn upload_update_refused_for_other_users_vault() {
         let (app, state) = test_router().await;
         let admin_cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
-        seed_upload(&app, &admin_cookie, "Rival Book", &[("MyR/a.md", b"mine\n")]).await;
+        seed_upload(
+            &app,
+            &admin_cookie,
+            "Rival Book",
+            &[("MyR/a.md", b"mine\n")],
+        )
+        .await;
         let dir = uploads_dir_for(&state, "rival-book");
         state
             .store
@@ -8841,7 +8861,10 @@ mod tests {
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let text = body_text(res).await;
-        assert!(text.contains("already taken"), "existing refusal kept: {text}");
+        assert!(
+            text.contains("already taken"),
+            "existing refusal kept: {text}"
+        );
         // No writes: the owner's file is untouched.
         assert_eq!(std::fs::read(dir.join("a.md")).unwrap(), b"mine\n");
         assert!(staging_leftovers(&state, "rival-book").is_empty());
