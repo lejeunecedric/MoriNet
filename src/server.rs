@@ -925,42 +925,79 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
                 Some(p) => p,
                 None => return StatusCode::BAD_REQUEST.into_response(),
             };
-            let bytes = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
-                Ok(b) => b,
-                Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-            };
-            if let Some(parent) = full.parent() {
-                if tokio::fs::create_dir_all(parent).await.is_err() {
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                }
-            }
-            // Review LOW-02: on a metadata error assume the file existed
-            // ("modified") rather than silently mislabeling as "added".
-            let existed = tokio::fs::try_exists(&full).await.unwrap_or(true);
-            // ROADMAP criterion 7 (C3/C5): the per-vault lock serializes
-            // check→write in-process; the write itself is temp-file + atomic
-            // rename via the ONE shared helper (15-04's upload reuses it).
-            // The lock is released before rebuild_book below.
+            // CONF-02 (PITFALLS C2): a malformed precondition fails closed to
+            // 400 — never treated as Absent — before the body is even read.
+            // Authz (can_write above) strictly precedes precondition checks.
+            let if_match = webdav::if_match_of(&headers);
+            let if_none_match = webdav::if_none_match_of(&headers);
+            if if_match == webdav::Precondition::Malformed
+                || if_none_match == webdav::Precondition::Malformed
             {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            // ROADMAP criterion 7 (C3/C5): the per-vault lock serializes the
+            // whole check→write section in-process; the write itself is
+            // temp-file + atomic rename via the ONE shared helper (15-04's
+            // upload reuses both). The lock is released before rebuild_book.
+            let (new_etag, existed) = {
                 let vlock = vault_lock(&state, &src_dir);
                 let _dav_guard = vlock.lock().await;
-                if webdav::write_source_atomic(&full, &bytes).await.is_err() {
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                // Review LOW-02: on a metadata error assume the file existed
+                // ("modified") rather than silently mislabeling as "added".
+                let existed = tokio::fs::try_exists(&full).await.unwrap_or(true);
+                let current_etag = tokio::fs::read(&full)
+                    .await
+                    .ok()
+                    .map(|b| webdav::etag_of(&b));
+                let tag_hit = |tags: &Vec<String>| {
+                    current_etag
+                        .as_deref()
+                        .is_some_and(|c| tags.iter().any(|t| t == c))
+                };
+                // RFC 9110 §13.1 If-Match first, then §13.2 If-None-Match.
+                let reject = match &if_match {
+                    webdav::Precondition::Any => !existed,
+                    webdav::Precondition::Tags(tags) => !tag_hit(tags),
+                    _ => false,
+                } || match &if_none_match {
+                    webdav::Precondition::Any => existed,
+                    webdav::Precondition::Tags(tags) => tag_hit(tags),
+                    _ => false,
+                };
+                if reject {
+                    // Nothing written, no audit row, no rebuild: every 412
+                    // return below-style precedes the write and the spawn.
+                    return precondition_failed(current_etag.as_deref());
                 }
-            }
+                let bytes = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
+                    Ok(b) => b,
+                    Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                };
+                if let Some(parent) = full.parent() {
+                    if tokio::fs::create_dir_all(parent).await.is_err() {
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                }
+                match webdav::write_source_atomic(&full, &bytes).await {
+                    Ok(etag) => (etag, existed),
+                    Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                }
+            };
             // One event per PUT for the single written path (D-02): added on
             // first write, modified on rewrite. Fire-and-forget like
-            // log_web_access — the 201 never depends on it (D-04). WebDAV
-            // exposes no DELETE verb, so no `removed` rows here.
+            // log_web_access — the 2xx never depends on it (D-04). WebDAV
+            // exposes no DELETE verb, so no `removed` rows here. D-06: the
+            // Basic-auth user is the actor; a WebDAV write is never forced.
             {
                 let store = state.store.clone();
                 let slug_c = slug.clone();
                 let rel_c = rel.clone();
+                let actor_c = claims.email.clone();
                 tokio::spawn(async move {
                     let event_id = uuid::Uuid::new_v4().to_string();
                     let kind = if existed { "modified" } else { "added" };
                     if let Err(e) = store
-                        .log_vault_change(&slug_c, &event_id, kind, &rel_c, "", false)
+                        .log_vault_change(&slug_c, &event_id, kind, &rel_c, &actor_c, false)
                         .await
                     {
                         eprintln!("vault-changes: webdav PUT log failed for {slug_c}: {e}");
@@ -970,10 +1007,34 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
             // Rebuild so the served HTML reflects the new note (AD-10).
             // llm-wiki sources are re-converted first (AD-14).
             rebuild_book(&book_dir, &src_dir, &vault_name);
-            StatusCode::CREATED.into_response()
+            // CONF-05: an unconditional update keeps its historical 201; a
+            // conditional update answers 200. Every success carries the new
+            // ETag (CONF-03) so the next If-Match can be issued immediately.
+            let status = if existed && if_match != webdav::Precondition::Absent {
+                StatusCode::OK
+            } else {
+                StatusCode::CREATED
+            };
+            ([(axum::http::header::ETAG, new_etag)], status).into_response()
         }
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
     }
+}
+
+/// 412 response (CONF-02): names the current ETag so a client can re-sync
+/// before retrying. Only reachable after `can_write` passed, so the hash
+/// discloses nothing the requester could not GET anyway.
+fn precondition_failed(current_etag: Option<&str>) -> Response {
+    let msg = match current_etag {
+        Some(e) => format!("412 Precondition Failed: current ETag is {e}\n"),
+        None => "412 Precondition Failed: resource does not exist\n".to_string(),
+    };
+    (
+        StatusCode::PRECONDITION_FAILED,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        msg,
+    )
+        .into_response()
 }
 
 /// Make the change go live (AD-10): llm-wiki sources are re-converted into
@@ -5980,6 +6041,241 @@ mod tests {
             written.contains("written over webdav"),
             "content: {written}"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// PUT with extra precondition headers (Phase 15 conditional writes).
+    async fn dav_put(
+        app: Router,
+        uri: &str,
+        body: &str,
+        extra: &[(&str, &str)],
+    ) -> Response {
+        let auth = basic("admin@example.com", "test-pass-9f3a");
+        let mut builder = Request::builder().method("PUT").uri(uri);
+        for (k, v) in auth.iter() {
+            builder = builder.header(k, v.clone());
+        }
+        for (k, v) in extra {
+            builder = builder.header(*k, *v);
+        }
+        app.oneshot(builder.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn put_if_match_mismatch_412_names_current_etag() {
+        // CONF-02: stale If-Match → 412, nothing written, no rebuild, no
+        // vault_changes row; the body names the current ETag.
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "if-match-mismatch").await;
+        let bytes = std::fs::read(root.join("src/note.md")).unwrap();
+        let cur = webdav::etag_of(&bytes);
+        let before = state
+            .store
+            .vault_changes_for_path("dav", "src/note.md", 100)
+            .await
+            .unwrap()
+            .len();
+        let res = dav_put(
+            app,
+            "/webdav/dav/src/note.md",
+            "clobbered\n",
+            &[("if-match", "\"deadbeef\"")],
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+        let body = body_text(res).await;
+        assert!(
+            body.contains(&cur),
+            "412 body must name the current ETag {cur}: {body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/note.md")).unwrap(),
+            "# Note\n\nhello\n",
+            "412 must write nothing"
+        );
+        // Fire-and-forget audit: give any spawned row a chance, then assert none came.
+        for _ in 0..5 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let after = state
+            .store
+            .vault_changes_for_path("dav", "src/note.md", 100)
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(after, before, "412 must log no vault_changes row");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn put_if_match_star_absent_file_412() {
+        // RFC 9110 §13.1: `If-Match: *` requires an existing representation.
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "if-match-star-absent").await;
+        let res = dav_put(
+            app,
+            "/webdav/dav/src/ghost.md",
+            "never\n",
+            &[("if-match", "*")],
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+        assert!(
+            !root.join("src/ghost.md").exists(),
+            "412 must create no file"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn put_if_match_match_update_returns_200_with_new_etag() {
+        // CONF-03: a conditional PUT that passes returns the NEW ETag header.
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "if-match-match").await;
+        let cur = webdav::etag_of(&std::fs::read(root.join("src/note.md")).unwrap());
+        let new_body = "# Note\n\nupdated\n";
+        let res = dav_put(
+            app,
+            "/webdav/dav/src/note.md",
+            new_body,
+            &[("if-match", cur.as_str())],
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK, "conditional update → 200");
+        let etag = res
+            .headers()
+            .get("etag")
+            .expect("success carries ETag")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(etag, webdav::etag_of(new_body.as_bytes()));
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/note.md")).unwrap(),
+            new_body
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn put_if_none_match_star_exists_412() {
+        // CONF-03: `If-None-Match: *` is create-only — 412 when the file exists.
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "if-none-star-exists").await;
+        let res = dav_put(
+            app,
+            "/webdav/dav/src/note.md",
+            "clobbered\n",
+            &[("if-none-match", "*")],
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/note.md")).unwrap(),
+            "# Note\n\nhello\n",
+            "412 must write nothing"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn put_if_none_match_star_absent_creates_201() {
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "if-none-star-absent").await;
+        let body = "# Fresh\n\ncreated once\n";
+        let res = dav_put(
+            app,
+            "/webdav/dav/src/fresh-create.md",
+            body,
+            &[("if-none-match", "*")],
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        assert_eq!(
+            res.headers()
+                .get("etag")
+                .expect("success carries ETag")
+                .to_str()
+                .unwrap(),
+            webdav::etag_of(body.as_bytes())
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/fresh-create.md")).unwrap(),
+            body
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn put_malformed_if_match_weak_etag_400() {
+        // PITFALLS C2: fail closed — a weak validator is Malformed, never
+        // silently treated as Absent.
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "malformed-if-match").await;
+        let res = dav_put(
+            app,
+            "/webdav/dav/src/note.md",
+            "clobbered\n",
+            &[("if-match", "W/\"x\"")],
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/note.md")).unwrap(),
+            "# Note\n\nhello\n",
+            "400 must write nothing"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn put_unconditional_update_still_201_no_etag_required() {
+        // CONF-05 regression: no precondition headers → byte-for-byte the
+        // pre-phase behavior (201), and the audit row now names the actor.
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "uncond-201").await;
+        let res = dav_put(
+            app.clone(),
+            "/webdav/dav/src/conf05-uncond.md",
+            "first\n",
+            &[],
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let res = dav_put(
+            app,
+            "/webdav/dav/src/conf05-uncond.md",
+            "second\n",
+            &[],
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/conf05-uncond.md")).unwrap(),
+            "second\n"
+        );
+        // D-06: the modified row carries actor + forced via the 15-02 columns.
+        // Generous poll: the parallel full suite is slow to schedule the spawn.
+        let mut rows = Vec::new();
+        for _ in 0..150 {
+            rows = state
+                .store
+                .vault_changes_for_path("dav", "src/conf05-uncond.md", 5)
+                .await
+                .unwrap();
+            if !rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!rows.is_empty(), "modified row recorded");
+        let (kind, actor, forced) = (rows[0].1.clone(), rows[0].2.clone(), rows[0].4);
+        assert_eq!(kind, "modified");
+        assert_eq!(actor, "admin@example.com", "D-06 actor = Basic-auth user");
+        assert_eq!(forced, 0, "webdav PUT is never forced");
         std::fs::remove_dir_all(&root).ok();
     }
 
