@@ -27,11 +27,11 @@ Requirements for milestone v1.2. Each maps to roadmap phases.
 
 ### CONF (conflict-safe async co-editing)
 
-- [ ] **CONF-01**: WebDAV GET and PROPFIND expose strong ETags (sha256 of the raw source markdown bytes)
-- [ ] **CONF-02**: WebDAV PUT with an `If-Match` precondition that does not match answers 412 Precondition Failed — nothing written, no rebuild, no vault_changes row
-- [ ] **CONF-03**: WebDAV PUT with `If-None-Match: *` creates the file only if absent (412 if it exists)
-- [ ] **CONF-04**: A local upload whose tree is stale versus the server is rejected with a per-file conflict list and can be re-submitted with an explicit force-overwrite flag; force-overwrites are recorded in vault_changes
-- [ ] **CONF-05**: Unconditional writes (no precondition headers, plain uploads) keep working exactly as before — backward compatible last-write-wins
+- [x] **CONF-01**: WebDAV GET and PROPFIND expose strong ETags (sha256 of the raw source markdown bytes)
+- [x] **CONF-02**: WebDAV PUT with an `If-Match` precondition that does not match answers 412 Precondition Failed — nothing written, no rebuild, no vault_changes row
+- [x] **CONF-03**: WebDAV PUT with `If-None-Match: *` creates the file only if absent (412 if it exists)
+- [x] **CONF-04**: A local upload whose tree is stale versus the server is rejected with a per-file conflict list and can be re-submitted with an explicit force-overwrite flag; force-overwrites are recorded in vault_changes
+- [x] **CONF-05**: Unconditional writes (no precondition headers, plain uploads) keep working exactly as before — backward compatible last-write-wins
 
 ## Future Requirements
 
@@ -81,11 +81,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | API-04 | Phase 16 | Pending |
 | API-05 | Phase 16 | Pending |
 | API-06 | Phase 16 | Pending |
-| CONF-01 | Phase 15 | Pending |
-| CONF-02 | Phase 15 | Pending |
-| CONF-03 | Phase 15 | Pending |
-| CONF-04 | Phase 15 | Pending |
-| CONF-05 | Phase 15 | Pending |
+| CONF-01 | Phase 15 | Complete |
+| CONF-02 | Phase 15 | Complete |
+| CONF-03 | Phase 15 | Complete |
+| CONF-04 | Phase 15 | Complete |
+| CONF-05 | Phase 15 | Complete |
 
 **Coverage:**
 - v1.2 requirements: 17 total

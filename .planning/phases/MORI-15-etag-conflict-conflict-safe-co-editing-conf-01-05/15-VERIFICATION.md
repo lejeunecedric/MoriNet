@@ -1,5 +1,5 @@
 ---
-status: human_needed
+status: passed
 phase: 15
 score: 7/7
 date: 2026-10-30
@@ -125,3 +125,5 @@ proven by running the targeted `cargo test --lib` filters. Full suite at HEAD
    a folder to a `/webdav/<slug>/` mount and edit+save a note from Obsidian via
    a WebDAV bridge — both must behave exactly as pre-Phase-15 (no 412s, no
    client errors). This is the only open item; all automated criteria pass.
+   **RESOLVED 2026-10-30: user approved phase completion; the rclone/Obsidian
+   smoke test is deferred to the operator and tracked in 15-HUMAN-UAT.md.**
