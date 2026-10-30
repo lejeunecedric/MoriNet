@@ -844,11 +844,18 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
         };
         if meta.is_file() {
+            // CONF-01: single-file PROPFIND carries the strong getetag too —
+            // the bytes are cheap to read next to the metadata we just took.
+            let etag = tokio::fs::read(&full)
+                .await
+                .ok()
+                .map(|b| webdav::etag_of(&b));
             return webdav::file_propfind_response(
                 &base,
                 &rel,
                 meta.len(),
                 meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                etag,
             );
         }
         let depth0 = webdav::depth_of(&headers) == 0;
@@ -865,11 +872,19 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
                 None => return StatusCode::BAD_REQUEST.into_response(),
             };
             match tokio::fs::read(&full).await {
-                Ok(bytes) => (
-                    [(axum::http::header::CONTENT_TYPE, content_type(&rel))],
-                    bytes,
-                )
-                    .into_response(),
+                Ok(bytes) => {
+                    // CONF-01: strong ETag over the raw source bytes, emitted
+                    // only after the can_read authz gate above.
+                    let etag = webdav::etag_of(&bytes);
+                    (
+                        [
+                            (axum::http::header::CONTENT_TYPE, content_type(&rel).to_string()),
+                            (axum::http::header::ETAG, etag),
+                        ],
+                        bytes,
+                    )
+                        .into_response()
+                }
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
             }
         }

@@ -20,6 +20,21 @@ use axum::body::Body;
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 
+/// Strong ETag for raw source bytes: the QUOTED wire form `"sha256-hex"`.
+///
+/// Phase 15 (CONF-01) "one hash, three consumers": GET emission, PROPFIND
+/// `getetag`, and the 15-03/15-04 precondition checks all call this single
+/// helper — it is the one source of truth for both hashing AND quoting, so
+/// comparisons use the quoted form directly. Strong validator only: never
+/// `W/`, never mtime (PITFALLS.md C1/C2 — hash the source layer, not the
+/// build output).
+pub fn etag_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    format!("\"{}\"", hex::encode(h.finalize()))
+}
+
 /// Resolve the vault source dir from the stored compiled-book dir.
 /// mdBook always writes `<src>/book`, so the parent is the source root.
 pub fn source_dir_of(book_path: &Path) -> Option<PathBuf> {
@@ -132,8 +147,16 @@ fn href_for(base: &str, rel: &str, is_dir: bool) -> String {
     h
 }
 
-/// One entry in a PROPFIND multistatus response.
-fn prop_entry(href: String, is_dir: bool, size: u64, modified: SystemTime) -> String {
+/// One entry in a PROPFIND multistatus response. `etag` is the quoted wire
+/// form from [`etag_of`]; `Some` only for files (CONF-01: collections have
+/// no getetag).
+fn prop_entry(
+    href: String,
+    is_dir: bool,
+    size: u64,
+    modified: SystemTime,
+    etag: Option<&str>,
+) -> String {
     let displayname = href
         .trim_end_matches('/')
         .rsplit('/')
@@ -141,6 +164,9 @@ fn prop_entry(href: String, is_dir: bool, size: u64, modified: SystemTime) -> St
         .unwrap_or("")
         .to_string();
     let resourcetype = if is_dir { "<D:collection/>" } else { "" };
+    let getetag = etag
+        .map(|e| format!("      <D:getetag>{e}</D:getetag>\n"))
+        .unwrap_or_default();
     format!(
         r#"<D:response>
   <D:href>{href}</D:href>
@@ -151,7 +177,7 @@ fn prop_entry(href: String, is_dir: bool, size: u64, modified: SystemTime) -> St
       <D:getcontentlength>{size}</D:getcontentlength>
       <D:getlastmodified>{lm}</D:getlastmodified>
       <D:getcontenttype>{ct}</D:getcontenttype>
-    </D:prop>
+{getetag}    </D:prop>
     <D:status>HTTP/1.1 200 OK</D:status>
   </D:propstat>
 </D:response>"#,
@@ -174,6 +200,8 @@ pub struct Entry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: SystemTime,
+    /// Quoted strong ETag from [`etag_of`] for files; `None` for collections.
+    pub etag: Option<String>,
 }
 
 /// Build a `<D:multistatus>` body for `depth: 0` (just the collection) or
@@ -189,6 +217,7 @@ pub fn multistatus(base: &str, entries: &[Entry]) -> String {
             e.is_dir,
             e.size,
             e.modified,
+            e.etag.as_deref(),
         ));
     }
     body.push_str("\n</D:multistatus>\n");
@@ -207,10 +236,11 @@ pub async fn list_dir(root: &Path, rel: &str, base: &str, depth_zero_only: bool)
         is_dir: true,
         size: 0,
         modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        etag: None,
     }];
     if !depth_zero_only {
         let mut rd = tokio::fs::read_dir(&dir).await.ok()?;
-        let mut children: Vec<(String, bool, u64, SystemTime)> = Vec::new();
+        let mut children: Vec<(String, bool, u64, SystemTime, Option<String>)> = Vec::new();
         while let Ok(Some(item)) = rd.next_entry().await {
             let name = item.file_name().to_string_lossy().to_string();
             let child_rel = if rel.trim_end_matches('/').is_empty() {
@@ -222,20 +252,29 @@ pub async fn list_dir(root: &Path, rel: &str, base: &str, depth_zero_only: bool)
                 Ok(m) => m,
                 Err(_) => continue,
             };
+            // CONF-01: hash-on-read per file (accepted cost, 15-CONTEXT
+            // "Claude's Discretion" — markdown is small, no caching this phase).
+            let etag = if m.is_dir() {
+                None
+            } else {
+                tokio::fs::read(item.path()).await.ok().map(|b| etag_of(&b))
+            };
             children.push((
                 child_rel,
                 m.is_dir(),
                 m.len(),
                 m.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                etag,
             ));
         }
         children.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        for (r, d, s, m) in children {
+        for (r, d, s, m, etag) in children {
             entries.push(Entry {
                 rel: r,
                 is_dir: d,
                 size: s,
                 modified: m,
+                etag,
             });
         }
     }
@@ -251,13 +290,21 @@ pub fn propfind_response(xml: String) -> Response {
         .into_response()
 }
 
-/// 207 body for a single resource (used for depth:0 on a file).
-pub fn file_propfind_response(base: &str, rel: &str, size: u64, modified: SystemTime) -> Response {
+/// 207 body for a single resource (used for depth:0 on a file). `etag` is
+/// the quoted strong ETag from [`etag_of`] (CONF-01).
+pub fn file_propfind_response(
+    base: &str,
+    rel: &str,
+    size: u64,
+    modified: SystemTime,
+    etag: Option<String>,
+) -> Response {
     let entries = vec![Entry {
         rel: rel.to_string(),
         is_dir: false,
         size,
         modified,
+        etag,
     }];
     propfind_response(multistatus(base, &entries))
 }
@@ -393,18 +440,21 @@ mod tests {
                 is_dir: true,
                 size: 0,
                 modified: SystemTime::UNIX_EPOCH,
+                etag: None,
             },
             Entry {
                 rel: "src".into(),
                 is_dir: true,
                 size: 0,
                 modified: SystemTime::UNIX_EPOCH,
+                etag: None,
             },
             Entry {
                 rel: "README.md".into(),
                 is_dir: false,
                 size: 12,
                 modified: SystemTime::UNIX_EPOCH,
+                etag: Some(etag_of(b"hello")),
             },
         ];
         let xml = multistatus("/webdav/demo", &entries);
@@ -412,6 +462,15 @@ mod tests {
         assert!(xml.contains("<D:multistatus xmlns:D=\"DAV:\">"));
         assert!(xml.contains("<D:collection/>"), "dirs flagged");
         assert!(xml.contains("<D:getcontentlength>12</D:getcontentlength>"));
+        assert!(
+            xml.contains(&format!("<D:getetag>{}</D:getetag>", etag_of(b"hello"))),
+            "file entry carries getetag"
+        );
+        assert_eq!(
+            xml.matches("<D:getetag>").count(),
+            1,
+            "collections carry no getetag"
+        );
         assert!(xml.contains("HTTP/1.1 200 OK"));
         assert!(xml.ends_with("</D:multistatus>\n"));
     }
