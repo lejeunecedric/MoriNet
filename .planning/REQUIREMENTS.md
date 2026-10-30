@@ -69,28 +69,28 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SSO-01 | — | Pending |
-| SSO-02 | — | Pending |
-| SSO-03 | — | Pending |
-| SSO-04 | — | Pending |
-| SSO-05 | — | Pending |
-| SSO-06 | — | Pending |
-| API-01 | — | Pending |
-| API-02 | — | Pending |
-| API-03 | — | Pending |
-| API-04 | — | Pending |
-| API-05 | — | Pending |
-| API-06 | — | Pending |
-| CONF-01 | — | Pending |
-| CONF-02 | — | Pending |
-| CONF-03 | — | Pending |
-| CONF-04 | — | Pending |
-| CONF-05 | — | Pending |
+| SSO-01 | Phase 17 | Pending |
+| SSO-02 | Phase 17 | Pending |
+| SSO-03 | Phase 17 | Pending |
+| SSO-04 | Phase 17 | Pending |
+| SSO-05 | Phase 17 | Pending |
+| SSO-06 | Phase 17 | Pending |
+| API-01 | Phase 16 | Pending |
+| API-02 | Phase 16 | Pending |
+| API-03 | Phase 16 | Pending |
+| API-04 | Phase 16 | Pending |
+| API-05 | Phase 16 | Pending |
+| API-06 | Phase 16 | Pending |
+| CONF-01 | Phase 15 | Pending |
+| CONF-02 | Phase 15 | Pending |
+| CONF-03 | Phase 15 | Pending |
+| CONF-04 | Phase 15 | Pending |
+| CONF-05 | Phase 15 | Pending |
 
 **Coverage:**
 - v1.2 requirements: 17 total
-- Mapped to phases: 0
-- Unmapped: 17 ⚠️ (filled by roadmap creation)
+- Mapped to phases: 17 (Phase 15: CONF-01..05 · Phase 16: API-01..06 · Phase 17: SSO-01..06)
+- Unmapped: 0 ✅
 
 ---
 *Requirements defined: 2026-10-30*

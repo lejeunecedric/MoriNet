@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Team Access
 status: planning
-last_updated: "2026-10-29T23:19:46.385Z"
-last_activity: 2026-10-29
+last_updated: "2026-10-30"
+last_activity: 2026-10-30
 progress:
-  total_phases: 0
+  total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
-**Current focus:** Milestone complete
+**Current focus:** v1.2 Team Access — roadmap created, Phase 15 planning
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Phase 15 (etag-conflict) — planning
 Plan: —
-Status: Defining requirements
-Last activity: 2026-10-29 — Milestone v1.2 started
+Status: Roadmap created 2026-10-30 (Phases 15–17); next step: plan Phase 15
+Last activity: 2026-10-30 — v1.2 roadmap created (Phases 15–17, all 17 REQ-IDs mapped)
 
 ## Performance Metrics
 
@@ -50,6 +50,7 @@ Last activity: 2026-10-29 — Milestone v1.2 started
 
 - Phase 10.1 inserted after Phase 10: Home UX: vault actions, share by email, statistics (URGENT)
 - 2026-10-28: v1.1.0 milestone opened — Phase 12 (demo lock + per-vault page-numbers toggle + mdBook theme), Phase 13 (wiki-changes log in Statistics), Phase 14 (local vault upload). Driven by user feedback on the live demo (issues #7/#8/#9 + new requests).
+- 2026-10-30: v1.2 Team Access roadmap created — Phase 15 (etag-conflict), Phase 16 (rest-api), Phase 17 (oidc-sso). Order per research consensus (`.planning/research/SUMMARY.md`): ETag → REST → OIDC; numbering continues from 14.
 
 ### Decisions
 
@@ -89,4 +90,4 @@ Resume file: .planning/phases/MORI-13-wiki-changes-log-v1-1-0/13-CONTEXT.md
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Plan Phase 15 (etag-conflict) with /gsd-plan-phase

@@ -12,6 +12,7 @@
 
 - ✅ **v1.0** — Phases 00–11 (+10.1) — shipped 2026-10-25 (`v1.0.0`), hotfixes v1.0.1–v1.0.3 by 2026-10-28
 - ✅ **v1.1.0 demo hardening + vault options** — Phases 12–14 — shipped 2026-10-29 (`v1.1.0`, live on holldemo) → full phase details: [milestones/v1.1.0-ROADMAP.md](milestones/v1.1.0-ROADMAP.md)
+- 🚧 **v1.2 Team Access** — Phases 15–17 — planned (ETag conflict detection → read-only REST API → OIDC SSO)
 
 ## Phases
 
@@ -34,6 +35,9 @@
 - [x] **Phase 12: demo-lock + vault display options** - demo account guard; per-vault page-numbers toggle + mdBook theme (v1.1.0) (completed 2026-10-28)
 - [x] **Phase 13: wiki-changes log** - record vault file changes at refresh; "Wiki changes" section in Statistics (v1.1.0) (completed 2026-10-29)
 - [x] **Phase 14: local-vault-upload** - "Local vault" button: client file picker → upload → register (v1.1.0) (completed 2026-10-29)
+- [ ] **Phase 15: etag-conflict** - Strong ETags + If-Match/If-None-Match on WebDAV; upload conflict list + force-overwrite (v1.2)
+- [ ] **Phase 16: rest-api** - Read-only `/api/v1` (vaults/notes/read/search) on API tokens, ACL parity with MCP (v1.2)
+- [ ] **Phase 17: oidc-sso** - Generic OIDC SSO (auth-code + PKCE) coexisting with password login (v1.2)
 
 <details>
 <summary>✅ v1.0 (Phases 00–11) — SHIPPED 2026-10-25 (v1.0.0; hotfixes v1.0.1–v1.0.3)</summary>
@@ -65,6 +69,58 @@
 
 </details>
 
+<details>
+<summary>🚧 v1.2 Team Access (Phases 15–17) — PLANNED (roadmap created 2026-10-30)</summary>
+
+**Build order rationale** (all three researchers independently converged, see `.planning/research/SUMMARY.md`): ETag first (self-contained, no new deps, its `etag_of()` hash helper feeds the later phases), REST API second (pure reuse of MCP store queries, exposes Phase 15's ETags), OIDC last (only new dependency tree `openidconnect` 4.0.1, only migration, and the only change that can break login for existing users — lands on a stable base).
+
+### Phase 15: etag-conflict — Conflict-safe co-editing (CONF-01..05)
+
+**Goal**: stop silent last-write-wins clobbering. Strong content-hash ETags on WebDAV reads, `If-Match`/`If-None-Match` enforcement on PUT, and upload-time conflict detection with an explicit force-overwrite path — all backward compatible for clients that never send preconditions.
+
+**Success criteria**:
+1. WebDAV GET responses carry a strong ETag = sha256 of the raw **source** markdown bytes (never mtime, never `W/`, never mdBook build output) — CONF-01
+2. PROPFIND responses include `getetag` per file — CONF-01
+3. PUT with non-matching `If-Match` → 412 Precondition Failed: nothing written, no rebuild, no `vault_changes` row; malformed precondition header → 400 — CONF-02
+4. PUT with `If-None-Match: *` creates the file only if absent (412 if it exists); successful conditional PUT returns the new ETag — CONF-03
+5. Local upload whose tree is stale vs server → rejected with a per-file conflict list; re-submit with explicit force-overwrite flag succeeds and force-overwrites are recorded in `vault_changes` — CONF-04
+6. Unconditional writes (no precondition headers, plain uploads) behave exactly as before — rclone/Obsidian regression green — CONF-05
+7. Check→write is race-safe: per-vault in-process write lock + temp-file/atomic-rename via one shared "write source file" helper used by WebDAV PUT and upload (pitfall C3/C5)
+
+**Avoids**: C1 (ETag on wrong layer), C2 (weak ETags), C3 (TOCTOU race), C6 (designing for clients that never send If-Match).
+
+### Phase 16: rest-api — Read-only REST API on `/api/v1` (API-01..06)
+
+**Goal**: expose the MCP read surface as a JSON REST API authenticated with existing `/account` API tokens — same ACL, same read helpers, Bearer-only. New `src/api.rs` router branch; `mcp.rs` tools become thin wrappers over the extracted helpers so ACL stays single-sourced.
+
+**Success criteria**:
+1. `/api/v1` accepts Bearer API tokens only (via `user_for_api_token`); session cookies are rejected 401 on this surface — API-01
+2. `GET /api/v1/vaults` lists exactly the vaults the token's user can access — API-02
+3. `GET /api/v1/vaults/{slug}/notes` lists markdown notes with cursor pagination (`has_more`); `GET /api/v1/vaults/{slug}/notes/{path}` returns the raw markdown **source** (not build output) with the Phase 15 ETag header; paths canonicalized against vault escape — API-03
+4. `GET /api/v1/search?q=` searches notes scoped to the token's accessible vaults — API-04
+5. A vault the user cannot see answers 404 (not 403) on every endpoint including search and path reads; all errors are RFC 9457 `application/problem+json` — API-05
+6. Per-token rate limiting returns 429 with `Retry-After` — API-06
+7. ACL test matrix ported from MCP `tools_are_acl_scoped` passes on all four endpoints — API-05
+
+**Avoids**: B1 (ACL bypass), B2 (token leakage), B3 (serving build output), B4 (cookie/Bearer auth mixing). No new dependencies (axum `Json` + serde DTOs).
+
+### Phase 17: oidc-sso — Generic OIDC SSO (SSO-01..06)
+
+**Goal**: teams sign in through their own OIDC-compliant IdP (Keycloak / Authentik / Authelia) via auth-code + PKCE, coexisting with password login. `src/oidc.rs` + `[oidc]` config section (env-wins, disabled by default) + migration 0011 (`users.provider`); callback mints the **same** HMAC session cookie as password login so downstream middleware is untouched. Only new dependency: `openidconnect` 4.0.1 (reqwest + rustls-tls). Intra-phase order: password-login regression tests first, then linking/provisioning, then group sync last.
+
+**Success criteria**:
+1. Login page shows an SSO button when `[oidc]` is configured; flow is authorization-code + PKCE (S256) with `state` + `nonce`, discovery + JWKS-validated ID token — SSO-01
+2. A user whose `email_verified` IdP email matches an existing local account links + signs in; admin accounts are never auto-linked; every link is logged; `(iss, sub)` is the authoritative identity, email is never the join key — SSO-02
+3. First-time SSO user with an `allowed_email_domains` email gets an account auto-created with the `reader` role; unmatched email fails closed — SSO-03
+4. Configurable groups claim (claim name + mapping in config) syncs to MoriNet groups at each login, read only from the signature-verified ID token; admin-group mapping is opt-in and fail-closed on absent claim; demotions are logged — SSO-04
+5. `[oidc]` section in config.toml (issuer, client id/secret, allowed domains, claim mapping) with env overrides following the env-wins pattern; SSO disabled by default and removable without affecting password login — SSO-05
+6. Password login keeps working for every account including SSO users; bootstrap admin always remains available (IdP-outage safety net) — SSO-06
+7. Migration 0011 (`users.provider` + unguessable bcrypt placeholder, no table rebuild) applies cleanly on existing databases; password-login regression suite green before and after
+
+**Avoids**: A1 (email auto-link takeover), A2 (state/nonce/PKCE gaps), A5 (group-claim escalation), A6 (session fixation), A7 (gates bypassed by auto-provision), X1 (hand-rolled OIDC). Open decision for the phase plan: group-sync semantics additive vs replace-on-login (research Gaps to Address).
+
+</details>
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -75,15 +131,18 @@
 | 12. demo-lock + display options | v1.1.0 | 3/3 | Complete | 2026-10-28 |
 | 13. wiki-changes log | v1.1.0 | 2/2 | Complete | 2026-10-29 |
 | 14. local-vault-upload | v1.1.0 | 1/1 | Complete | 2026-10-29 |
+| 15. etag-conflict | v1.2 | 0/TBD | Planned | - |
+| 16. rest-api | v1.2 | 0/TBD | Planned | - |
+| 17. oidc-sso | v1.2 | 0/TBD | Planned | - |
 
-**Next milestone:** not yet planned — start with `/gsd-new-milestone`.
+**Next milestone:** v1.2 Team Access — Phase 15 (etag-conflict) planning via `/gsd-plan-phase`.
 
 ## Out of scope (v1)
 
 - Real-time collaborative editing
 - Native mobile apps
-- SSO (Google / Microsoft OAuth)
-- Webhooks / public API to manage vaults programmatically
+- ~~SSO (Google / Microsoft OAuth)~~ → delivered generically in v1.2 (Phase 17, OIDC)
+- ~~Webhooks / public API to manage vaults programmatically~~ → v1.2 adds a **read-only** REST API (Phase 16); write/webhook management stays out
 - Encryption at rest (rely on the server's FS)
 
 > These items can move into a phase if a strong request emerges.
