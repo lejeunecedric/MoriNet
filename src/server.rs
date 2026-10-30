@@ -605,11 +605,8 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
   <div class="field"><label for="lv-token">Token <small>(optional)</small></label><input id="lv-token" type="text" name="token" placeholder="private repos only"></div>
   <button type="submit">Load vault</button>
 </form>
-<form method="post" action="/vaults/upload" enctype="multipart/form-data" class="stacked">
-  <div class="field"><label for="up-name">Name</label><input id="up-name" type="text" name="name" required placeholder="e.g. My Wiki"></div>
-  <div class="field field-wide"><label for="up-files">Folder</label><input id="up-files" type="file" name="files" webkitdirectory multiple required><span id="up-count" class="empty"></span></div>
-  <button type="submit">Upload vault</button>
-</form>
+<div class="field field-wide"><label for="local-files">Local folder</label><button type="button" id="load-local-btn">Load local</button><input id="local-files" type="file" webkitdirectory multiple hidden><span id="up-count" class="empty"></span></div>
+<div id="upload-status"></div>
 {autofill}{upload}{locked}
 </section>
 </body>
@@ -618,7 +615,7 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
         own = list(&own_items, "No personal vaults yet."),
         shared = list(&shared_items, "No shared vaults yet."),
         autofill = AUTOFILL_NAME_JS,
-        upload = LOCAL_UPLOAD_COUNT_JS,
+        upload = LOCAL_UPLOAD_JS,
         locked = locked_script,
     );
     Html(html).into_response()
@@ -2086,19 +2083,126 @@ const AUTOFILL_NAME_JS: &str = r#"<script>
 })();
 </script>"#;
 
-/// Plan 14-01 (D-06): live count of the files picked by the Local vault
-/// directory picker, shown next to the input before submit. Raw-string const:
+/// Phase 15 (D-03/D-07/D-08, CONF-04): "Load local" two-phase fetch upload —
+/// folds the Phase 14 picked-count script into the new flow. Clicking the
+/// button opens the folder picker directly (name derived from the picked
+/// folder — no name input, D-08); phase 1 POSTs the picked FileList, a 409
+/// renders the rich conflict list with per-file wiki-changes links (D-07)
+/// plus an "Upload anyway" button that re-sends the SAME in-memory FileList
+/// with `force=1` — the user never re-picks the folder (D-03). Every dynamic
+/// value (paths, actors) is rendered via `textContent`, never innerHTML —
+/// XSS-safe against attacker-controlled vault content. Raw-string const:
 /// brace-bearing JS never goes inside a `format!` (pitfall #25).
-const LOCAL_UPLOAD_COUNT_JS: &str = r#"<script>
-// morinet-upload-count: show how many files the folder picker selected.
+const LOCAL_UPLOAD_JS: &str = r#"<script>
+// morinet-load-local: folder picker + two-phase upload with conflict list.
 (function () {
-  var input = document.querySelector('form[action="/vaults/upload"] input[name="files"]');
-  var out = document.getElementById("up-count");
-  if (!input || !out) return;
-  input.addEventListener("change", function () {
-    var n = input.files ? input.files.length : 0;
-    out.textContent = n === 0 ? "" : n + " files selected";
-  });
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text; // XSS: textContent only
+    return node;
+  }
+  function init() {
+    var btn = document.getElementById("load-local-btn");
+    var input = document.getElementById("local-files");
+    var count = document.getElementById("up-count");
+    var status = document.getElementById("upload-status");
+    if (!btn || !input || !status) return;
+    var picked = null; // FileList kept in memory between the two phases (D-03)
+
+    function clearStatus() {
+      while (status.firstChild) status.removeChild(status.firstChild);
+    }
+    function message(msg) {
+      clearStatus();
+      status.appendChild(el("p", "empty", msg));
+    }
+    function formName() {
+      var rel = picked[0].webkitRelativePath || "";
+      return rel ? rel.split("/")[0] : "";
+    }
+    function buildForm(force) {
+      var fd = new FormData();
+      fd.append("name", formName());
+      if (force) fd.append("force", "1");
+      for (var i = 0; i < picked.length; i++) {
+        // webkitRelativePath as filename: the server's top-dir strip (14 D-03)
+        // sees the same layout a native form upload sends.
+        fd.append("files", picked[i], picked[i].webkitRelativePath || picked[i].name);
+      }
+      return fd;
+    }
+    function renderConflict(data) {
+      clearStatus();
+      var conflicts = data.conflicts || [];
+      var slug = data.vault || "";
+      status.appendChild(
+        el("h3", null, conflicts.length + " files changed on the server")
+      );
+      var table = el("table");
+      for (var i = 0; i < conflicts.length; i++) {
+        var c = conflicts[i];
+        var tr = el("tr");
+        var tdPath = el("td");
+        var link = el("a", null, c.path);
+        link.href = "/vault/" + slug + "/stats"; // D-07 wiki-changes section
+        tdPath.appendChild(link);
+        tr.appendChild(tdPath);
+        var lines = [];
+        var chs = c.changes || [];
+        for (var j = 0; j < chs.length; j++) {
+          lines.push((chs[j].actor || "unknown") + " " + chs[j].kind + " " + chs[j].ts);
+        }
+        tr.appendChild(el("td", null, lines.join("; ")));
+        table.appendChild(tr);
+      }
+      status.appendChild(table);
+      var again = el("button", null, "Upload anyway");
+      again.type = "button";
+      again.addEventListener("click", function () { submit(true); });
+      status.appendChild(again);
+    }
+    function submit(force) {
+      if (!picked) return;
+      message(force ? "Uploading (forced)..." : "Uploading...");
+      fetch("/vaults/upload", { method: "POST", body: buildForm(force) })
+        .then(function (res) {
+          if (res.status === 409) {
+            return res.json().then(function (d) { renderConflict(d); });
+          }
+          if (!res.ok) {
+            return res.text().then(function (t) {
+              message("Upload failed: " + t.slice(0, 200));
+            });
+          }
+          window.location = res.url; // 303 target: /vault/{slug}/
+        })
+        .catch(function () { message("Upload failed: network error"); });
+    }
+    btn.addEventListener("click", function () {
+      if (window.MORINET_LOCKED_MSG) {
+        alert(window.MORINET_LOCKED_MSG); // locked popup (T-12-01: UX only)
+        return;
+      }
+      input.click(); // D-08: open the folder picker directly
+    });
+    input.addEventListener("change", function () {
+      var files = input.files;
+      if (!files || files.length === 0) return;
+      picked = files; // "Upload anyway" reuses this — no re-picking (D-03)
+      var name = formName();
+      if (count) {
+        count.textContent =
+          files.length + " files selected" + (name ? " (" + name + ")" : "");
+      }
+      submit(false);
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 })();
 </script>"#;
 
@@ -2122,6 +2226,9 @@ const LOCKED_ACCOUNT_JS: &str = r#"<script>
     };
   }
   function init() {
+    // Phase 15 (D-08): the upload form is gone — the "Load local" button
+    // checks this flag before opening the folder picker (same popup).
+    window.MORINET_LOCKED_MSG = MSG;
     var load = document.querySelector('form[action="/vaults/create"]');
     if (load) block(load);
     var up = document.querySelector('form[action="/vaults/upload"]');
@@ -7953,8 +8060,10 @@ mod tests {
         );
     }
 
-    /// Plan 14-01 Task 2 (D-06): the home page carries the "Local vault"
-    /// upload form — multipart, directory picker, picked-file-count script.
+    /// Plan 14-01 Task 2 (D-06), updated by 15-05 (D-08): the home page
+    /// carries the local-folder load controls — "Load local" button beside
+    /// "Load vault", hidden directory picker, picked-file-count span. The
+    /// Phase 14 multipart form (name input + "Upload vault" button) is gone.
     #[tokio::test]
     async fn index_has_local_upload_form() {
         let (app, _) = test_router().await;
@@ -7963,16 +8072,66 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = body_text(res).await;
         assert!(
-            body.contains(r#"action="/vaults/upload""#),
-            "upload form present: {body}"
+            body.contains(r#"id="load-local-btn""#),
+            "Load local button present: {body}"
         );
         assert!(
-            body.contains(r#"enctype="multipart/form-data""#),
-            "multipart enctype present"
+            body.contains(r#"id="local-files""#),
+            "hidden folder-picker input present"
         );
         assert!(body.contains("webkitdirectory"), "directory picker present");
-        assert!(body.contains(r#"name="files""#), "files input present");
         assert!(body.contains("up-count"), "picked-file-count span present");
+    }
+
+    /// Plan 15-05 Task 2 (D-08): the home page carries the "Load local"
+    /// button + hidden directory picker, and the old Phase 14 upload form
+    /// (name input + "Upload vault" submit) is gone.
+    #[tokio::test]
+    async fn home_page_has_load_local_button() {
+        let (app, _) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("Load local"), "Load local button present");
+        assert!(
+            body.contains(r#"id="local-files""#),
+            "hidden folder-picker input present"
+        );
+        assert!(
+            body.contains("webkitdirectory"),
+            "directory picker attribute present"
+        );
+        assert!(
+            !body.contains(r#"id="up-name""#),
+            "old name input must be gone (D-08): {body}"
+        );
+        assert!(
+            !body.contains(">Upload vault<"),
+            "old Upload vault submit must be gone (D-08): {body}"
+        );
+    }
+
+    /// Plan 15-05 Task 2 (D-03/D-07): the home page embeds the two-phase
+    /// fetch upload script — conflict list rendering + force re-submit.
+    #[tokio::test]
+    async fn home_page_embeds_two_phase_upload_js() {
+        let (app, _) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        for marker in [
+            "Upload anyway",
+            "force",
+            "webkitRelativePath",
+            "/vaults/upload",
+        ] {
+            assert!(
+                body.contains(marker),
+                "two-phase upload JS marker {marker:?} present: {body}"
+            );
+        }
     }
 
     /// D-05: non-locked users see no new script — the page is unregressed.
