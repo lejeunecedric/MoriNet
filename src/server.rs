@@ -931,7 +931,7 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
                     let event_id = uuid::Uuid::new_v4().to_string();
                     let kind = if existed { "modified" } else { "added" };
                     if let Err(e) = store
-                        .log_vault_change(&slug_c, &event_id, kind, &rel_c)
+                        .log_vault_change(&slug_c, &event_id, kind, &rel_c, "", false)
                         .await
                     {
                         eprintln!("vault-changes: webdav PUT log failed for {slug_c}: {e}");
@@ -2718,7 +2718,11 @@ async fn record_vault_changes(
     }
     let event_id = uuid::Uuid::new_v4().to_string();
     for (kind, path) in changes {
-        store.log_vault_change(slug, &event_id, kind, &path).await?;
+        // Refresh path: no interactive actor (D-06 scopes actor to
+        // PUT/upload/force) and never a force-overwrite.
+        store
+            .log_vault_change(slug, &event_id, kind, &path, "", false)
+            .await?;
     }
     Ok(())
 }
@@ -6840,17 +6844,17 @@ mod tests {
         // Event A (older): added + removed. Event B (newer): modified.
         state
             .store
-            .log_vault_change("demo", "ev-a", "added", "alpha.md")
+            .log_vault_change("demo", "ev-a", "added", "alpha.md", "", false)
             .await
             .unwrap();
         state
             .store
-            .log_vault_change("demo", "ev-a", "removed", "gone.md")
+            .log_vault_change("demo", "ev-a", "removed", "gone.md", "", false)
             .await
             .unwrap();
         state
             .store
-            .log_vault_change("demo", "ev-b", "modified", "beta.md")
+            .log_vault_change("demo", "ev-b", "modified", "beta.md", "", false)
             .await
             .unwrap();
         let cookie = login_cookie(&app).await;
@@ -6892,7 +6896,14 @@ mod tests {
         let (app, state) = test_router().await;
         state
             .store
-            .log_vault_change("demo", "ev-x", "added", "<script>alert(1)</script>")
+            .log_vault_change(
+                "demo",
+                "ev-x",
+                "added",
+                "<script>alert(1)</script>",
+                "",
+                false,
+            )
             .await
             .unwrap();
         let cookie = login_cookie(&app).await;
@@ -6913,7 +6924,7 @@ mod tests {
         // Even with changes recorded, a sharee must not see the section (D-07).
         state
             .store
-            .log_vault_change("demo", "ev-a", "added", "secret.md")
+            .log_vault_change("demo", "ev-a", "added", "secret.md", "", false)
             .await
             .unwrap();
         state

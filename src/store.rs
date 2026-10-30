@@ -1436,23 +1436,50 @@ impl Store {
     /// errors must be logged and swallowed, never propagated into a response
     /// (D-04). `kind` is 'added', 'modified' or 'removed' (CHECK-enforced by
     /// migration 0010, D-08); all rows of one refresh share one `event_id`.
+    /// `actor` is the acting user's email ('' when unknown, D-06); `forced`
+    /// marks an explicit force-overwrite (D-05, recorded as `modified`).
     pub async fn log_vault_change(
         &self,
         slug: &str,
         event_id: &str,
         kind: &str,
         path: &str,
+        actor: &str,
+        forced: bool,
     ) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO vault_changes (vault_slug, event_id, kind, path) VALUES (?, ?, ?, ?)",
+            "INSERT INTO vault_changes (vault_slug, event_id, kind, path, actor, forced) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(slug)
         .bind(event_id)
         .bind(kind)
         .bind(path)
+        .bind(actor)
+        .bind(forced as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Per-path change history for the conflict page's who/when links (D-07):
+    /// rows touching exactly `path` in `slug`, newest first, capped at
+    /// `limit`. Returns `(ts, kind, actor, event_id, forced)`.
+    pub async fn vault_changes_for_path(
+        &self,
+        slug: &str,
+        path: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<(String, String, String, String, i64)>> {
+        Ok(sqlx::query_as(
+            "SELECT ts, kind, actor, event_id, forced FROM vault_changes \
+             WHERE vault_slug = ? AND path = ? ORDER BY ts DESC, id DESC LIMIT ?",
+        )
+        .bind(slug)
+        .bind(path)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     /// Latest change rows for a vault, newest first: at most `max_events`
@@ -3299,7 +3326,7 @@ mod vault_changes_tests {
     #[tokio::test]
     async fn prune_vault_changes_removes_only_old_rows() {
         let s = st().await;
-        s.log_vault_change("vcwiki", "e-fresh", "added", "src/fresh.md")
+        s.log_vault_change("vcwiki", "e-fresh", "added", "src/fresh.md", "", false)
             .await
             .unwrap();
 
