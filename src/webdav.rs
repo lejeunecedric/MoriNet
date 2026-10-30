@@ -417,6 +417,27 @@ mod tests {
     }
 
     #[test]
+    fn etag_of_is_strong_sha256() {
+        // CONF-01: strong validator = quoted sha256-hex of the raw bytes.
+        // Known digest of b"hello".
+        let etag = etag_of(b"hello");
+        assert_eq!(
+            etag,
+            "\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\""
+        );
+        assert!(etag.starts_with('"') && etag.ends_with('"'), "quoted wire form");
+        let hex_body = &etag[1..etag.len() - 1];
+        assert_eq!(hex_body.len(), 64, "sha256 hex is 64 chars");
+        assert!(
+            hex_body
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "lowercase hex only"
+        );
+        assert!(!etag.contains("W/"), "strong validators only (C2)");
+    }
+
+    #[test]
     fn http_date_formats_a_known_instant() {
         // 2023-11-14T22:13:20Z
         let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);

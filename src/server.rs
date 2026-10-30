@@ -5716,6 +5716,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_returns_strong_etag() {
+        // CONF-01: GET on a WebDAV file carries ETag: "<sha256-hex>" of the
+        // raw source bytes (never mtime, never weak).
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "get-returns-strong-etag").await;
+        let res = dav_request(
+            app,
+            "GET",
+            "/webdav/dav/src/note.md",
+            basic("admin@example.com", "test-pass-9f3a"),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let etag = res
+            .headers()
+            .get(axum::http::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        // ^"[0-9a-f]{64}"$
+        let hex_body = etag
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or_default();
+        assert_eq!(hex_body.len(), 64, "quoted 64-hex sha256 expected: {etag}");
+        assert!(
+            hex_body
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "lowercase hex only: {etag}"
+        );
+        let content = std::fs::read(root.join("src/note.md")).unwrap();
+        assert_eq!(
+            etag,
+            webdav::etag_of(&content),
+            "ETag must hash the raw source bytes"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn propfind_includes_getetag_for_files_only() {
+        // CONF-01: PROPFIND Depth:1 exposes <D:getetag> per file, none on
+        // collections.
+        let (app, state) = test_router().await;
+        let root = seed_dav_vault_named(&state, "propfind-getetag-files-only").await;
+        let res = dav_request(
+            app,
+            "PROPFIND",
+            "/webdav/dav",
+            basic("admin@example.com", "test-pass-9f3a"),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::MULTI_STATUS);
+        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let xml = String::from_utf8_lossy(&body).to_string();
+        let mut saw_file = false;
+        let mut saw_dir = false;
+        for chunk in xml.split("<D:response>") {
+            if chunk.contains("book.toml") {
+                saw_file = true;
+                assert!(chunk.contains("<D:getetag>"), "file entry needs getetag: {chunk}");
+                let content = std::fs::read(root.join("book.toml")).unwrap();
+                assert!(
+                    chunk.contains(&format!(
+                        "<D:getetag>{}</D:getetag>",
+                        webdav::etag_of(&content)
+                    )),
+                    "getetag must equal sha256 of the file bytes: {chunk}"
+                );
+            }
+            if chunk.contains("<D:collection/>") {
+                saw_dir = true;
+                assert!(
+                    !chunk.contains("<D:getetag>"),
+                    "collection must not carry getetag: {chunk}"
+                );
+            }
+        }
+        assert!(saw_file && saw_dir, "expected file + collection entries: {xml}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
     async fn webdav_rejects_path_traversal() {
         let (app, state) = test_router().await;
         seed_dav_vault_named(&state, "webdav-rejects-path-traversal").await;
