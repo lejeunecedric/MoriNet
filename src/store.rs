@@ -3351,4 +3351,76 @@ mod vault_changes_tests {
         // Idempotent: a second prune deletes nothing.
         assert_eq!(s.prune_vault_changes().await.unwrap(), 0);
     }
+
+    #[tokio::test]
+    async fn vault_changes_forced_actor_defaults() {
+        let s = st().await;
+        // A row written with only the 4 pre-0011 columns (simulating any
+        // pre-existing row) must read back with the additive defaults.
+        sqlx::query(
+            "INSERT INTO vault_changes (vault_slug, event_id, kind, path) \
+             VALUES ('vcdef', 'e-1', 'modified', 'a.md')",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        let (forced, actor): (i64, String) =
+            sqlx::query_as("SELECT forced, actor FROM vault_changes WHERE vault_slug = 'vcdef'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(forced, 0, "forced defaults to 0 (D-05)");
+        assert_eq!(actor, "", "actor defaults to '' (D-05)");
+    }
+
+    #[tokio::test]
+    async fn vault_changes_forced_actor_roundtrip() {
+        let s = st().await;
+        s.log_vault_change("vcrt", "e-1", "modified", "a.md", "user@example.com", true)
+            .await
+            .unwrap();
+        let (actor, forced): (String, i64) =
+            sqlx::query_as("SELECT actor, forced FROM vault_changes WHERE vault_slug = 'vcrt'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(actor, "user@example.com", "actor stored verbatim (D-06)");
+        assert_eq!(forced, 1, "forced stored as 1 (D-05)");
+    }
+
+    #[tokio::test]
+    async fn vault_changes_for_path_newest_first() {
+        let s = st().await;
+        // Two events touch a.md (distinct ts for deterministic ordering);
+        // one event touches another path and must never leak in (D-07).
+        for (event_id, ts, path) in [
+            ("e-old", "2026-01-01 10:00:00", "a.md"),
+            ("e-new", "2026-01-02 10:00:00", "a.md"),
+            ("e-other", "2026-01-03 10:00:00", "b.md"),
+        ] {
+            sqlx::query(
+                "INSERT INTO vault_changes \
+                 (vault_slug, event_id, kind, path, actor, forced, ts) \
+                 VALUES ('vcfp', ?, 'modified', ?, 'who@example.com', 1, ?)",
+            )
+            .bind(event_id)
+            .bind(path)
+            .bind(ts)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        }
+        let rows = s.vault_changes_for_path("vcfp", "a.md", 10).await.unwrap();
+        assert_eq!(rows.len(), 2, "only the matching path is returned");
+        assert_eq!(rows[0].3, "e-new", "newest first");
+        assert_eq!(rows[0].0, "2026-01-02 10:00:00", "ts first in tuple");
+        assert_eq!(rows[0].1, "modified");
+        assert_eq!(rows[0].2, "who@example.com", "actor feeds who/when (D-07)");
+        assert_eq!(rows[0].4, 1, "forced flag returned as i64");
+        assert_eq!(rows[1].3, "e-old");
+        // limit is honored.
+        let capped = s.vault_changes_for_path("vcfp", "a.md", 1).await.unwrap();
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].3, "e-new", "limit keeps the newest row");
+    }
 }
