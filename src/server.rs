@@ -3086,101 +3086,162 @@ async fn upload_local_vault(
     if slug.is_empty() {
         return error_page("the name must contain letters or digits");
     }
-    // Quota BEFORE any disk write (D-05) — same messages as the GitHub load.
-    match state
-        .store
-        .effective_personal_vault_limit(&claims.email)
-        .await
-    {
-        Ok(Some(limit)) => {
-            let used = state
+    // Phase 15 (D-01/D-04): re-uploading the SAME name over an OWNED uploaded
+    // vault is the UPDATE path, not a slug collision. Eligible when the slug
+    // is registered, uploaded (`vault_source` None — git-sourced vaults keep
+    // Refresh semantics) and visible to this user (same source as the
+    // ownership gates, no new store method). Everything else falls through
+    // to the unchanged "already taken" refusal below.
+    let update_mode = match state.store.vault_name(&slug).await.ok().flatten() {
+        Some(_) => {
+            let uploaded = state
                 .store
-                .count_personal_vaults(&claims.email)
+                .vault_source(&slug)
                 .await
-                .unwrap_or(0);
-            if used >= limit {
-                return error_page(&format!(
-                    "personal vault limit reached: {used}/{limit} — ask an admin for a larger group"
-                ));
-            }
+                .ok()
+                .flatten()
+                .is_none();
+            let owned = state
+                .store
+                .list_vaults_for(&claims.email)
+                .await
+                .unwrap_or_default()
+                .iter()
+                .any(|v| v.slug == slug);
+            uploaded && owned
         }
-        Ok(None) => {}
-        Err(e) => return error_page(&format!("quota check failed: {e}")),
+        None => false,
+    };
+    // Quota BEFORE any disk write (D-05) — same messages as the GitHub load.
+    // Phase 15: quota gates CREATION only — a user at their limit must still
+    // be able to UPDATE an existing vault.
+    if !update_mode {
+        match state
+            .store
+            .effective_personal_vault_limit(&claims.email)
+            .await
+        {
+            Ok(Some(limit)) => {
+                let used = state
+                    .store
+                    .count_personal_vaults(&claims.email)
+                    .await
+                    .unwrap_or(0);
+                if used >= limit {
+                    return error_page(&format!(
+                        "personal vault limit reached: {used}/{limit} — ask an admin for a larger group"
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => return error_page(&format!("quota check failed: {e}")),
+        }
     }
     let uploads_root = state.cfg.data_dir.join("uploads");
     let dir = uploads_root.join(&slug);
-    // Slug-collision pre-check BEFORE any disk touch (T-14-07): an uploaded
-    // vault's served book lives INSIDE uploads/<slug>, so a registered vault
-    // must be refused here (sequential UX). Dir existence is deliberately NOT
-    // checked — the exclusive create_dir below owns that race instead.
-    if state.store.vault_name(&slug).await.ok().flatten().is_some() {
-        return error_page(&format!(
-            "the slug '{slug}' is already taken — rename the vault"
-        ));
-    }
-    // HIGH-1: EXCLUSIVE creation — exactly one concurrent upload can win
-    // uploads/<slug>, so every path that reaches writing provably owns the
-    // dir and fail_upload's wipe can never destroy another request's tree.
-    if let Err(e) = tokio::fs::create_dir_all(&uploads_root).await {
-        return error_page(&format!("could not create the upload dir: {e}"));
-    }
-    if let Err(e) = tokio::fs::create_dir(&dir).await {
-        if e.kind() != std::io::ErrorKind::AlreadyExists {
-            // LOW-2: best-effort cleanup even though create_dir failed.
-            return fail_upload(&dir, &format!("could not create the upload dir: {e}")).await;
+    if !update_mode {
+        // Slug-collision pre-check BEFORE any disk touch (T-14-07): an uploaded
+        // vault's served book lives INSIDE uploads/<slug>, so a registered vault
+        // must be refused here (sequential UX). Dir existence is deliberately NOT
+        // checked — the exclusive create_dir below owns that race instead.
+        if state.store.vault_name(&slug).await.ok().flatten().is_some() {
+            return error_page(&format!(
+                "the slug '{slug}' is already taken — rename the vault"
+            ));
         }
-        // No vault row owns the slug (pre-check above), so the dir is an
-        // orphan from a crashed upload or a concurrent in-flight request.
-        // One-shot recovery: wipe once and retry exclusively; if the retry
-        // also fails, another request is actively recreating the dir.
-        let _ = tokio::fs::remove_dir_all(&dir).await;
-        if tokio::fs::create_dir(&dir).await.is_err() {
-            return error_page("an upload for this name is already in progress — rename the vault");
+        // HIGH-1: EXCLUSIVE creation — exactly one concurrent upload can win
+        // uploads/<slug>, so every path that reaches writing provably owns the
+        // dir and fail_upload's wipe can never destroy another request's tree.
+        if let Err(e) = tokio::fs::create_dir_all(&uploads_root).await {
+            return error_page(&format!("could not create the upload dir: {e}"));
+        }
+        if let Err(e) = tokio::fs::create_dir(&dir).await {
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                // LOW-2: best-effort cleanup even though create_dir failed.
+                return fail_upload(&dir, &format!("could not create the upload dir: {e}")).await;
+            }
+            // No vault row owns the slug (pre-check above), so the dir is an
+            // orphan from a crashed upload or a concurrent in-flight request.
+            // One-shot recovery: wipe once and retry exclusively; if the retry
+            // also fails, another request is actively recreating the dir.
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            if tokio::fs::create_dir(&dir).await.is_err() {
+                return error_page("an upload for this name is already in progress — rename the vault");
+            }
         }
     }
-    let root = match dir.canonicalize() {
+    // Phase 15 (D-02): the update path streams into a staging dir and only
+    // touches the LIVE tree after the conflict gate, via write_source_atomic
+    // under the per-vault lock. `work_dir` is the tree THIS request owns: the
+    // fresh uploads/<slug> dir (new vault) or its staging dir (update) — so
+    // fail_upload's tree wipe is never reachable on a live tree.
+    let staging_dir = if update_mode {
+        let s = uploads_root
+            .join(".staging")
+            .join(format!("{slug}-{}", uuid::Uuid::new_v4()));
+        if let Err(e) = tokio::fs::create_dir_all(&s).await {
+            return error_page(&format!("could not create the upload dir: {e}"));
+        }
+        Some(s)
+    } else {
+        None
+    };
+    let work_dir: &std::path::Path = staging_dir.as_ref().unwrap_or(&dir);
+    let root = match work_dir.canonicalize() {
         Ok(r) => r,
         // LOW-2: we own the dir at this point — clean it up before erroring.
-        Err(e) => return fail_upload(&dir, &format!("could not create the upload dir: {e}")).await,
+        Err(e) => {
+            return fail_upload(work_dir, &format!("could not create the upload dir: {e}")).await
+        }
     };
     // Stream each file part to disk (never buffered in RAM, D-02).
     let mut wrote_markdown = false;
     let mut file_count: usize = 0;
+    let mut force_flag = false;
     loop {
         let mut field = match mp.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => return fail_upload(&dir, &format!("could not read the upload: {e}")).await,
+            Err(e) => {
+                return fail_upload(work_dir, &format!("could not read the upload: {e}")).await
+            }
         };
         let raw = match field.file_name() {
             Some(f) => f.to_string(),
-            None => continue, // extra text fields are not files
+            None => {
+                // Extra text fields are not files; the two-phase JS (D-03)
+                // may append `force=1` AFTER the file parts.
+                if field.name() == Some("force") {
+                    force_flag = field.text().await.unwrap_or_default().trim() == "1";
+                }
+                continue;
+            }
         };
         let rel = match sanitize_upload_name(&raw) {
             SanitizedName::Rejected => {
-                return fail_upload(&dir, "invalid file path in upload").await
+                return fail_upload(work_dir, "invalid file path in upload").await
             }
             SanitizedName::Ignored => continue,
             SanitizedName::Write(p) => p,
         };
         file_count += 1;
         if file_count > MAX_FILES {
-            return fail_upload(&dir, "too many files: max 2000 per upload").await;
+            return fail_upload(work_dir, "too many files: max 2000 per upload").await;
         }
-        let target = dir.join(&rel);
-        let parent = target.parent().unwrap_or(dir.as_path());
+        let target = work_dir.join(&rel);
+        let parent = target.parent().unwrap_or(work_dir);
         if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            return fail_upload(&dir, &format!("could not write the upload: {e}")).await;
+            return fail_upload(work_dir, &format!("could not write the upload: {e}")).await;
         }
         // Defense-in-depth (D-03): the joined parent must resolve inside the
         // canonicalized uploads root before ANY byte is written.
         match parent.canonicalize() {
             Ok(p) if p.starts_with(&root) => {}
-            _ => return fail_upload(&dir, "invalid file path in upload").await,
+            _ => return fail_upload(work_dir, "invalid file path in upload").await,
         }
         let mut out = match tokio::fs::File::create(&target).await {
             Ok(f) => f,
-            Err(e) => return fail_upload(&dir, &format!("could not write the upload: {e}")).await,
+            Err(e) => return fail_upload(work_dir, &format!("could not write the upload: {e}")).await,
         };
         let mut total: u64 = 0;
         loop {
@@ -3188,23 +3249,33 @@ async fn upload_local_vault(
                 Ok(Some(chunk)) => {
                     total += chunk.len() as u64;
                     if total > MAX_FILE_BYTES {
-                        return fail_upload(&dir, "file too large: max 5 MB per file").await;
+                        return fail_upload(work_dir, "file too large: max 5 MB per file").await;
                     }
                     if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut out, &chunk).await {
-                        return fail_upload(&dir, &format!("could not write the upload: {e}"))
+                        return fail_upload(work_dir, &format!("could not write the upload: {e}"))
                             .await;
                     }
                 }
                 Ok(None) => break,
                 Err(e) => {
-                    return fail_upload(&dir, &format!("could not read the upload: {e}")).await
+                    return fail_upload(work_dir, &format!("could not read the upload: {e}")).await
                 }
             }
         }
         wrote_markdown = true; // every Write-sanitized part is markdown
     }
     if !wrote_markdown {
-        return fail_upload(&dir, "no markdown files found").await;
+        return fail_upload(work_dir, "no markdown files found").await;
+    }
+    // Phase 15 (D-01): the update path hands off to the conflict gate — the
+    // staged tree is compared, (force-)applied to the live tree, audited and
+    // rebuilt there. The new-vault path below is unchanged.
+    if update_mode {
+        let staging = staging_dir
+            .as_ref()
+            .expect("update_mode always stages before writing");
+        return finish_upload_update(&state, &claims.email, &slug, &name, &dir, staging, force_flag)
+            .await;
     }
     // Build through the SHARED dispatch (D-04) — same shape as the GitHub load.
     use crate::sources::{LocalSource, VaultSource as _};
@@ -3230,6 +3301,165 @@ async fn upload_local_vault(
         }
         Err(e) => fail_upload(&dir, &format!("could not register the vault: {e}")).await,
     }
+}
+
+/// Recursively list the files under `root` as forward-slash relative paths
+/// (the stored conflict/audit path form), sorted for deterministic order.
+async fn collect_rel_files(root: &std::path::Path) -> anyhow::Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let mut rd = tokio::fs::read_dir(&dir).await?;
+        while let Some(ent) = rd.next_entry().await? {
+            if ent.file_type().await?.is_dir() {
+                stack.push(ent.path());
+            } else if let Ok(rel) = ent.path().strip_prefix(root) {
+                out.push(rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Error exit for the update path: drop the staging dir (the ONLY tree this
+/// request owns there), render the error page. Never touches the live tree.
+async fn abort_staging(staging: &std::path::Path, msg: &str) -> Response {
+    let _ = tokio::fs::remove_dir_all(staging).await;
+    error_page(msg)
+}
+
+/// Phase 15 (D-01/D-02/D-04..D-06): finish an upload UPDATE. The staged tree
+/// was streamed and sanitized by `upload_local_vault`; here it is compared
+/// against the live `uploads/<slug>` tree (conflict = present on BOTH sides
+/// with a different sha256), gated on `force_flag`, applied file-by-file via
+/// the ONE shared atomic helper under the per-vault write lock (same lock as
+/// WebDAV PUT — 15-03), audited, and rebuilt. Server-only files are never
+/// deleted (D-02: force never deletes); the live tree is never wiped.
+async fn finish_upload_update(
+    state: &SharedState,
+    actor: &str,
+    slug: &str,
+    name: &str,
+    dir: &std::path::Path,
+    staging: &std::path::Path,
+    force_flag: bool,
+) -> Response {
+    let staged = match collect_rel_files(staging).await {
+        Ok(f) => f,
+        Err(e) => {
+            return abort_staging(staging, &format!("could not read the upload: {e}")).await;
+        }
+    };
+    // D-02: conflict = both sides present, different content hash (quoted
+    // sha256 via the ONE etag helper — "one hash, three consumers").
+    let mut conflicts: Vec<(String, String)> = Vec::new(); // (rel, server etag)
+    for rel in &staged {
+        let incoming = match tokio::fs::read(staging.join(rel)).await {
+            Ok(b) => b,
+            Err(e) => {
+                return abort_staging(staging, &format!("could not read the upload: {e}")).await;
+            }
+        };
+        if let Ok(current) = tokio::fs::read(dir.join(rel)).await {
+            let server_etag = webdav::etag_of(&current);
+            if server_etag != webdav::etag_of(&incoming) {
+                conflicts.push((rel.clone(), server_etag));
+            }
+        }
+    }
+    if !conflicts.is_empty() && !force_flag {
+        // Rich conflict JSON for the two-phase fetch flow (D-03): per-file
+        // server ETag + who/when rows from vault_changes (D-07 data). The
+        // endpoint is owner-only, so this leaks nothing to non-owners.
+        let mut items = Vec::with_capacity(conflicts.len());
+        for (path, server_etag) in &conflicts {
+            let changes: Vec<serde_json::Value> = state
+                .store
+                .vault_changes_for_path(slug, path, 5)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(ts, kind, actor, _event_id, _forced)| {
+                    serde_json::json!({ "ts": ts, "kind": kind, "actor": actor })
+                })
+                .collect();
+            items.push(serde_json::json!({
+                "path": path,
+                "server_etag": server_etag,
+                "changes": changes,
+            }));
+        }
+        let body = serde_json::json!({
+            "status": "conflict",
+            "vault": slug,
+            "conflicts": items,
+        });
+        let _ = tokio::fs::remove_dir_all(staging).await;
+        return (
+            StatusCode::CONFLICT,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body.to_string(),
+        )
+            .into_response();
+    }
+    // Apply under the per-vault write lock (criterion 7): check→write is
+    // serialized against WebDAV PUT; each file lands atomically via the ONE
+    // shared helper. The lock is released before the rebuild (15-03 pattern).
+    let mut audit: Vec<(String, &'static str)> = Vec::new();
+    {
+        let lock = vault_lock(state, dir);
+        let _guard = lock.lock().await;
+        for rel in &staged {
+            let target = dir.join(rel);
+            if let Some(parent) = target.parent() {
+                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                    return abort_staging(staging, &format!("could not write the upload: {e}"))
+                        .await;
+                }
+            }
+            let bytes = match tokio::fs::read(staging.join(rel)).await {
+                Ok(b) => b,
+                Err(e) => {
+                    return abort_staging(staging, &format!("could not read the upload: {e}")).await;
+                }
+            };
+            // Review LOW-02 style: on a metadata error assume "modified".
+            let existed = tokio::fs::try_exists(&target).await.unwrap_or(true);
+            if let Err(e) = webdav::write_source_atomic(&target, &bytes).await {
+                return abort_staging(staging, &format!("could not write the upload: {e}")).await;
+            }
+            audit.push((rel.clone(), if existed { "modified" } else { "added" }));
+        }
+    }
+    let _ = tokio::fs::remove_dir_all(staging).await;
+    // D-05/D-06: one event_id per update operation; overwritten files are
+    // `modified`, local-only files `added`; forced flag + real actor.
+    // Best-effort (Phase 13 D-04): fire-and-forget, log-and-swallow.
+    {
+        let store = state.store.clone();
+        let slug_c = slug.to_string();
+        let actor_c = actor.to_string();
+        tokio::spawn(async move {
+            let event_id = uuid::Uuid::new_v4().to_string();
+            for (path, kind) in audit {
+                if let Err(e) = store
+                    .log_vault_change(&slug_c, &event_id, kind, &path, &actor_c, force_flag)
+                    .await
+                {
+                    eprintln!("vault-changes: upload update log failed for {slug_c}: {e}");
+                }
+            }
+        });
+    }
+    // Rebuild through the SHARED dispatch so the served HTML reflects the
+    // update (AD-10) — the vault row already exists, nothing to register.
+    use crate::sources::{LocalSource, VaultSource as _};
+    let src = LocalSource { path: dir.to_path_buf() };
+    if let Err(e) = src.sync().and_then(|d| src.build(&d, name)) {
+        return error_page(&format!("sync/build failed: {e}"));
+    }
+    Redirect::to(&format!("/vault/{slug}/")).into_response()
 }
 
 /// `POST /admin/groups/{id}/limit` — set the personal-vault quota (REQ-GRP-005).
@@ -8346,7 +8576,261 @@ mod tests {
         )
         .await;
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
-        // Second upload with the same slug: refused BEFORE any disk touch...
+        // Phase 15 (D-01): a same-slug re-upload by the OWNER of an uploaded
+        // vault is now the UPDATE path, not the "rename the vault" refusal.
+        // Identical bytes hash-match on every file, so the conflict gate
+        // passes and the update lands as a redirect.
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        // The vault's tree is intact and still serves.
+        let res = req(app, "GET", "/vault/dup-book/", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(uploads_dir_for(&state, "dup-book")
+            .join("index.md")
+            .is_file());
+        let _ = std::fs::remove_dir_all(uploads_dir_for(&state, "dup-book"));
+    }
+
+    // ── Phase 15 plan 15-04: upload update path + conflict gate (CONF-04) ──
+
+    /// Staging dirs belonging to `slug` (staging dirs are named
+    /// `<slug>-<uuid>` so each test can prove ITS OWN leftovers are gone even
+    /// though the shared data_dir runs tests in parallel).
+    fn staging_leftovers(state: &SharedState, slug: &str) -> Vec<PathBuf> {
+        let root = state.cfg.data_dir.join("uploads").join(".staging");
+        let prefix = format!("{slug}-");
+        match std::fs::read_dir(&root) {
+            Ok(rd) => rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .starts_with(&prefix)
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Poll for the fire-and-forget audit rows — the spawn may land after the
+    /// redirect (15-03 flake lesson).
+    async fn poll_vault_changes(
+        state: &SharedState,
+        slug: &str,
+        path: &str,
+    ) -> Vec<(String, String, String, String, i64)> {
+        for _ in 0..100 {
+            let rows = state
+                .store
+                .vault_changes_for_path(slug, path, 50)
+                .await
+                .unwrap();
+            if !rows.is_empty() {
+                // Let sibling rows of the same event land before returning.
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                return state
+                    .store
+                    .vault_changes_for_path(slug, path, 50)
+                    .await
+                    .unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        state
+            .store
+            .vault_changes_for_path(slug, path, 50)
+            .await
+            .unwrap()
+    }
+
+    /// Upload a vault once (admin) so update-path tests can re-upload it.
+    async fn seed_upload(app: &Router, cookie: &str, name: &str, files: &[(&str, &[u8])]) {
+        let mut parts: Vec<(&str, Option<&str>, &[u8])> =
+            vec![("name", None, name.as_bytes())];
+        for (fname, data) in files {
+            parts.push(("files", Some(fname), data));
+        }
+        let body = multipart_body("bnd", &parts);
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER, "seed upload must pass");
+    }
+
+    #[tokio::test]
+    async fn upload_update_conflict_returns_409_json() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        seed_upload(&app, &cookie, "Conf Book", &[("MyConf/a.md", b"v1\n")]).await;
+        let dir = uploads_dir_for(&state, "conf-book");
+        // Simulate a server-side change after the uploader's copy went stale.
+        std::fs::write(dir.join("a.md"), b"server version\n").unwrap();
+        // Re-upload the stale tree: a.md differs on both sides -> conflict.
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Conf Book"),
+                ("files", Some("MyConf/a.md"), b"v2\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        let text = body_text(res).await;
+        assert!(
+            text.contains(r#""status":"conflict""#),
+            "conflict JSON: {text}"
+        );
+        assert!(
+            text.contains(r#""path":"a.md""#),
+            "conflict names a.md: {text}"
+        );
+        let want = webdav::etag_of(b"server version\n");
+        let hex = want.trim_matches('"');
+        assert!(
+            text.contains(r#""server_etag""#) && text.contains(hex),
+            "conflict carries the server ETag: {text}"
+        );
+        // No partial write: the live file is still the server version.
+        assert_eq!(
+            std::fs::read(dir.join("a.md")).unwrap(),
+            b"server version\n",
+            "409 must write nothing"
+        );
+        // Staging is cleaned on the 409 path.
+        assert!(staging_leftovers(&state, "conf-book").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_update_force_overwrites_and_records() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        seed_upload(&app, &cookie, "Force Book", &[("MyF/a.md", b"v1\n")]).await;
+        let dir = uploads_dir_for(&state, "force-book");
+        std::fs::write(dir.join("a.md"), b"server version\n").unwrap();
+        // Same tree + force=1 (+ a local-only file): overwrite + add land.
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Force Book"),
+                ("files", Some("MyF/a.md"), b"v2\n"),
+                ("files", Some("MyF/b.md"), b"new file\n"),
+                ("force", None, b"1"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER, "force must not 409");
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/vault/force-book/"
+        );
+        assert_eq!(std::fs::read(dir.join("a.md")).unwrap(), b"v2\n");
+        assert_eq!(std::fs::read(dir.join("b.md")).unwrap(), b"new file\n");
+        // D-05/D-06 audit: a.md modified + forced + real actor; b.md added;
+        // every row of the operation shares ONE event_id.
+        let rows_a = poll_vault_changes(&state, "force-book", "a.md").await;
+        let row_a = rows_a
+            .iter()
+            .find(|r| r.1 == "modified")
+            .expect("modified row for a.md");
+        assert_eq!(row_a.2, "admin@example.com", "actor = uploader");
+        assert_eq!(row_a.4, 1, "forced = 1");
+        let rows_b = state
+            .store
+            .vault_changes_for_path("force-book", "b.md", 50)
+            .await
+            .unwrap();
+        let row_b = rows_b.iter().find(|r| r.1 == "added").expect("added row");
+        assert_eq!(row_b.4, 1);
+        assert_eq!(
+            row_a.3, row_b.3,
+            "one event_id per update operation (D-05)"
+        );
+        assert!(staging_leftovers(&state, "force-book").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_update_adds_local_only_keeps_server_only() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        seed_upload(&app, &cookie, "Merge Book", &[("MyM/a.md", b"keep me\n")]).await;
+        let dir = uploads_dir_for(&state, "merge-book");
+        // Re-upload with ONLY b.md (force): b.md is added, a.md untouched —
+        // D-02: force never deletes server-only files.
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Merge Book"),
+                ("files", Some("MyM/b.md"), b"b\n"),
+                ("force", None, b"1"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            std::fs::read(dir.join("a.md")).unwrap(),
+            b"keep me\n",
+            "server-only file must survive the update"
+        );
+        assert_eq!(std::fs::read(dir.join("b.md")).unwrap(), b"b\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_update_refused_for_other_users_vault() {
+        let (app, state) = test_router().await;
+        let admin_cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        seed_upload(&app, &admin_cookie, "Rival Book", &[("MyR/a.md", b"mine\n")]).await;
+        let dir = uploads_dir_for(&state, "rival-book");
+        state
+            .store
+            .create_user("other@x.fr", "test-pass-9f3a", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "other@x.fr", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Rival Book"),
+                ("files", Some("MyR/a.md"), b"stolen\n"),
+            ],
+        );
         let res = req(
             app.clone(),
             "POST",
@@ -8357,18 +8841,134 @@ mod tests {
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let text = body_text(res).await;
-        assert!(
-            text.contains("rename the vault"),
-            "conflict asks for a rename: {text}"
+        assert!(text.contains("already taken"), "existing refusal kept: {text}");
+        // No writes: the owner's file is untouched.
+        assert_eq!(std::fs::read(dir.join("a.md")).unwrap(), b"mine\n");
+        assert!(staging_leftovers(&state, "rival-book").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_update_refused_for_git_vault() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        // A git-sourced vault keeps Refresh semantics — no re-upload onto it
+        // (D-04), even for the admin who can see it.
+        let book = std::env::temp_dir().join("morinet-git-book-upload");
+        std::fs::create_dir_all(&book).unwrap();
+        state
+            .store
+            .seed_vault("git-book", "Git Book", &book)
+            .await
+            .unwrap();
+        state
+            .store
+            .set_vault_source("git-book", "https://example.com/repo.git")
+            .await
+            .unwrap();
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Git Book"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+            ],
         );
-        // ...so the FIRST vault's tree is intact and still serves (checker fix:
-        // the pre-check must run before any disk touch — T-14-07).
-        let res = req(app, "GET", "/vault/dup-book/", cookie_hdr(&cookie), None).await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = body_text(res).await;
+        assert!(text.contains("already taken"), "D-04 refusal kept: {text}");
+        assert!(!uploads_dir_for(&state, "git-book").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_plain_new_vault_regression() {
+        // CONF-05: a plain new-vault upload (no force field) behaves exactly
+        // as before — register + redirect (mirrors upload_registers_personal_vault).
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Fresh Book"),
+                ("files", Some("MyWiki/index.md"), b"# hi\n"),
+                ("files", Some("MyWiki/notes/a.md"), b"# a\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/vault/fresh-book/"
+        );
+        let vaults = state
+            .store
+            .accessible_vaults("admin@example.com")
+            .await
+            .unwrap();
+        assert!(
+            vaults
+                .iter()
+                .any(|v| v.vault.slug == "fresh-book" && v.personal),
+            "uploaded vault is listed as personal"
+        );
+        assert!(state
+            .store
+            .vault_source("fresh-book")
+            .await
+            .unwrap()
+            .is_none());
+        let dir = uploads_dir_for(&state, "fresh-book");
+        assert!(dir.join("index.md").is_file());
+        assert!(dir.join("notes/a.md").is_file());
+        let res = req(app, "GET", "/vault/fresh-book/", cookie_hdr(&cookie), None).await;
         assert_eq!(res.status(), StatusCode::OK);
-        assert!(uploads_dir_for(&state, "dup-book")
-            .join("index.md")
-            .is_file());
-        let _ = std::fs::remove_dir_all(uploads_dir_for(&state, "dup-book"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_update_rejects_traversal_path() {
+        // Threat model: traversal is refused on the UPDATE path too, before
+        // any live write (staging sanitization mirrors the live path).
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        seed_upload(&app, &cookie, "Trav Upd", &[("MyT/a.md", b"ok\n")]).await;
+        let dir = uploads_dir_for(&state, "trav-upd");
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Trav Upd"),
+                ("files", Some("../../evil.md"), b"x"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = body_text(res).await;
+        assert!(text.contains("invalid file path"), "error names it: {text}");
+        assert_eq!(std::fs::read(dir.join("a.md")).unwrap(), b"ok\n");
+        assert!(!dir.join("evil.md").exists());
+        assert!(staging_leftovers(&state, "trav-upd").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
