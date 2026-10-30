@@ -3472,21 +3472,62 @@ async fn finish_upload_update(
     };
     // D-02: conflict = both sides present, different content hash (quoted
     // sha256 via the ONE etag helper — "one hash, three consumers").
-    let mut conflicts: Vec<(String, String)> = Vec::new(); // (rel, server etag)
-    for rel in &staged {
-        let incoming = match tokio::fs::read(staging.join(rel)).await {
-            Ok(b) => b,
-            Err(e) => {
-                return abort_staging(staging, &format!("could not read the upload: {e}")).await;
-            }
-        };
-        if let Ok(current) = tokio::fs::read(dir.join(rel)).await {
-            let server_etag = webdav::etag_of(&current);
-            if server_etag != webdav::etag_of(&incoming) {
-                conflicts.push((rel.clone(), server_etag));
+    // REV-15-02 (criterion 7): the scan runs UNDER the same per-vault write
+    // lock as the apply, so a WebDAV PUT landing between scan and write is
+    // impossible — check→write is one atomic section (same contract as the
+    // WebDAV PUT handler). The 409 JSON build (DB reads) happens after the
+    // guard drops.
+    let mut audit: Vec<(String, &'static str)> = Vec::new();
+    let conflicts: Vec<(String, String)> = {
+        // 15-03 pattern: bind the Arc to a local first, then lock.
+        let lock = vault_lock(state, dir);
+        let _guard = lock.lock().await;
+        let mut conflicts: Vec<(String, String)> = Vec::new(); // (rel, server etag)
+        for rel in &staged {
+            let incoming = match tokio::fs::read(staging.join(rel)).await {
+                Ok(b) => b,
+                Err(e) => {
+                    return abort_staging(staging, &format!("could not read the upload: {e}"))
+                        .await;
+                }
+            };
+            if let Ok(current) = tokio::fs::read(dir.join(rel)).await {
+                let server_etag = webdav::etag_of(&current);
+                if server_etag != webdav::etag_of(&incoming) {
+                    conflicts.push((rel.clone(), server_etag));
+                }
             }
         }
-    }
+        if conflicts.is_empty() || force_flag {
+            // Apply under the SAME guard (criterion 7): each file lands
+            // atomically via the ONE shared helper. The lock is released
+            // before the rebuild (15-03 pattern).
+            for rel in &staged {
+                let target = dir.join(rel);
+                if let Some(parent) = target.parent() {
+                    if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                        return abort_staging(staging, &format!("could not write the upload: {e}"))
+                            .await;
+                    }
+                }
+                let bytes = match tokio::fs::read(staging.join(rel)).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return abort_staging(staging, &format!("could not read the upload: {e}"))
+                            .await;
+                    }
+                };
+                // Review LOW-02 style: on a metadata error assume "modified".
+                let existed = tokio::fs::try_exists(&target).await.unwrap_or(true);
+                if let Err(e) = webdav::write_source_atomic(&target, &bytes).await {
+                    return abort_staging(staging, &format!("could not write the upload: {e}"))
+                        .await;
+                }
+                audit.push((rel.clone(), if existed { "modified" } else { "added" }));
+            }
+        }
+        conflicts
+    };
     if !conflicts.is_empty() && !force_flag {
         // Rich conflict JSON for the two-phase fetch flow (D-03): per-file
         // server ETag + who/when rows from vault_changes (D-07 data). The
@@ -3521,36 +3562,6 @@ async fn finish_upload_update(
             body.to_string(),
         )
             .into_response();
-    }
-    // Apply under the per-vault write lock (criterion 7): check→write is
-    // serialized against WebDAV PUT; each file lands atomically via the ONE
-    // shared helper. The lock is released before the rebuild (15-03 pattern).
-    let mut audit: Vec<(String, &'static str)> = Vec::new();
-    {
-        let lock = vault_lock(state, dir);
-        let _guard = lock.lock().await;
-        for rel in &staged {
-            let target = dir.join(rel);
-            if let Some(parent) = target.parent() {
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    return abort_staging(staging, &format!("could not write the upload: {e}"))
-                        .await;
-                }
-            }
-            let bytes = match tokio::fs::read(staging.join(rel)).await {
-                Ok(b) => b,
-                Err(e) => {
-                    return abort_staging(staging, &format!("could not read the upload: {e}"))
-                        .await;
-                }
-            };
-            // Review LOW-02 style: on a metadata error assume "modified".
-            let existed = tokio::fs::try_exists(&target).await.unwrap_or(true);
-            if let Err(e) = webdav::write_source_atomic(&target, &bytes).await {
-                return abort_staging(staging, &format!("could not write the upload: {e}")).await;
-            }
-            audit.push((rel.clone(), if existed { "modified" } else { "added" }));
-        }
     }
     let _ = tokio::fs::remove_dir_all(staging).await;
     // D-05/D-06: one event_id per update operation; overwritten files are
@@ -9158,7 +9169,9 @@ mod tests {
         // Staged tree IDENTICAL to live: the initial scan sees no conflict.
         let staging = state.cfg.data_dir.join("uploads/.staging/race-book-race");
         tokio::fs::create_dir_all(&staging).await.unwrap();
-        tokio::fs::write(staging.join("a.md"), b"same\n").await.unwrap();
+        tokio::fs::write(staging.join("a.md"), b"same\n")
+            .await
+            .unwrap();
 
         // Block the update on the per-vault lock BEFORE it can scan+apply.
         // (15-03 pattern: bind the Arc to a local first, then lock.)
