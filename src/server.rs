@@ -878,7 +878,10 @@ async fn webdav_entry(State(state): State<SharedState>, req: Request) -> Respons
                     let etag = webdav::etag_of(&bytes);
                     (
                         [
-                            (axum::http::header::CONTENT_TYPE, content_type(&rel).to_string()),
+                            (
+                                axum::http::header::CONTENT_TYPE,
+                                content_type(&rel).to_string(),
+                            ),
                             (axum::http::header::ETAG, etag),
                         ],
                         bytes,
@@ -5794,7 +5797,10 @@ mod tests {
         for chunk in xml.split("<D:response>") {
             if chunk.contains("book.toml") {
                 saw_file = true;
-                assert!(chunk.contains("<D:getetag>"), "file entry needs getetag: {chunk}");
+                assert!(
+                    chunk.contains("<D:getetag>"),
+                    "file entry needs getetag: {chunk}"
+                );
                 let content = std::fs::read(root.join("book.toml")).unwrap();
                 assert!(
                     chunk.contains(&format!(
@@ -5812,7 +5818,10 @@ mod tests {
                 );
             }
         }
-        assert!(saw_file && saw_dir, "expected file + collection entries: {xml}");
+        assert!(
+            saw_file && saw_dir,
+            "expected file + collection entries: {xml}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

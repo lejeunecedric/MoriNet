@@ -545,7 +545,10 @@ mod tests {
             etag,
             "\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\""
         );
-        assert!(etag.starts_with('"') && etag.ends_with('"'), "quoted wire form");
+        assert!(
+            etag.starts_with('"') && etag.ends_with('"'),
+            "quoted wire form"
+        );
         let hex_body = &etag[1..etag.len() - 1];
         assert_eq!(hex_body.len(), 64, "sha256 hex is 64 chars");
         assert!(
@@ -562,7 +565,10 @@ mod tests {
     /// build a HeaderValue that `to_str()` refuses.
     fn precondition_table() -> Vec<(Vec<u8>, Precondition)> {
         vec![
-            (b"\"abc\"".to_vec(), Precondition::Tags(vec!["\"abc\"".into()])),
+            (
+                b"\"abc\"".to_vec(),
+                Precondition::Tags(vec!["\"abc\"".into()]),
+            ),
             (
                 b"  \"abc\" , \"def\"  ".to_vec(),
                 Precondition::Tags(vec!["\"abc\"".into(), "\"def\"".into()]),
