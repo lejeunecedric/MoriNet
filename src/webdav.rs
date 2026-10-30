@@ -44,10 +44,7 @@ pub fn etag_of(bytes: &[u8]) -> String {
 /// payload per C3, never from a pre-write hash). Callers hold the per-vault
 /// write lock across their check→write section (see `vault_lock` in server.rs);
 /// 15-04's upload path reuses this same helper.
-pub async fn write_source_atomic(
-    path: &std::path::Path,
-    bytes: &[u8],
-) -> anyhow::Result<String> {
+pub async fn write_source_atomic(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<String> {
     use tokio::io::AsyncWriteExt;
     let file_name = path
         .file_name()

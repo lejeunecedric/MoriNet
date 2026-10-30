@@ -1031,7 +1031,10 @@ fn precondition_failed(current_etag: Option<&str>) -> Response {
     };
     (
         StatusCode::PRECONDITION_FAILED,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
         msg,
     )
         .into_response()
@@ -5926,16 +5929,18 @@ mod tests {
         // ROADMAP criterion 7 (C3/C5): the shared "write source file" helper
         // writes via a sibling temp file + atomic rename, returns the quoted
         // ETag of the bytes written, and leaves no temp files behind.
-        let dir = std::env::temp_dir().join(format!(
-            "morinet-atomic-{}-roundtrip",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("morinet-atomic-{}-roundtrip", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("note.md");
         let bytes = b"# Note\n\natomic\n";
         let etag = webdav::write_source_atomic(&target, bytes).await.unwrap();
-        assert_eq!(etag, webdav::etag_of(bytes), "returns hash of written bytes");
+        assert_eq!(
+            etag,
+            webdav::etag_of(bytes),
+            "returns hash of written bytes"
+        );
         assert_eq!(std::fs::read(&target).unwrap(), bytes);
         let leftovers: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
@@ -5943,7 +5948,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.contains(".tmp-"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
         // Overwrite path: rename onto an existing file also works.
         let bytes2 = b"# Note\n\nrewritten\n";
         let etag2 = webdav::write_source_atomic(&target, bytes2).await.unwrap();
@@ -6045,12 +6053,7 @@ mod tests {
     }
 
     /// PUT with extra precondition headers (Phase 15 conditional writes).
-    async fn dav_put(
-        app: Router,
-        uri: &str,
-        body: &str,
-        extra: &[(&str, &str)],
-    ) -> Response {
+    async fn dav_put(app: Router, uri: &str, body: &str, extra: &[(&str, &str)]) -> Response {
         let auth = basic("admin@example.com", "test-pass-9f3a");
         let mut builder = Request::builder().method("PUT").uri(uri);
         for (k, v) in auth.iter() {
@@ -6245,34 +6248,30 @@ mod tests {
         )
         .await;
         assert_eq!(res.status(), StatusCode::CREATED);
-        let res = dav_put(
-            app,
-            "/webdav/dav/src/conf05-uncond.md",
-            "second\n",
-            &[],
-        )
-        .await;
+        let res = dav_put(app, "/webdav/dav/src/conf05-uncond.md", "second\n", &[]).await;
         assert_eq!(res.status(), StatusCode::CREATED);
         assert_eq!(
             std::fs::read_to_string(root.join("src/conf05-uncond.md")).unwrap(),
             "second\n"
         );
         // D-06: the modified row carries actor + forced via the 15-02 columns.
-        // Generous poll: the parallel full suite is slow to schedule the spawn.
-        let mut rows = Vec::new();
+        // Generous poll: the parallel full suite is slow to schedule the spawn;
+        // poll for the modified row itself (added/modified may share a ts).
+        let mut row = None;
         for _ in 0..150 {
-            rows = state
+            let rows = state
                 .store
                 .vault_changes_for_path("dav", "src/conf05-uncond.md", 5)
                 .await
                 .unwrap();
-            if !rows.is_empty() {
+            if let Some(r) = rows.into_iter().find(|r| r.1 == "modified") {
+                row = Some(r);
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert!(!rows.is_empty(), "modified row recorded");
-        let (kind, actor, forced) = (rows[0].1.clone(), rows[0].2.clone(), rows[0].4);
+        let row = row.expect("modified row recorded");
+        let (kind, actor, forced) = (row.1.clone(), row.2.clone(), row.4);
         assert_eq!(kind, "modified");
         assert_eq!(actor, "admin@example.com", "D-06 actor = Basic-auth user");
         assert_eq!(forced, 0, "webdav PUT is never forced");
