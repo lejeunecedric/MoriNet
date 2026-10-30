@@ -3,11 +3,7 @@ status: partial
 phase: 15-etag-conflict-conflict-safe-co-editing-conf-01-05
 source: [15-VERIFICATION.md]
 started: 2026-10-30T15:05:43Z
-  "timestamp": "2026-10-30T15:05:43.934Z"
-}
 updated: 2026-10-30T15:05:43Z
-  "timestamp": "2026-10-30T15:05:43.934Z"
-}
 ---
 
 ## Current Test
