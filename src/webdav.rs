@@ -496,6 +496,61 @@ mod tests {
         assert!(!etag.contains("W/"), "strong validators only (C2)");
     }
 
+    /// Shared fail-closed table for both precondition parsers (RFC 9110
+    /// §13.1/§13.2). Values are raw header bytes so the non-UTF-8 case can
+    /// build a HeaderValue that `to_str()` refuses.
+    fn precondition_table() -> Vec<(Vec<u8>, Precondition)> {
+        vec![
+            (b"\"abc\"".to_vec(), Precondition::Tags(vec!["\"abc\"".into()])),
+            (
+                b"  \"abc\" , \"def\"  ".to_vec(),
+                Precondition::Tags(vec!["\"abc\"".into(), "\"def\"".into()]),
+            ),
+            (b"*".to_vec(), Precondition::Any),
+            (b" * ".to_vec(), Precondition::Any),
+            // Weak validators are never accepted (PITFALLS C2):
+            (b"W/\"abc\"".to_vec(), Precondition::Malformed),
+            (b"abc".to_vec(), Precondition::Malformed),
+            (b"".to_vec(), Precondition::Malformed),
+            (b"\"abc\", W/\"def\"".to_vec(), Precondition::Malformed),
+            // Invalid UTF-8 header bytes: fail closed, NEVER Absent.
+            (vec![0xff, 0xfe], Precondition::Malformed),
+        ]
+    }
+
+    fn headers_with(name: &str, raw: &[u8]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::HeaderName::try_from(name).unwrap(),
+            axum::http::HeaderValue::from_bytes(raw).unwrap(),
+        );
+        h
+    }
+
+    #[test]
+    fn if_match_parses_per_rfc9110() {
+        assert_eq!(if_match_of(&HeaderMap::new()), Precondition::Absent);
+        for (raw, want) in precondition_table() {
+            assert_eq!(
+                if_match_of(&headers_with("if-match", &raw)),
+                want,
+                "If-Match: {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn if_none_match_parses_per_rfc9110() {
+        assert_eq!(if_none_match_of(&HeaderMap::new()), Precondition::Absent);
+        for (raw, want) in precondition_table() {
+            assert_eq!(
+                if_none_match_of(&headers_with("if-none-match", &raw)),
+                want,
+                "If-None-Match: {raw:?}"
+            );
+        }
+    }
+
     #[test]
     fn http_date_formats_a_known_instant() {
         // 2023-11-14T22:13:20Z
