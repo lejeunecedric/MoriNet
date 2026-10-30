@@ -3196,9 +3196,12 @@ async fn upload_local_vault(
     // Phase 15 (D-01/D-04): re-uploading the SAME name over an OWNED uploaded
     // vault is the UPDATE path, not a slug collision. Eligible when the slug
     // is registered, uploaded (`vault_source` None — git-sourced vaults keep
-    // Refresh semantics) and visible to this user (same source as the
-    // ownership gates, no new store method). Everything else falls through
-    // to the unchanged "already taken" refusal below.
+    // Refresh semantics) and the user is the vault's owner (admins keep their
+    // global power). REV-15-01: the gate is `can_edit_vault` — the SAME owner
+    // gate the Edit page uses (`owner_id` via `accessible_vaults`), NOT
+    // `list_vaults_for`, whose non-admin branch reads only the legacy
+    // `vault_acl` table that production never populates. Everything else
+    // falls through to the unchanged "already taken" refusal below.
     let update_mode = match state.store.vault_name(&slug).await.ok().flatten() {
         Some(_) => {
             let uploaded = state
@@ -3208,13 +3211,7 @@ async fn upload_local_vault(
                 .ok()
                 .flatten()
                 .is_none();
-            let owned = state
-                .store
-                .list_vaults_for(&claims.email)
-                .await
-                .unwrap_or_default()
-                .iter()
-                .any(|v| v.slug == slug);
+            let owned = can_edit_vault(&state, &claims.email, &slug).await;
             uploaded && owned
         }
         None => false,
@@ -9027,6 +9024,177 @@ mod tests {
         // No writes: the owner's file is untouched.
         assert_eq!(std::fs::read(dir.join("a.md")).unwrap(), b"mine\n");
         assert!(staging_leftovers(&state, "rival-book").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// REV-15-01 regression: a NON-ADMIN owner must reach the update path on
+    /// their own uploaded vault (the old gate used `list_vaults_for`, whose
+    /// non-admin branch reads only the never-populated legacy `vault_acl`).
+    #[tokio::test]
+    async fn upload_update_allowed_for_nonadmin_owner() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("owner@x.fr", "test-pass-9f3a", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "owner@x.fr", "test-pass-9f3a").await;
+        seed_upload(&app, &cookie, "Owner Book", &[("MyO/a.md", b"v1\n")]).await;
+        let dir = uploads_dir_for(&state, "owner-book");
+        // Server-side change after the uploader's copy went stale: a plain
+        // re-upload must hit the CONFLICT gate (update path), never the
+        // "already taken" creation refusal.
+        std::fs::write(dir.join("a.md"), b"server version\n").unwrap();
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Owner Book"),
+                ("files", Some("MyO/a.md"), b"v2\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        let status = res.status();
+        let text = body_text(res).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "non-admin owner must reach the update path, not: {text}"
+        );
+        assert!(
+            text.contains(r#""status":"conflict""#),
+            "conflict JSON for the owner: {text}"
+        );
+        // Same owner, identical content: clean update lands (303).
+        std::fs::write(dir.join("a.md"), b"v2\n").unwrap();
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Owner Book"),
+                ("files", Some("MyO/a.md"), b"v2\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/vault/owner-book/"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// REV-15-01 regression (b): fixing the owner gate must NOT open the update
+    /// path to a different non-admin — same slug, no ownership: refusal kept.
+    #[tokio::test]
+    async fn upload_update_refused_for_other_nonadmin_same_slug() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("owner2@x.fr", "test-pass-9f3a", "reader")
+            .await
+            .unwrap();
+        state
+            .store
+            .create_user("intruder@x.fr", "test-pass-9f3a", "reader")
+            .await
+            .unwrap();
+        let owner_cookie = login_as(&app, "owner2@x.fr", "test-pass-9f3a").await;
+        seed_upload(&app, &owner_cookie, "Mine Book", &[("MyN/a.md", b"mine\n")]).await;
+        let dir = uploads_dir_for(&state, "mine-book");
+        let intruder_cookie = login_as(&app, "intruder@x.fr", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Mine Book"),
+                ("files", Some("MyN/a.md"), b"stolen\n"),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&intruder_cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = body_text(res).await;
+        assert!(
+            text.contains("already taken"),
+            "non-owner refusal kept: {text}"
+        );
+        assert_eq!(std::fs::read(dir.join("a.md")).unwrap(), b"mine\n");
+        assert!(staging_leftovers(&state, "mine-book").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// REV-15-02 regression: the conflict scan must happen UNDER the per-vault
+    /// lock. Race simulation (deterministic, no timing gamble): the test holds
+    /// the same `vault_lock` the WebDAV PUT handler uses, spawns the update,
+    /// then mutates the live file while the update is blocked on the lock —
+    /// exactly the window a concurrent PUT lands in. Pre-fix the scan ran
+    /// before the lock (identical staged/live content -> no conflict detected)
+    /// and the apply silently overwrote the mutation; post-fix the scan runs
+    /// under the lock, sees the mutation, and 409s without writing.
+    #[tokio::test]
+    async fn upload_update_conflict_scan_holds_vault_lock() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        seed_upload(&app, &cookie, "Race Book", &[("MyRace/a.md", b"same\n")]).await;
+        let dir = uploads_dir_for(&state, "race-book");
+        // Staged tree IDENTICAL to live: the initial scan sees no conflict.
+        let staging = state.cfg.data_dir.join("uploads/.staging/race-book-race");
+        tokio::fs::create_dir_all(&staging).await.unwrap();
+        tokio::fs::write(staging.join("a.md"), b"same\n").await.unwrap();
+
+        // Block the update on the per-vault lock BEFORE it can scan+apply.
+        // (15-03 pattern: bind the Arc to a local first, then lock.)
+        let lock = vault_lock(&state, &dir);
+        let guard = lock.lock().await;
+        let st = state.clone();
+        let (dir_c, staging_c) = (dir.clone(), staging.clone());
+        let handle = tokio::spawn(async move {
+            finish_upload_update(
+                &st,
+                "admin@example.com",
+                "race-book",
+                "Race Book",
+                &dir_c,
+                &staging_c,
+                false,
+            )
+            .await
+        });
+        // Let the update reach its lock wait, then land the "WebDAV PUT".
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::fs::write(dir.join("a.md"), b"webdav put\n").unwrap();
+        drop(guard);
+
+        let res = handle.await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::CONFLICT,
+            "a PUT landing between scan and apply must 409, not be overwritten"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("a.md")).unwrap(),
+            b"webdav put\n",
+            "no silent overwrite of the concurrent PUT"
+        );
+        assert!(staging_leftovers(&state, "race-book").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
