@@ -153,20 +153,6 @@ impl MoriMcp {
         }
     }
 
-    /// The source directory of an accessible vault (same resolution as
-    /// WebDAV: the markdown source, never the generated tree). One generic
-    /// error for unknown slug and no-access — no existence leak.
-    async fn source_dir(&self, slug: &str) -> Option<PathBuf> {
-        let entry = self
-            .store
-            .accessible_vaults(&self.email)
-            .await
-            .ok()?
-            .into_iter()
-            .find(|a| a.vault.slug == slug)?;
-        crate::webdav::source_dir_of(Path::new(&entry.vault.book_path))
-    }
-
     /// Best-effort access log: spawn so a slow or failing insert can never
     /// fail the tool call (same contract as the web layer, plan 02).
     fn log_access(&self, slug: &str, path: &str) {
@@ -182,21 +168,12 @@ impl MoriMcp {
     /// The vaults the token's user can access (personal + shared via groups).
     #[tool(description = "List the vaults this token's user can access")]
     pub async fn list_vaults(&self) -> Result<CallToolResult, ErrorData> {
-        let vaults: Vec<serde_json::Value> = self
-            .store
-            .accessible_vaults(&self.email)
-            .await
-            .unwrap_or_default()
-            .iter()
-            .map(|a| {
-                serde_json::json!({
-                    "slug": a.vault.slug,
-                    "name": a.vault.name,
-                    "scope": a.vault.scope,
-                    "role": a.role,
-                })
-            })
-            .collect();
+        let vaults: Vec<serde_json::Value> =
+            crate::api::accessible_vault_entries(&self.store, &self.email)
+                .await
+                .iter()
+                .map(crate::api::vault_json)
+                .collect();
         self.log_access("-", "-");
         Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&vaults).unwrap_or_else(|_| "[]".into()),
@@ -209,24 +186,16 @@ impl MoriMcp {
         &self,
         Parameters(p): Parameters<ListNotesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let Some(src) = self.source_dir(&p.slug).await else {
-            return tool_error("vault not found or access denied");
-        };
-        let base = match p.path.as_deref() {
-            Some(sub) => match safe_join(&src, sub) {
-                Some(b) => b,
-                None => return tool_error("invalid path"),
-            },
-            None => src.clone(),
-        };
-        if !base.is_dir() {
-            return tool_error("no such folder");
+        // Thin wrapper: all ACL + path logic lives in crate::api (D-04).
+        match crate::api::list_notes(&self.store, &self.email, &p.slug, p.path.as_deref()).await {
+            Ok(files) => {
+                self.log_access(&p.slug, p.path.as_deref().unwrap_or("-"));
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string(&files).unwrap_or_else(|_| "[]".into()),
+                )]))
+            }
+            Err(e) => tool_error(e.mcp_message()),
         }
-        let files = list_md_files(&base);
-        self.log_access(&p.slug, p.path.as_deref().unwrap_or("-"));
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string(&files).unwrap_or_else(|_| "[]".into()),
-        )]))
     }
 
     /// Read one markdown note.
@@ -235,22 +204,17 @@ impl MoriMcp {
         &self,
         Parameters(p): Parameters<SlugPath>,
     ) -> Result<CallToolResult, ErrorData> {
-        let Some(src) = self.source_dir(&p.slug).await else {
-            return tool_error("vault not found or access denied");
-        };
-        let full = match safe_join(&src, &p.path) {
-            Some(f) => f,
-            None => return tool_error("invalid path"),
-        };
-        if !full.is_file() {
-            return tool_error("no such note");
-        }
-        match std::fs::read_to_string(&full) {
-            Ok(content) => {
-                self.log_access(&p.slug, &p.path);
-                Ok(CallToolResult::success(vec![ContentBlock::text(content)]))
-            }
-            Err(_) => tool_error("could not read the note"),
+        // Thin wrapper: the helper returns raw bytes (REST needs them for
+        // ETags); non-UTF-8 maps to the legacy read-failure string.
+        match crate::api::read_note(&self.store, &self.email, &p.slug, &p.path).await {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(content) => {
+                    self.log_access(&p.slug, &p.path);
+                    Ok(CallToolResult::success(vec![ContentBlock::text(content)]))
+                }
+                Err(_) => tool_error(crate::api::ApiReadError::Unreadable.mcp_message()),
+            },
+            Err(e) => tool_error(e.mcp_message()),
         }
     }
 
@@ -260,31 +224,30 @@ impl MoriMcp {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut vaults: Vec<(String, PathBuf)> = Vec::new();
-        if let Some(slug) = p.slug.as_deref() {
-            match self.source_dir(slug).await {
-                Some(dir) => vaults.push((slug.to_string(), dir)),
-                None => return tool_error("vault not found or access denied"),
-            }
-        } else {
-            for a in self
-                .store
-                .accessible_vaults(&self.email)
-                .await
-                .unwrap_or_default()
-            {
-                if let Some(dir) = crate::webdav::source_dir_of(Path::new(&a.vault.book_path)) {
-                    vaults.push((a.vault.slug.clone(), dir));
+        // Thin wrapper: ACL + cap live in crate::api (D-04, D-10).
+        match crate::api::search_notes(&self.store, &self.email, &p.query, p.slug.as_deref()).await
+        {
+            Ok(hits) => {
+                // Same logging as before: one row per searched vault.
+                match p.slug.as_deref() {
+                    Some(slug) => self.log_access(slug, "-"),
+                    None => {
+                        for a in
+                            crate::api::accessible_vault_entries(&self.store, &self.email).await
+                        {
+                            if crate::webdav::source_dir_of(Path::new(&a.vault.book_path)).is_some()
+                            {
+                                self.log_access(&a.vault.slug, "-");
+                            }
+                        }
+                    }
                 }
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into()),
+                )]))
             }
+            Err(e) => tool_error(e.mcp_message()),
         }
-        let hits = search_md(&vaults, &p.query, 50);
-        for (slug, _) in &vaults {
-            self.log_access(slug, "-");
-        }
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into()),
-        )]))
     }
 }
 
