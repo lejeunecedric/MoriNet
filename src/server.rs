@@ -505,11 +505,9 @@ async fn logout(State(state): State<SharedState>) -> Response {
 fn vault_row(a: &AccessibleVault, can_share: bool) -> String {
     let slug = html_escape(&a.vault.slug);
     let name = html_escape(&a.vault.name);
-    let tag = if a.personal {
-        "private"
-    } else {
-        a.role.as_str()
-    };
+    // Shared rows carry no role tag — the action set already encodes the
+    // role (Refresh only appears for writers). Only personal rows keep a tag.
+    let tag = if a.personal { " <small>(private)</small>" } else { "" };
     let mut actions = String::new();
     if a.personal {
         // The owner manages their own vault: edit settings, pull upstream
@@ -548,7 +546,7 @@ fn vault_row(a: &AccessibleVault, can_share: bool) -> String {
         }
     }
     format!(
-        r#"<li><a class="vault-name" href="/vault/{s}/">{n}</a> <small>({t})</small><span class="vault-actions">{acts}</span></li>"#,
+        r#"<li><a class="vault-name" href="/vault/{s}/">{n}</a>{t}<span class="vault-actions">{acts}</span></li>"#,
         s = slug,
         n = name,
         t = tag,
