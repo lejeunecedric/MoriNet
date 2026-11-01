@@ -519,6 +519,58 @@ async fn api_read_note(
         .into_response()
 }
 
+/// `GET /api/v1/docs` — human-readable API docs in the app shell (D-15).
+/// The body is FULLY STATIC: no interpolation of anything user-controlled,
+/// so there is no html_escape surface, no vault data (threat B2), and the
+/// page can be PUBLIC — served without a Bearer token and outside the
+/// rate-limited api group. Rendered through `server::app_page` so it ships
+/// with the standard stylesheet + chrome (Phase 9b rule: no ad-hoc CSS).
+pub(crate) fn docs_page() -> Response {
+    let body = r#"<section class="panel">
+<h2>REST API</h2>
+<p>Read-only JSON REST API over the vaults your API token can access.
+All data endpoints require a Bearer token; this page is public.</p>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td>GET</td><td>/api/v1</td><td>JSON index of the API surface (requires a token).</td></tr>
+    <tr><td>GET</td><td>/api/v1/vaults</td><td>List every vault you can access (slug, name, scope, role).</td></tr>
+    <tr><td>GET</td><td>/api/v1/vaults/{slug}/notes</td><td>List note paths in one vault, sorted, cursor-paginated.</td></tr>
+    <tr><td>GET</td><td>/api/v1/vaults/{slug}/notes/{path}</td><td>Read one note as raw markdown (ETag / If-None-Match supported).</td></tr>
+    <tr><td>GET</td><td>/api/v1/search</td><td>Search note contents across your vaults (?q=..., optional &amp;vault=slug).</td></tr>
+  </tbody>
+</table>
+</section>
+<section class="panel">
+<h2>Auth</h2>
+<p>Send <code>Authorization: Bearer &lt;token&gt;</code> on every request. Create a
+token on your <a href="/account">account page</a>. Browser session cookies are
+never accepted by the API — only API tokens.</p>
+</section>
+<section class="panel">
+<h2>Pagination</h2>
+<p>Note lists are paginated: <code>?limit=</code> defaults to 50 and is capped
+at 200. Responses carry <code>has_more</code> and an opaque
+<code>next_cursor</code>; pass it back as <code>?cursor=</code> to fetch the
+next page.</p>
+</section>
+<section class="panel">
+<h2>Errors</h2>
+<p>Every error is RFC 9457 <code>application/problem+json</code> with a
+<code>code</code> slug: <code>unauthorized</code>, <code>not_found</code>,
+<code>invalid_request</code>, <code>precondition_failed</code>,
+<code>rate_limited</code>, <code>internal_error</code>. Vaults you cannot see
+answer 404 <code>not_found</code> — never 403 — so vault existence is never
+leaked.</p>
+</section>
+<section class="panel">
+<h2>Rate limit</h2>
+<p>120 requests per minute per token. Over the limit you get 429 with a
+<code>Retry-After</code> header (seconds) and code <code>rate_limited</code>.</p>
+</section>"#;
+    crate::server::app_page("REST API", body)
+}
+
 /// The `/api/v1` group (API-01): a standalone merged router with its own
 /// Bearer `route_layer` — NEVER inside the `protected` group, so
 /// `require_session` cookies can never authenticate it (D-01 / Avoids B4).
@@ -1645,13 +1697,7 @@ mod tests {
     async fn api_search_finds_notes_in_shared_vault() {
         let (app, s) = share_app("mcp-share-search", "sh4", "reader").await;
         let tok = mint_token(&s, "sharee@api.test").await;
-        let res = get(
-            app,
-            "/api/v1/search?q=secret%20needle",
-            Some(&tok),
-            None,
-        )
-        .await;
+        let res = get(app, "/api/v1/search?q=secret%20needle", Some(&tok), None).await;
         assert_eq!(res.status(), StatusCode::OK);
         let j = body_json(res).await;
         assert!(
@@ -1661,5 +1707,49 @@ mod tests {
                 .any(|h| h["slug"] == serde_json::json!("sh4")),
             "global search hits the shared vault: {j}"
         );
+    }
+
+    // ---- 16-05 task 1: public docs page in the app shell (D-15, API-05) ----
+
+    /// The docs page is PUBLIC static HTML (locked planner decision): zero
+    /// vault data means no Bearer is needed and none is accepted-or-required.
+    /// Also proves matchit resolves static `/api/v1/docs` ahead of the
+    /// `/api/v1/{*rest}` catch-all — without registration this is a 401.
+    #[tokio::test]
+    async fn api_docs_page_public() {
+        let (app, _s) = api_app().await;
+        let res = get(app, "/api/v1/docs", None, None).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "docs page serves WITHOUT a Bearer token"
+        );
+        assert!(
+            res.headers()[CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html"),
+            "docs page is HTML"
+        );
+        let body = String::from_utf8(body_bytes(res).await).unwrap();
+        for needle in [
+            "/api/v1/vaults",
+            "Bearer",
+            "problem+json",
+            "Retry-After",
+            "120",
+        ] {
+            assert!(body.contains(needle), "docs page documents {needle}");
+        }
+    }
+
+    /// Threat-model B2: the page is fully static — two sequential responses
+    /// are byte-identical, so no vault data or user content can ride along.
+    #[tokio::test]
+    async fn api_docs_page_no_vault_data() {
+        let (app, _s) = api_app().await;
+        let a = body_bytes(get(app.clone(), "/api/v1/docs", None, None).await).await;
+        let b = body_bytes(get(app, "/api/v1/docs", None, None).await).await;
+        assert_eq!(a, b, "static page: two responses byte-identical");
     }
 }

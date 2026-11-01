@@ -89,7 +89,7 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 /// Render an app page with the embedded stylesheet + standard header/nav.
 /// Every handler-generated page MUST go through this — a raw `Html(body)`
 /// ships unstyled (verified in the browser: serif default, no card, no nav).
-fn app_page(title: &str, body: &str) -> Response {
+pub(crate) fn app_page(title: &str, body: &str) -> Response {
     let html = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -183,6 +183,12 @@ pub fn build_router_with_email(
     // Public routes.
     let public = Router::new()
         .route("/health", get(health))
+        // 16-05 (D-15): human-readable API docs — PUBLIC static HTML (zero
+        // vault data, so no Bearer needed and it never counts against the
+        // per-token rate limiter). Registered here, OUTSIDE the api group's
+        // route_layer; matchit resolves this static ahead of the
+        // `/api/v1/{*rest}` catch-all regardless of merge order.
+        .route("/api/v1/docs", get(|| async { crate::api::docs_page() }))
         .route("/login", get(login_form).post(login_submit))
         .route("/reset", get(reset_request_form).post(reset_request_submit))
         .route("/reset/{token}", get(reset_form).post(reset_submit))
