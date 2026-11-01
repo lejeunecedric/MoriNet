@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Team Access
-status: executing
-stopped_at: Phase 16 context gathered
-last_updated: "2026-11-01T18:14:08.902Z"
+status: ready_to_plan
+stopped_at: Phase 16 complete (5/5) — ready to discuss Phase 17
+last_updated: 2026-11-01T20:04:36.108Z
 last_activity: 2026-11-01 -- Phase 16 execution started
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 10
-  completed_plans: 5
+  completed_plans: 10
   percent: 33
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
-**Current focus:** Phase 16
+**Current focus:** Phase 17 — oidc sso — generic oidc sso (sso 01..06)
 
 ## Current Position
 
-Phase: 16 — EXECUTING
-Plan: 1 of ?
-Status: Executing Phase 16
-Last activity: 2026-11-01 -- Phase 16 execution started
+Phase: 17
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-11-01
 
 ## Performance Metrics
 

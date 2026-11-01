@@ -45,13 +45,13 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 - ✓ Wiki-changes log: `vault_changes` table fed at Refresh (git tree-diff) + WebDAV PUT, "Wiki changes" section in Statistics grouped per event — REQ-CHG-* (v1.1.0, Phase 13)
 - ✓ Local vault upload: browser directory picker → sanitized multipart endpoint, quota/lock gates, shared convert/build/register pipeline — REQ-LOC-* (v1.1.0, Phase 14)
 - ✓ Conflict-safe co-editing: strong sha256 ETags + If-Match/If-None-Match on WebDAV, upload conflict list + force-overwrite audit — CONF-01..05 (v1.2, Phase 15)
+- ✓ Read-only REST API on existing API tokens (vaults, notes, read, search) — API-01..06 (v1.2, Phase 16)
 
 ### Active
 
 <!-- Milestone v1.2 Team Access — scope being defined (2026-10-29). -->
 
 - [ ] OIDC SSO coexisting with password auth (IdP in config, auto-provisioning, group claim mapping)
-- [ ] Read-only REST API on existing API tokens (vaults, notes, read, search)
 
 ### Out of Scope
 
@@ -111,4 +111,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-30 — Phase 15 (conflict-safe co-editing) complete; remaining v1.2 scope: REST API (Phase 16), OIDC SSO (Phase 17).*
+*Last updated: 2026-11-01 — Phase 16 (read-only REST API on /api/v1) complete; remaining v1.2 scope: OIDC SSO (Phase 17).*

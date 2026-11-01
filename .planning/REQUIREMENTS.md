@@ -18,12 +18,12 @@ Requirements for milestone v1.2. Each maps to roadmap phases.
 
 ### API (read-only REST)
 
-- [ ] **API-01**: Programmatic clients authenticate to `/api/v1` with existing `/account` API tokens (Bearer header only; session cookies are rejected on this surface)
-- [ ] **API-02**: `GET /api/v1/vaults` lists the vaults the token's user can access
-- [ ] **API-03**: `GET /api/v1/vaults/{slug}/notes` lists markdown notes with cursor pagination; `GET /api/v1/vaults/{slug}/notes/{path}` returns the raw markdown source
-- [ ] **API-04**: `GET /api/v1/search?q=` searches notes across the token's accessible vaults
-- [ ] **API-05**: ACL parity with MCP — a vault the user cannot see answers 404 (not 403); all errors use RFC 9457 `application/problem+json`
-- [ ] **API-06**: Per-token rate limiting with `Retry-After` on 429
+- [x] **API-01**: Programmatic clients authenticate to `/api/v1` with existing `/account` API tokens (Bearer header only; session cookies are rejected on this surface)
+- [x] **API-02**: `GET /api/v1/vaults` lists the vaults the token's user can access
+- [x] **API-03**: `GET /api/v1/vaults/{slug}/notes` lists markdown notes with cursor pagination; `GET /api/v1/vaults/{slug}/notes/{path}` returns the raw markdown source
+- [x] **API-04**: `GET /api/v1/search?q=` searches notes across the token's accessible vaults
+- [x] **API-05**: ACL parity with MCP — a vault the user cannot see answers 404 (not 403); all errors use RFC 9457 `application/problem+json`
+- [x] **API-06**: Per-token rate limiting with `Retry-After` on 429
 
 ### CONF (conflict-safe async co-editing)
 
@@ -75,12 +75,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SSO-04 | Phase 17 | Pending |
 | SSO-05 | Phase 17 | Pending |
 | SSO-06 | Phase 17 | Pending |
-| API-01 | Phase 16 | Pending |
-| API-02 | Phase 16 | Pending |
-| API-03 | Phase 16 | Pending |
-| API-04 | Phase 16 | Pending |
-| API-05 | Phase 16 | Pending |
-| API-06 | Phase 16 | Pending |
+| API-01 | Phase 16 | Complete |
+| API-02 | Phase 16 | Complete |
+| API-03 | Phase 16 | Complete |
+| API-04 | Phase 16 | Complete |
+| API-05 | Phase 16 | Complete |
+| API-06 | Phase 16 | Complete |
 | CONF-01 | Phase 15 | Complete |
 | CONF-02 | Phase 15 | Complete |
 | CONF-03 | Phase 15 | Complete |
