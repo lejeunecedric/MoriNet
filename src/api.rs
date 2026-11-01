@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, ETAG, WWW_AUTHENTICATE};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
@@ -295,7 +295,13 @@ async fn api_list_notes(
         Err(ApiReadError::NotFound) | Err(ApiReadError::NoSuchFolder) => {
             return problem(StatusCode::NOT_FOUND, "not_found", "vault not found")
         }
-        Err(_) => return problem(StatusCode::BAD_REQUEST, "invalid_request", "invalid list request"),
+        Err(_) => {
+            return problem(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid list request",
+            )
+        }
     };
     let limit = match q.limit.as_deref() {
         None => NOTES_LIMIT_DEFAULT,
@@ -320,13 +326,7 @@ async fn api_list_notes(
             .and_then(|b| String::from_utf8(b).ok())
         {
             Some(s) => Some(s),
-            None => {
-                return problem(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request",
-                    "invalid cursor",
-                )
-            }
+            None => return problem(StatusCode::BAD_REQUEST, "invalid_request", "invalid cursor"),
         },
     };
     // list_notes output is sorted — skip everything <= cursor, take limit+1
@@ -339,11 +339,13 @@ async fn api_list_notes(
     let has_more = remaining.len() > limit as usize;
     let page = &remaining[..(limit as usize).min(remaining.len())];
     let next_cursor = if has_more {
-        Some(URL_SAFE_NO_PAD.encode(
-            page.last()
-                .expect("page non-empty when has_more")
-                .as_bytes(),
-        ))
+        Some(
+            URL_SAFE_NO_PAD.encode(
+                page.last()
+                    .expect("page non-empty when has_more")
+                    .as_bytes(),
+            ),
+        )
     } else {
         None
     };
@@ -384,6 +386,70 @@ async fn api_search(
     }
 }
 
+/// `GET /api/v1/vaults/{slug}/notes/{*path}` — RAW markdown source
+/// (never mdBook build output — D-06/B3) as `text/markdown` with the
+/// strong quoted ETag (D-11). Path resolution is exclusively the 16-01
+/// `read_note` helper's `safe_join` — no new join logic here.
+/// If-None-Match is parsed ONLY by `webdav::if_none_match_of`, fail-closed
+/// on Malformed before any body (D-12, PITFALLS C2).
+async fn api_read_note(
+    State(state): State<SharedState>,
+    Extension(user): Extension<User>,
+    AxumPath((slug, path)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let bytes = match read_note(&state.store, &user.email, &slug, &path).await {
+        Ok(b) => b,
+        // NotFound, missing note AND refused traversal all collapse to one
+        // 404 shape — no existence leak on any axis (D-02/B1).
+        Err(ApiReadError::NotFound)
+        | Err(ApiReadError::NoSuchNote)
+        | Err(ApiReadError::InvalidPath)
+        | Err(ApiReadError::NoSuchFolder) => {
+            return problem(StatusCode::NOT_FOUND, "not_found", "note not found")
+        }
+        Err(ApiReadError::Unreadable) => {
+            return problem(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "could not read the note",
+            )
+        }
+    };
+    // ONE hash, quoted wire form compared directly — never re-hash-and-quote
+    // separately (15-01-SUMMARY rule).
+    let etag = crate::webdav::etag_of(&bytes);
+    let not_modified = match crate::webdav::if_none_match_of(&headers) {
+        crate::webdav::Precondition::Absent => false,
+        // `*` matches: we just successfully read the file, it exists.
+        crate::webdav::Precondition::Any => true,
+        crate::webdav::Precondition::Tags(tags) => tags.contains(&etag),
+        // Fail closed BEFORE any body is served (D-12, PITFALLS C2).
+        crate::webdav::Precondition::Malformed => {
+            return problem(
+                StatusCode::BAD_REQUEST,
+                "precondition_failed",
+                "malformed If-None-Match header",
+            )
+        }
+    };
+    if not_modified {
+        // RFC 9110 §8.8.1: 304 carries the ETag header, no body.
+        return (StatusCode::NOT_MODIFIED, [(ETAG, etag)]).into_response();
+    }
+    (
+        [
+            (CONTENT_TYPE, HeaderValue::from_static("text/markdown")),
+            (
+                ETAG,
+                HeaderValue::from_str(&etag).expect("quoted hex etag is a valid header value"),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 /// The `/api/v1` group (API-01): a standalone merged router with its own
 /// Bearer `route_layer` — NEVER inside the `protected` group, so
 /// `require_session` cookies can never authenticate it (D-01 / Avoids B4).
@@ -396,6 +462,7 @@ pub fn router(state: &SharedState) -> Router {
         .route("/api/v1", get(api_index))
         .route("/api/v1/vaults", get(api_vaults))
         .route("/api/v1/vaults/{slug}/notes", get(api_list_notes))
+        .route("/api/v1/vaults/{slug}/notes/{*path}", get(api_read_note))
         .route("/api/v1/search", get(api_search))
         // Registered BEFORE route_layer so it sits INSIDE the Bearer group:
         // unknown paths answer 401 without a token, 404 problem+json with
@@ -830,21 +897,51 @@ mod tests {
         s.seed_vault(slug, "Notes vault", &src.join("book"))
             .await
             .unwrap();
-        let app =
-            build_router_with_email(router_cfg(), s.clone(), Arc::new(InMemorySender::new()));
+        let app = build_router_with_email(router_cfg(), s.clone(), Arc::new(InMemorySender::new()));
         (app, s, src)
+    }
+
+    async fn get_cond(
+        app: axum::Router,
+        uri: &str,
+        bearer: &str,
+        if_none_match: Option<&str>,
+    ) -> Response {
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(AUTHORIZATION, format!("Bearer {bearer}"));
+        if let Some(inm) = if_none_match {
+            builder = builder.header("if-none-match", inm);
+        }
+        app.oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn body_bytes(res: Response) -> Vec<u8> {
+        to_bytes(res.into_body(), 1_048_576).await.unwrap().to_vec()
     }
 
     #[tokio::test]
     async fn api_notes_pagination_round_trip() {
         let (app, s, _src) = seed_notes_app("pg1", "pg1", &["a.md", "b.md", "c.md"]).await;
         let tok = mint_token(&s, "admin@api.test").await;
-        let res = get(app.clone(), "/api/v1/vaults/pg1/notes?limit=2", Some(&tok), None).await;
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/pg1/notes?limit=2",
+            Some(&tok),
+            None,
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         let j = body_json(res).await;
         assert_eq!(j["notes"], serde_json::json!(["a.md", "b.md"]));
         assert_eq!(j["has_more"], true);
-        let cur = j["next_cursor"].as_str().expect("next_cursor present").to_string();
+        let cur = j["next_cursor"]
+            .as_str()
+            .expect("next_cursor present")
+            .to_string();
         assert!(
             !cur.contains('+') && !cur.contains('/') && !cur.contains('='),
             "cursor must be URL_SAFE_NO_PAD base64: {cur}"
@@ -942,13 +1039,24 @@ mod tests {
         let (app, s) = share_app("apiscoped", "sc1", "reader").await;
         // Sharee finds the needle in the shared vault via GLOBAL q (D-10).
         let tok = mint_token(&s, "sharee@api.test").await;
-        let res = get(app.clone(), "/api/v1/search?q=secret%20needle", Some(&tok), None).await;
+        let res = get(
+            app.clone(),
+            "/api/v1/search?q=secret%20needle",
+            Some(&tok),
+            None,
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         let j = body_json(res).await;
         let arr = j.as_array().expect("bare array of hits");
         assert_eq!(arr.len(), 1);
         // Element keys EXACTLY the MCP Hit shape (D-08/D-10).
-        let mut keys: Vec<&str> = arr[0].as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = arr[0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort();
         assert_eq!(keys, vec!["line", "path", "slug", "snippet"]);
         assert_eq!(arr[0]["slug"], "sc1");
@@ -994,4 +1102,111 @@ mod tests {
         assert_eq!(body_json(res).await["code"], "not_found");
     }
 
+    // ---- 16-03 task 2: note read — raw markdown + ETag/304 ----
+
+    #[tokio::test]
+    async fn api_note_read_serves_raw_source() {
+        let (app, s, src) = seed_notes_app("readraw", "rr1", &["note.md"]).await;
+        // A raw source-only token AND a decoy in the build output: serving
+        // mdBook output (D-06/B3) would fail both assertions below.
+        let source_bytes = b"{{#include ../secret.md}}\n# Real source\n";
+        std::fs::write(src.join("note.md"), source_bytes).unwrap();
+        std::fs::write(src.join("book/note.md"), b"BUILD OUTPUT LEAK").unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/vaults/rr1/notes/note.md", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()[CONTENT_TYPE], "text/markdown");
+        let etag = res.headers()[axum::http::header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let bytes = body_bytes(res).await;
+        assert_eq!(bytes, source_bytes, "body is the RAW SOURCE bytes");
+        // Quoted strong sha256 wire form, equal to webdav::etag_of (15-01 rule).
+        let inner = etag.trim_matches('"');
+        assert_eq!(inner.len(), 64);
+        assert!(inner
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(etag, crate::webdav::etag_of(&bytes));
+    }
+
+    #[tokio::test]
+    async fn api_note_read_etag_304() {
+        let (app, s, _src) = seed_notes_app("etag304", "e304", &["note.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get_cond(app.clone(), "/api/v1/vaults/e304/notes/note.md", &tok, None).await;
+        let etag = res.headers()[axum::http::header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let res = get_cond(app, "/api/v1/vaults/e304/notes/note.md", &tok, Some(&etag)).await;
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            res.headers()[axum::http::header::ETAG],
+            etag.as_str(),
+            "304 carries the ETag header (RFC 9110 §8.8.1)"
+        );
+        assert!(body_bytes(res).await.is_empty(), "304 has no body");
+    }
+
+    #[tokio::test]
+    async fn api_note_read_if_none_match_star() {
+        let (app, s, _src) = seed_notes_app("etagstar", "estar", &["note.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get_cond(app, "/api/v1/vaults/estar/notes/note.md", &tok, Some("*")).await;
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert!(res.headers().contains_key(axum::http::header::ETAG));
+    }
+
+    #[tokio::test]
+    async fn api_note_read_malformed_if_none_match_400() {
+        let (app, s, _src) = seed_notes_app("etagbad", "ebad", &["note.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        // Weak tag → Malformed → 400 fail-closed, NEVER degraded to 200 (D-12).
+        let res = get_cond(
+            app,
+            "/api/v1/vaults/ebad/notes/note.md",
+            &tok,
+            Some("W/\"x\""),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        let j = body_json(res).await;
+        assert_eq!(j["code"], "precondition_failed");
+    }
+
+    #[tokio::test]
+    async fn api_note_read_refuses_traversal() {
+        let (app, s, src) = seed_notes_app("trav", "trav", &["note.md"]).await;
+        // A real file OUTSIDE the source dir — reading it would prove escape.
+        std::fs::write(src.parent().unwrap().join("secret.md"), b"outside").unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+        for path in ["../secret.md", "%2e%2e%2fsecret.md"] {
+            let res = get(
+                app.clone(),
+                &format!("/api/v1/vaults/trav/notes/{path}"),
+                Some(&tok),
+                None,
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path} → 404");
+            assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+            assert_eq!(body_json(res).await["code"], "not_found");
+        }
+    }
+
+    #[tokio::test]
+    async fn api_note_invisible_vault_404() {
+        let (app, s) = share_app("visread", "vr1", "reader").await;
+        s.create_user("stranger@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        let tok = mint_token(&s, "stranger@api.test").await;
+        let res = get(app, "/api/v1/vaults/vr1/notes/note.md", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "hidden share → 404");
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        assert_eq!(body_json(res).await["code"], "not_found");
+    }
 }
