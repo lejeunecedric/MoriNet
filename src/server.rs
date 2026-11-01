@@ -40,6 +40,13 @@ pub struct AppState {
     /// the tokio Mutex inside is what spans the async check→write section.
     pub vault_locks:
         std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Phase 16 (API-06, D-13): per-token fixed-window API rate limiter —
+    /// `(count, window_start_unix_secs)` keyed by the SHA-256 hex of the
+    /// plaintext bearer token (NEVER the plaintext itself, B2). Like
+    /// [`AppState::vault_locks`], the std Mutex guards ONLY the map: the
+    /// check in `api::api_rate_check` is fully synchronous and is never
+    /// held across an await.
+    pub api_rate: std::sync::Mutex<std::collections::HashMap<String, (u32, u64)>>,
 }
 
 /// Get-or-insert the per-vault write lock for a source dir (see
@@ -170,6 +177,7 @@ pub fn build_router_with_email(
         store,
         email,
         vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        api_rate: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Public routes.
@@ -3944,6 +3952,7 @@ mod tests {
             store,
             email,
             vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            api_rate: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
         (
             build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),
@@ -3975,6 +3984,7 @@ mod tests {
             store,
             email: sender.clone(),
             vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            api_rate: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
         (
             build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),
@@ -6787,6 +6797,7 @@ mod tests {
             store,
             email: Arc::new(InMemorySender::new()),
             vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            api_rate: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
         (
             build_router_with_email(state.cfg.clone(), state.store.clone(), state.email.clone()),

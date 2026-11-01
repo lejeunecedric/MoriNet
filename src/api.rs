@@ -184,6 +184,54 @@ fn problem_title(code: &str) -> String {
         .join(" ")
 }
 
+// ---- 16-04: per-token fixed-window rate limiter (API-06, D-13) ----
+
+/// D-13: 120 requests per 60-second fixed window per API token, every
+/// authenticated `/api/v1` endpoint counting equally (decision 6a).
+const API_RATE_LIMIT: u32 = 120;
+const API_RATE_WINDOW_SECS: u64 = 60;
+
+/// Lowercase hex SHA-256 of the plaintext bearer token — the ONLY form of
+/// the token the limiter map ever sees (B2: plaintext is consumed into the
+/// hash and dropped; never a map key, never logged, never in a response).
+/// Same one-hash idiom as `webdav::etag_of` / `server::token_hash`.
+fn token_key(plain: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(plain.as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// Fixed-window check: prune fully-expired windows (memory bound — the map
+/// only ever holds tokens active in the last window), get-or-insert this
+/// key's window, increment, and answer `Ok(())` under the limit or
+/// `Err(retry_after_secs)` over it. `now` is injected so unit tests control
+/// the clock. Purely synchronous: the std Mutex is acquired and released
+/// here, never held across an await (vault_locks contract, server.rs).
+fn api_rate_check(
+    map: &std::sync::Mutex<std::collections::HashMap<String, (u32, u64)>>,
+    key: &str,
+    now: u64,
+) -> Result<(), u64> {
+    let mut map = map
+        .lock()
+        .expect("api_rate map mutex poisoned");
+    map.retain(|_, (_, start)| *start + API_RATE_WINDOW_SECS >= now);
+    let (count, start) = map.entry(key.to_string()).or_insert((0, now));
+    if now - *start >= API_RATE_WINDOW_SECS {
+        *count = 1;
+        *start = now;
+    } else {
+        *count += 1;
+    }
+    if *count > API_RATE_LIMIT {
+        // elapsed < window here, so retry_after is in 1..=60.
+        Err(API_RATE_WINDOW_SECS - (now - *start))
+    } else {
+        Ok(())
+    }
+}
+
 /// Bearer-only gate for `/api/v1` (D-01). Reads ONLY the AUTHORIZATION
 /// header — session cookies are structurally never consulted, so a browser
 /// session can never authenticate the API (Avoids B4). The resolved `User`
@@ -1208,5 +1256,90 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND, "hidden share → 404");
         assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
         assert_eq!(body_json(res).await["code"], "not_found");
+    }
+
+    // ---- 16-04: per-token fixed-window rate limiter (API-06, D-13) ----
+
+    fn rate_map() -> std::sync::Mutex<std::collections::HashMap<String, (u32, u64)>> {
+        std::sync::Mutex::new(std::collections::HashMap::new())
+    }
+
+    #[test]
+    fn rate_limiter_allows_120_blocks_121() {
+        let map = rate_map();
+        for i in 1..=120 {
+            assert_eq!(
+                api_rate_check(&map, "k", 1000),
+                Ok(()),
+                "request {i} must be allowed"
+            );
+        }
+        assert!(
+            api_rate_check(&map, "k", 1000).is_err(),
+            "request 121 in the same window must be blocked"
+        );
+    }
+
+    #[test]
+    fn rate_limiter_window_resets_after_60s() {
+        let map = rate_map();
+        for _ in 0..120 {
+            assert_eq!(api_rate_check(&map, "k", 0), Ok(()));
+        }
+        assert!(api_rate_check(&map, "k", 0).is_err(), "121st at t=0 blocked");
+        // Exactly one full window later the budget is fresh again.
+        assert_eq!(api_rate_check(&map, "k", 60), Ok(()));
+    }
+
+    #[test]
+    fn rate_limiter_retry_after_counts_down() {
+        let map = rate_map();
+        for _ in 0..120 {
+            assert_eq!(api_rate_check(&map, "k", 0), Ok(()));
+        }
+        // 121st at t=10 → 60 - 10 = 50 seconds left in the window.
+        assert_eq!(api_rate_check(&map, "k", 10), Err(50));
+        assert_eq!(api_rate_check(&map, "k", 59), Err(1));
+    }
+
+    #[test]
+    fn rate_limiter_tokens_independent() {
+        let map = rate_map();
+        for _ in 0..120 {
+            assert_eq!(api_rate_check(&map, "token-a", 0), Ok(()));
+        }
+        assert!(api_rate_check(&map, "token-a", 0).is_err());
+        assert_eq!(
+            api_rate_check(&map, "token-b", 0),
+            Ok(()),
+            "a different token has its own budget"
+        );
+    }
+
+    #[test]
+    fn rate_limiter_prunes_expired_windows() {
+        let map = rate_map();
+        // Fake stale entries: windows fully expired (> 60 s old).
+        map.lock().unwrap().insert("stale1".into(), (120, 0));
+        map.lock().unwrap().insert("stale2".into(), (7, 39));
+        map.lock().unwrap().insert("fresh".into(), (1, 100));
+        assert_eq!(api_rate_check(&map, "live", 100), Ok(()));
+        let m = map.lock().unwrap();
+        assert!(!m.contains_key("stale1"), "expired window must be pruned");
+        assert!(!m.contains_key("stale2"), "expired window must be pruned");
+        assert!(m.contains_key("fresh"), "live window must survive");
+        assert!(m.contains_key("live"));
+    }
+
+    #[test]
+    fn rate_limiter_key_is_token_hash_not_plaintext() {
+        let k = token_key("x");
+        assert_eq!(k.len(), 64, "SHA-256 hex is 64 chars");
+        assert!(
+            k.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "key must be lowercase hex"
+        );
+        assert_ne!(k, "x", "plaintext must never be the key (B2)");
+        assert_ne!(token_key("token-one"), token_key("token-two"));
     }
 }
