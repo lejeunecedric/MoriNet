@@ -624,8 +624,8 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
   <div class="field field-wide"><label for="lv-url">GitHub URL</label><input id="lv-url" type="url" name="url" required placeholder="https://github.com/owner/repo"></div>
   <div class="field"><label for="lv-token">Token <small>(optional)</small></label><input id="lv-token" type="text" name="token" placeholder="private repos only"></div>
   <button type="submit">Load vault</button>
+  <button type="button" id="load-local-btn">Load local</button><input id="local-files" type="file" webkitdirectory multiple hidden><span id="up-count" class="empty"></span>
 </form>
-<div class="field field-wide"><label for="local-files">Local folder</label><button type="button" id="load-local-btn">Load local</button><input id="local-files" type="file" webkitdirectory multiple hidden><span id="up-count" class="empty"></span></div>
 <div id="upload-status"></div>
 {autofill}{upload}{locked}
 </section>
