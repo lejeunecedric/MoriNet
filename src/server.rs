@@ -130,7 +130,7 @@ async fn nav_page(state: &SharedState, claims: &Claims, title: &str, body: &str)
     Html(html).into_response()
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock after epoch")

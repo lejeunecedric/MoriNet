@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, ETAG, WWW_AUTHENTICATE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, ETAG, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -213,9 +213,7 @@ fn api_rate_check(
     key: &str,
     now: u64,
 ) -> Result<(), u64> {
-    let mut map = map
-        .lock()
-        .expect("api_rate map mutex poisoned");
+    let mut map = map.lock().expect("api_rate map mutex poisoned");
     map.retain(|_, (_, start)| *start + API_RATE_WINDOW_SECS >= now);
     let (count, start) = map.entry(key.to_string()).or_insert((0, now));
     if now - *start >= API_RATE_WINDOW_SECS {
@@ -249,22 +247,45 @@ async fn require_api_bearer(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|s| s.trim().to_string());
-    let user = match bearer {
-        Some(token) => state.store.user_for_api_token(&token).await.ok().flatten(),
-        None => None,
+    let Some(token) = bearer else {
+        return api_unauthorized();
     };
-    let Some(user) = user else {
+    let Some(user) = state.store.user_for_api_token(&token).await.ok().flatten() else {
+        return api_unauthorized();
+    };
+    // 16-04 (API-06, D-13): per-token fixed-window limiter, enforced AFTER
+    // successful token resolution — unauthenticated floods cost one indexed
+    // query and never touch the map — and BEFORE the handler, so every
+    // endpoint counts equally (decision 6a). The plaintext is consumed into
+    // the hash and dropped here (B2); the check is fully synchronous, so the
+    // std Mutex is never held across an await.
+    let key = token_key(&token);
+    drop(token);
+    if let Err(retry_after) = api_rate_check(&state.api_rate, &key, crate::server::unix_now()) {
         let mut res = problem(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "a valid Bearer API token is required (create one on /account)",
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "rate limit exceeded: 120 requests per minute per token",
         );
         res.headers_mut()
-            .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+            .insert(RETRY_AFTER, HeaderValue::from(retry_after));
         return res;
-    };
+    }
     req.extensions_mut().insert(user);
     next.run(req).await
+}
+
+/// The middleware's 401: closed-vocabulary `unauthorized` problem + the
+/// `WWW-Authenticate: Bearer` hint (16-02 shape, unchanged).
+fn api_unauthorized() -> Response {
+    let mut res = problem(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "a valid Bearer API token is required (create one on /account)",
+    );
+    res.headers_mut()
+        .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    res
 }
 
 /// `ANY /api/v1/{*rest}` catch-all for unknown API paths: one uniform
@@ -1286,7 +1307,10 @@ mod tests {
         for _ in 0..120 {
             assert_eq!(api_rate_check(&map, "k", 0), Ok(()));
         }
-        assert!(api_rate_check(&map, "k", 0).is_err(), "121st at t=0 blocked");
+        assert!(
+            api_rate_check(&map, "k", 0).is_err(),
+            "121st at t=0 blocked"
+        );
         // Exactly one full window later the budget is fresh again.
         assert_eq!(api_rate_check(&map, "k", 60), Ok(()));
     }
@@ -1336,10 +1360,89 @@ mod tests {
         let k = token_key("x");
         assert_eq!(k.len(), 64, "SHA-256 hex is 64 chars");
         assert!(
-            k.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            k.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
             "key must be lowercase hex"
         );
         assert_ne!(k, "x", "plaintext must never be the key (B2)");
         assert_ne!(token_key("token-one"), token_key("token-two"));
+    }
+
+    // ---- 16-04 task 2: middleware enforcement, 429 + Retry-After ----
+
+    #[tokio::test]
+    async fn api_rate_limit_returns_429_with_retry_after() {
+        let (app, s) = api_app().await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        for i in 1..=120 {
+            let res = get(app.clone(), "/api/v1/vaults", Some(&tok), None).await;
+            assert_eq!(res.status(), StatusCode::OK, "request {i} within budget");
+        }
+        let res = get(app.clone(), "/api/v1/vaults", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            res.headers()[CONTENT_TYPE],
+            "application/problem+json",
+            "429 body is RFC 9457 problem+json (D-03)"
+        );
+        let ra = res
+            .headers()
+            .get("retry-after")
+            .expect("Retry-After header present")
+            .to_str()
+            .unwrap()
+            .parse::<u64>()
+            .expect("Retry-After is integer seconds");
+        let j = body_json(res).await;
+        assert_eq!(j["code"], "rate_limited");
+        assert!((1..=60).contains(&ra), "Retry-After {ra} in 1..=60");
+    }
+
+    #[tokio::test]
+    async fn api_rate_limit_is_per_token() {
+        let (app, s) = api_app().await;
+        let tok_a = mint_token(&s, "admin@api.test").await;
+        let tok_b = mint_token(&s, "admin@api.test").await;
+        for _ in 0..121 {
+            let res = get(app.clone(), "/api/v1/vaults", Some(&tok_a), None).await;
+            let _ = res.status(); // budget burned regardless of outcome
+        }
+        let res = get(app.clone(), "/api/v1/vaults", Some(&tok_a), None).await;
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS, "A exhausted");
+        let res = get(app.clone(), "/api/v1/vaults", Some(&tok_b), None).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "fresh token B has its own budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_rate_limit_counts_all_endpoints() {
+        let (app, s) = api_app().await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        // Mixed endpoints, all inside budget → all 200 (decision 6a).
+        let mix = [
+            "/api/v1",
+            "/api/v1/vaults",
+            "/api/v1/search?q=x",
+            "/api/v1/nope", // catch-all 404 still counts as a request
+        ];
+        for i in 0..119 {
+            let res = get(app.clone(), mix[i % mix.len()], Some(&tok), None).await;
+            assert!(
+                res.status() == StatusCode::OK || res.status() == StatusCode::NOT_FOUND,
+                "request {i} must not be rate limited"
+            );
+        }
+        // 120th on any endpoint → still allowed; 121st → 429 regardless of endpoint.
+        let res = get(app.clone(), "/api/v1", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = get(app.clone(), "/api/v1/vaults", Some(&tok), None).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "budget is shared across endpoints"
+        );
     }
 }
