@@ -507,7 +507,11 @@ fn vault_row(a: &AccessibleVault, can_share: bool) -> String {
     let name = html_escape(&a.vault.name);
     // Shared rows carry no role tag — the action set already encodes the
     // role (Refresh only appears for writers). Only personal rows keep a tag.
-    let tag = if a.personal { " <small>(private)</small>" } else { "" };
+    let tag = if a.personal {
+        " <small>(private)</small>"
+    } else {
+        ""
+    };
     let mut actions = String::new();
     if a.personal {
         // The owner manages their own vault: edit settings, pull upstream
