@@ -7,12 +7,12 @@
 
 use std::path::{Path, PathBuf};
 
-use axum::extract::{Request, State};
+use axum::extract::{Extension, Request, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::any;
+use axum::routing::{any, get};
 use axum::{Json, Router};
 
 use crate::server::SharedState;
@@ -200,12 +200,7 @@ async fn require_api_bearer(
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|s| s.trim().to_string());
     let user = match bearer {
-        Some(token) => state
-            .store
-            .user_for_api_token(&token)
-            .await
-            .ok()
-            .flatten(),
+        Some(token) => state.store.user_for_api_token(&token).await.ok().flatten(),
         None => None,
     };
     let Some(user) = user else {
@@ -225,11 +220,38 @@ async fn require_api_bearer(
 /// `ANY /api/v1/{*rest}` catch-all for unknown API paths: one uniform
 /// `not_found` problem instead of axum's bare-status default 404 (D-03).
 async fn api_not_found() -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        "not_found",
-        "no such API endpoint",
-    )
+    problem(StatusCode::NOT_FOUND, "not_found", "no such API endpoint")
+}
+
+/// `GET /api/v1` — JSON index of the surface + auth hint (D-14). Static
+/// content, no state needed; bare object, no envelope (D-08 style).
+async fn api_index() -> Response {
+    Json(serde_json::json!({
+        "endpoints": {
+            "/api/v1/vaults": "List every vault you can access (slug, name, scope, role).",
+            "/api/v1/vaults/{slug}/notes": "List note paths in one vault, sorted, cursor-paginated.",
+            "/api/v1/vaults/{slug}/notes/{path}": "Read one note as raw markdown (ETag / If-None-Match).",
+            "/api/v1/search": "Search note contents across your vaults (?q=, optional &slug=).",
+            "/api/v1/docs": "Human-readable API docs (public — served without a token)."
+        },
+        "auth": "Send 'Authorization: Bearer <token>' — create a token on /account."
+    }))
+    .into_response()
+}
+
+/// `GET /api/v1/vaults` — the caller's accessible vaults as a BARE array
+/// with the MCP field names (API-02, D-08): exactly slug/name/scope/role,
+/// no `{"data": ...}` envelope. Empty array for a user with no grants.
+async fn api_vaults(
+    State(state): State<SharedState>,
+    Extension(user): Extension<User>,
+) -> Response {
+    let vaults: Vec<serde_json::Value> = accessible_vault_entries(&state.store, &user.email)
+        .await
+        .iter()
+        .map(vault_json)
+        .collect();
+    Json(vaults).into_response()
 }
 
 /// The `/api/v1` group (API-01): a standalone merged router with its own
@@ -241,6 +263,8 @@ async fn api_not_found() -> Response {
 /// everything inside the single `route_layer` below.
 pub fn router(state: &SharedState) -> Router {
     Router::new()
+        .route("/api/v1", get(api_index))
+        .route("/api/v1/vaults", get(api_vaults))
         // Registered BEFORE route_layer so it sits INSIDE the Bearer group:
         // unknown paths answer 401 without a token, 404 problem+json with
         // one. NEVER Router::fallback — a merged router's fallback becomes
@@ -416,11 +440,7 @@ mod tests {
     async fn api_app() -> (axum::Router, Store) {
         let s = store().await;
         s.ensure_admin("admin@api.test", "pw").await.unwrap();
-        let app = build_router_with_email(
-            router_cfg(),
-            s.clone(),
-            Arc::new(InMemorySender::new()),
-        );
+        let app = build_router_with_email(router_cfg(), s.clone(), Arc::new(InMemorySender::new()));
         (app, s)
     }
 
@@ -464,7 +484,8 @@ mod tests {
             "401 body is RFC 9457 problem+json (D-03)"
         );
         assert_eq!(
-            res.headers()[WWW_AUTHENTICATE], "Bearer",
+            res.headers()[WWW_AUTHENTICATE],
+            "Bearer",
             "401 carries the Bearer challenge"
         );
         let j = body_json(res).await;
@@ -496,10 +517,9 @@ mod tests {
             .unwrap()
             .id;
         let (id, plain) = s.create_api_token(uid, "doomed").await.unwrap();
-        // Gate passes on a live token (endpoint returns 200 once 16-02 task 2
-        // lands; here the Bearer-gated catch-all answers 404, never 401).
+        // Live token passes the gate and reaches the endpoint (200).
         let res = get(app.clone(), "/api/v1/vaults", Some(&plain), None).await;
-        assert_ne!(res.status(), StatusCode::UNAUTHORIZED, "live token passes gate");
+        assert_eq!(res.status(), StatusCode::OK, "live token → 200");
 
         s.revoke_api_token(uid, id).await.unwrap();
         let res = get(app, "/api/v1/vaults", Some(&plain), None).await;
@@ -532,10 +552,10 @@ mod tests {
             Some("morinet_session=bogus-cookie-value"),
         )
         .await;
-        assert_ne!(
+        assert_eq!(
             res.status(),
-            StatusCode::UNAUTHORIZED,
-            "Bearer + unrelated cookie passes on the Bearer alone"
+            StatusCode::OK,
+            "Bearer + unrelated cookie succeeds on the Bearer alone"
         );
     }
 
@@ -556,6 +576,90 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "unknown path without token → 401 (catch-all is gated)"
         );
+    }
+
+    /// Owner + sharee with a shared vault (mcp.rs share_fixture pattern):
+    /// returns the full app router + store; the sharee can mint a token.
+    async fn share_app(tag: &str, slug: &str, role: &str) -> (axum::Router, Store) {
+        let s = store().await;
+        s.create_user("owner@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        s.create_user("sharee@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        let src = tmpdir(tag);
+        std::fs::write(src.join("note.md"), "# Shared\nsecret needle content").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        s.seed_vault(slug, "Shared vault", &src.join("book"))
+            .await
+            .unwrap();
+        s.share_vault(slug, "sharee@api.test", role).await.unwrap();
+        let app = build_router_with_email(router_cfg(), s.clone(), Arc::new(InMemorySender::new()));
+        (app, s)
+    }
+
+    #[tokio::test]
+    async fn api_index_lists_endpoints() {
+        let (app, s) = api_app().await;
+        let plain = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1", Some(&plain), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        let text = j.to_string();
+        for path in [
+            "/api/v1/vaults",
+            "/api/v1/vaults/{slug}/notes",
+            "/api/v1/vaults/{slug}/notes/{path}",
+            "/api/v1/search",
+            "/api/v1/docs",
+        ] {
+            assert!(text.contains(path), "index lists {path}: {text}");
+        }
+        let auth = j["auth"].as_str().expect("auth hint string");
+        assert!(
+            auth.contains("Bearer") && auth.contains("/account"),
+            "auth hint names Bearer + /account: {auth}"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_vaults_matches_mcp_fields() {
+        let (app, s) = share_app("apifields", "av1", "writer").await;
+        let plain = mint_token(&s, "sharee@api.test").await;
+        let res = get(app, "/api/v1/vaults", Some(&plain), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        // Bare ARRAY — no {"data": ...} envelope (D-08, API-02).
+        let arr = j.as_array().expect("top-level JSON array");
+        let entry = arr
+            .iter()
+            .find(|v| v["slug"] == serde_json::json!("av1"))
+            .expect("shared vault listed");
+        // EXACTLY the MCP field set (D-08): slug/name/scope/role.
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, vec!["name", "role", "scope", "slug"]);
+        assert_eq!(entry["role"], "write", "share role surfaces verbatim");
+        assert_eq!(entry["name"], "Shared vault");
+    }
+
+    #[tokio::test]
+    async fn api_vaults_empty_for_stranger() {
+        let (app, s) = api_app().await;
+        s.create_user("stranger@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        let plain = mint_token(&s, "stranger@api.test").await;
+        let res = get(app, "/api/v1/vaults", Some(&plain), None).await;
+        // 200 + empty array, never 403/404 (API-02).
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await, serde_json::json!([]));
     }
 
     #[tokio::test]
