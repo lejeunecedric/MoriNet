@@ -7,13 +7,15 @@
 
 use std::path::{Path, PathBuf};
 
-use axum::extract::{Extension, Request, State};
+use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::{Json, Router};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 
 use crate::server::SharedState;
 use crate::store::{AccessibleVault, Store, User};
@@ -254,6 +256,134 @@ async fn api_vaults(
     Json(vaults).into_response()
 }
 
+// ---- 16-03: notes list (cursor), search, note read (ETag/304) ----
+
+/// D-09: `?limit=` default 50, hard cap 200 (silent clamp — kills
+/// DoS-via-limit without a distinguishable error).
+const NOTES_LIMIT_DEFAULT: u32 = 50;
+const NOTES_LIMIT_MAX: u32 = 200;
+
+/// Query DTO for the notes list (BrowseQuery pattern, server.rs:1820).
+/// `limit` is kept as a raw string so an unparseable value answers a
+/// problem+json `invalid_request` instead of axum's bare Query-rejection 400.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct ListQuery {
+    pub(crate) limit: Option<String>,
+    pub(crate) cursor: Option<String>,
+}
+
+/// Query DTO for search: `q` required (validated in-handler so a missing
+/// one is a problem+json, not an extractor rejection); `vault` optional.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct SearchQuery {
+    pub(crate) q: Option<String>,
+    pub(crate) vault: Option<String>,
+}
+
+/// `GET /api/v1/vaults/{slug}/notes` — sorted note paths with opaque
+/// cursor pagination (D-09). Cursor is URL_SAFE_NO_PAD base64 of the last
+/// path returned (session.rs precedent); decode failure fails closed to
+/// 400 `invalid_request`. Invisible vault / missing folder → 404 (D-02).
+async fn api_list_notes(
+    State(state): State<SharedState>,
+    Extension(user): Extension<User>,
+    AxumPath(slug): AxumPath<String>,
+    Query(q): Query<ListQuery>,
+) -> Response {
+    let paths = match list_notes(&state.store, &user.email, &slug, None).await {
+        Ok(p) => p,
+        Err(ApiReadError::NotFound) | Err(ApiReadError::NoSuchFolder) => {
+            return problem(StatusCode::NOT_FOUND, "not_found", "vault not found")
+        }
+        Err(_) => return problem(StatusCode::BAD_REQUEST, "invalid_request", "invalid list request"),
+    };
+    let limit = match q.limit.as_deref() {
+        None => NOTES_LIMIT_DEFAULT,
+        Some(raw) => match raw.parse::<u32>() {
+            Ok(0) | Err(_) => {
+                return problem(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "limit must be a positive integer",
+                )
+            }
+            Ok(n) => n.min(NOTES_LIMIT_MAX),
+        },
+    };
+    // Fail closed: an undecodable/non-UTF-8 cursor is a 400, same spirit as
+    // Precondition::Malformed — never silently treated as "no cursor".
+    let cursor = match q.cursor.as_deref() {
+        None => None,
+        Some(c) => match URL_SAFE_NO_PAD
+            .decode(c)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+        {
+            Some(s) => Some(s),
+            None => {
+                return problem(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid cursor",
+                )
+            }
+        },
+    };
+    // list_notes output is sorted — skip everything <= cursor, take limit+1
+    // to learn whether a next page exists.
+    let start = match &cursor {
+        Some(c) => paths.partition_point(|p| p <= c),
+        None => 0,
+    };
+    let remaining = &paths[start..];
+    let has_more = remaining.len() > limit as usize;
+    let page = &remaining[..(limit as usize).min(remaining.len())];
+    let next_cursor = if has_more {
+        Some(URL_SAFE_NO_PAD.encode(
+            page.last()
+                .expect("page non-empty when has_more")
+                .as_bytes(),
+        ))
+    } else {
+        None
+    };
+    Json(serde_json::json!({
+        "notes": page,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    }))
+    .into_response()
+}
+
+/// `GET /api/v1/search?q=[&vault=slug]` — MCP Hit-shaped hits (bare array,
+/// D-08), top 50 via `search_md`'s cap (D-10), scoped to the caller's
+/// accessible vaults. Invisible `vault=` slug → 404, never 403 (D-02).
+async fn api_search(
+    State(state): State<SharedState>,
+    Extension(user): Extension<User>,
+    Query(q): Query<SearchQuery>,
+) -> Response {
+    let query = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let Some(query) = query else {
+        return problem(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "q query parameter is required",
+        );
+    };
+    match search_notes(&state.store, &user.email, query, q.vault.as_deref()).await {
+        Ok(hits) => Json(hits).into_response(),
+        Err(ApiReadError::NotFound) => {
+            problem(StatusCode::NOT_FOUND, "not_found", "vault not found")
+        }
+        Err(_) => problem(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "invalid search request",
+        ),
+    }
+}
+
 /// The `/api/v1` group (API-01): a standalone merged router with its own
 /// Bearer `route_layer` — NEVER inside the `protected` group, so
 /// `require_session` cookies can never authenticate it (D-01 / Avoids B4).
@@ -265,6 +395,8 @@ pub fn router(state: &SharedState) -> Router {
     Router::new()
         .route("/api/v1", get(api_index))
         .route("/api/v1/vaults", get(api_vaults))
+        .route("/api/v1/vaults/{slug}/notes", get(api_list_notes))
+        .route("/api/v1/search", get(api_search))
         // Registered BEFORE route_layer so it sits INSIDE the Bearer group:
         // unknown paths answer 401 without a token, 404 problem+json with
         // one. NEVER Router::fallback — a merged router's fallback becomes
@@ -676,4 +808,190 @@ mod tests {
         assert_eq!(obj["slug"].as_str().unwrap(), "vj1");
         assert_eq!(obj["name"].as_str().unwrap(), "API vault");
     }
+
+    // ---- 16-03 task 1: notes list cursor pagination + search ----
+
+    /// Admin-owned vault seeded with `files` (relative paths under the
+    /// source dir); returns app + store + source dir.
+    async fn seed_notes_app(
+        tag: &str,
+        slug: &str,
+        files: &[&str],
+    ) -> (axum::Router, Store, PathBuf) {
+        let s = store().await;
+        s.ensure_admin("admin@api.test", "pw").await.unwrap();
+        let src = tmpdir(tag);
+        for f in files {
+            let p = src.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, format!("# {f}\ncontent of {f}")).unwrap();
+        }
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        s.seed_vault(slug, "Notes vault", &src.join("book"))
+            .await
+            .unwrap();
+        let app =
+            build_router_with_email(router_cfg(), s.clone(), Arc::new(InMemorySender::new()));
+        (app, s, src)
+    }
+
+    #[tokio::test]
+    async fn api_notes_pagination_round_trip() {
+        let (app, s, _src) = seed_notes_app("pg1", "pg1", &["a.md", "b.md", "c.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app.clone(), "/api/v1/vaults/pg1/notes?limit=2", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        assert_eq!(j["notes"], serde_json::json!(["a.md", "b.md"]));
+        assert_eq!(j["has_more"], true);
+        let cur = j["next_cursor"].as_str().expect("next_cursor present").to_string();
+        assert!(
+            !cur.contains('+') && !cur.contains('/') && !cur.contains('='),
+            "cursor must be URL_SAFE_NO_PAD base64: {cur}"
+        );
+        let res = get(
+            app.clone(),
+            &format!("/api/v1/vaults/pg1/notes?limit=2&cursor={cur}"),
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j2 = body_json(res).await;
+        assert_eq!(j2["notes"], serde_json::json!(["c.md"]));
+        assert_eq!(j2["has_more"], false);
+        assert!(j2["next_cursor"].is_null(), "last page has no cursor");
+        // Union of both pages == full list, no duplicates.
+        let mut all: Vec<String> = j["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(j2["notes"].as_array().unwrap().iter())
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        all.sort();
+        assert_eq!(all, vec!["a.md", "b.md", "c.md"]);
+    }
+
+    #[tokio::test]
+    async fn api_notes_limit_default_and_cap() {
+        let files: Vec<String> = (0..201).map(|i| format!("note-{i:03}.md")).collect();
+        let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        let (app, s, _src) = seed_notes_app("pgcap", "pgcap", &refs).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        // Absent limit behaves as 50 (D-09).
+        let res = get(app.clone(), "/api/v1/vaults/pgcap/notes", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        assert_eq!(j["notes"].as_array().unwrap().len(), 50);
+        assert_eq!(j["has_more"], true);
+        // ?limit=500 is silently clamped to 200 (D-09, never a 400).
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/pgcap/notes?limit=500",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        assert_eq!(j["notes"].as_array().unwrap().len(), 200);
+        assert_eq!(j["has_more"], true);
+        // ?limit=0 → 400 problem+json invalid_request.
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/pgcap/notes?limit=0",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        assert_eq!(body_json(res).await["code"], "invalid_request");
+        // Unparseable limit → same 400 invalid_request problem.
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/pgcap/notes?limit=abc",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        assert_eq!(body_json(res).await["code"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn api_notes_invalid_cursor_400() {
+        let (app, s, _src) = seed_notes_app("pgbad", "pgbad", &["a.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(
+            app,
+            "/api/v1/vaults/pgbad/notes?cursor=%21%21%21",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad cursor → 400");
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        assert_eq!(body_json(res).await["code"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn api_search_scoped_to_accessible() {
+        let (app, s) = share_app("apiscoped", "sc1", "reader").await;
+        // Sharee finds the needle in the shared vault via GLOBAL q (D-10).
+        let tok = mint_token(&s, "sharee@api.test").await;
+        let res = get(app.clone(), "/api/v1/search?q=secret%20needle", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        let arr = j.as_array().expect("bare array of hits");
+        assert_eq!(arr.len(), 1);
+        // Element keys EXACTLY the MCP Hit shape (D-08/D-10).
+        let mut keys: Vec<&str> = arr[0].as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["line", "path", "slug", "snippet"]);
+        assert_eq!(arr[0]["slug"], "sc1");
+        assert_eq!(arr[0]["path"], "note.md");
+        // Stranger's identical global search returns [].
+        s.create_user("stranger@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        let tok = mint_token(&s, "stranger@api.test").await;
+        let res = get(app, "/api/v1/search?q=secret%20needle", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn api_search_requires_q() {
+        let (app, s) = api_app().await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        for uri in ["/api/v1/search", "/api/v1/search?q="] {
+            let res = get(app.clone(), uri, Some(&tok), None).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{uri} → 400");
+            assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+            assert_eq!(body_json(res).await["code"], "invalid_request");
+        }
+    }
+
+    #[tokio::test]
+    async fn api_invisible_vault_404_not_403() {
+        let (app, s) = share_app("apivis", "vis1", "reader").await;
+        s.create_user("stranger@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        let tok = mint_token(&s, "stranger@api.test").await;
+        // Guessed slug on the notes list → 404 problem+json, never 403 (D-02/B1).
+        let res = get(app.clone(), "/api/v1/vaults/vis1/notes", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        assert_eq!(body_json(res).await["code"], "not_found");
+        // Guessed slug on search ?vault= → same 404 shape.
+        let res = get(app, "/api/v1/search?q=x&vault=vis1", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        assert_eq!(body_json(res).await["code"], "not_found");
+    }
+
 }
