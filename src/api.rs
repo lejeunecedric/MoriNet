@@ -8,11 +8,11 @@
 use std::path::{Path, PathBuf};
 
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, ETAG, RETRY_AFTER, WWW_AUTHENTICATE};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::header::{ALLOW, AUTHORIZATION, CONTENT_TYPE, ETAG, RETRY_AFTER, WWW_AUTHENTICATE};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get};
+use axum::routing::any;
 use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -152,7 +152,8 @@ pub(crate) async fn search_notes(
 /// routes through here so the surface has a single error shape. `code`
 /// comes from the CLOSED vocabulary fixed by the plan: `unauthorized` (401),
 /// `not_found` (404), `invalid_request` (400), `precondition_failed` (400),
-/// `rate_limited` (429), `internal_error` (500) — no other codes exist.
+/// `rate_limited` (429), `method_not_allowed` (405), `internal_error` (500) —
+/// no other codes exist.
 /// `detail` is a fixed human string: NEVER echo the token or vault content
 /// (B2). Nothing here logs anything (B2 grep gate).
 pub(crate) fn problem(status: StatusCode, code: &str, detail: &str) -> Response {
@@ -216,7 +217,7 @@ fn api_rate_check(
     let mut map = map.lock().expect("api_rate map mutex poisoned");
     map.retain(|_, (_, start)| *start + API_RATE_WINDOW_SECS >= now);
     let (count, start) = map.entry(key.to_string()).or_insert((0, now));
-    if now - *start >= API_RATE_WINDOW_SECS {
+    if now.saturating_sub(*start) >= API_RATE_WINDOW_SECS {
         *count = 1;
         *start = now;
     } else {
@@ -224,7 +225,9 @@ fn api_rate_check(
     }
     if *count > API_RATE_LIMIT {
         // elapsed < window here, so retry_after is in 1..=60.
-        Err(API_RATE_WINDOW_SECS - (now - *start))
+        Err(API_RATE_WINDOW_SECS
+            .saturating_sub(now.saturating_sub(*start))
+            .max(1))
     } else {
         Ok(())
     }
@@ -302,7 +305,7 @@ async fn api_index() -> Response {
             "/api/v1/vaults": "List every vault you can access (slug, name, scope, role).",
             "/api/v1/vaults/{slug}/notes": "List note paths in one vault, sorted, cursor-paginated.",
             "/api/v1/vaults/{slug}/notes/{path}": "Read one note as raw markdown (ETag / If-None-Match).",
-            "/api/v1/search": "Search note contents across your vaults (?q=, optional &slug=).",
+            "/api/v1/search": "Search note contents across your vaults (?q=, optional &vault=).",
             "/api/v1/docs": "Human-readable API docs (public — served without a token)."
         },
         "auth": "Send 'Authorization: Bearer <token>' — create a token on /account."
@@ -559,7 +562,8 @@ next page.</p>
 <p>Every error is RFC 9457 <code>application/problem+json</code> with a
 <code>code</code> slug: <code>unauthorized</code>, <code>not_found</code>,
 <code>invalid_request</code>, <code>precondition_failed</code>,
-<code>rate_limited</code>, <code>internal_error</code>. Vaults you cannot see
+<code>rate_limited</code>, <code>method_not_allowed</code>,
+<code>internal_error</code>. Vaults you cannot see
 answer 404 <code>not_found</code> — never 403 — so vault existence is never
 leaked.</p>
 </section>
@@ -571,6 +575,90 @@ leaked.</p>
     crate::server::app_page("REST API", body)
 }
 
+// ---- method guards (16-REVIEW M-02) ----
+//
+// D-03 requires problem+json on EVERY API error, but axum's method router
+// answers a method mismatch on a valid path with a bare 405. Routes are
+// therefore registered with any() and dispatch through these guards.
+// HEAD is accepted, mirroring axum's get() semantics.
+
+fn is_get_or_head(method: &Method) -> bool {
+    *method == Method::GET || *method == Method::HEAD
+}
+
+fn method_not_allowed() -> Response {
+    let mut res = problem(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+        "this endpoint only supports GET",
+    );
+    res.headers_mut()
+        .insert(ALLOW, HeaderValue::from_static("GET, HEAD"));
+    res
+}
+
+async fn index_route(method: Method) -> Response {
+    if !is_get_or_head(&method) {
+        return method_not_allowed();
+    }
+    api_index().await
+}
+
+async fn vaults_route(
+    method: Method,
+    State(state): State<SharedState>,
+    Extension(user): Extension<User>,
+) -> Response {
+    if !is_get_or_head(&method) {
+        return method_not_allowed();
+    }
+    api_vaults(State(state), Extension(user)).await
+}
+
+async fn list_notes_route(
+    method: Method,
+    State(state): State<SharedState>,
+    Extension(user): Extension<User>,
+    AxumPath(slug): AxumPath<String>,
+    Query(q): Query<ListQuery>,
+) -> Response {
+    if !is_get_or_head(&method) {
+        return method_not_allowed();
+    }
+    api_list_notes(State(state), Extension(user), AxumPath(slug), Query(q)).await
+}
+
+async fn read_note_route(
+    method: Method,
+    State(state): State<SharedState>,
+    Extension(user): Extension<User>,
+    AxumPath((slug, path)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_get_or_head(&method) {
+        return method_not_allowed();
+    }
+    api_read_note(
+        State(state),
+        Extension(user),
+        AxumPath((slug, path)),
+        headers,
+    )
+    .await
+}
+
+async fn search_route(
+    method: Method,
+    State(state): State<SharedState>,
+    Extension(user): Extension<User>,
+    Query(q): Query<SearchQuery>,
+) -> Response {
+    if !is_get_or_head(&method) {
+        return method_not_allowed();
+    }
+    api_search(State(state), Extension(user), Query(q)).await
+}
+
 /// The `/api/v1` group (API-01): a standalone merged router with its own
 /// Bearer `route_layer` — NEVER inside the `protected` group, so
 /// `require_session` cookies can never authenticate it (D-01 / Avoids B4).
@@ -580,11 +668,11 @@ leaked.</p>
 /// everything inside the single `route_layer` below.
 pub fn router(state: &SharedState) -> Router {
     Router::new()
-        .route("/api/v1", get(api_index))
-        .route("/api/v1/vaults", get(api_vaults))
-        .route("/api/v1/vaults/{slug}/notes", get(api_list_notes))
-        .route("/api/v1/vaults/{slug}/notes/{*path}", get(api_read_note))
-        .route("/api/v1/search", get(api_search))
+        .route("/api/v1", any(index_route))
+        .route("/api/v1/vaults", any(vaults_route))
+        .route("/api/v1/vaults/{slug}/notes", any(list_notes_route))
+        .route("/api/v1/vaults/{slug}/notes/{*path}", any(read_note_route))
+        .route("/api/v1/search", any(search_route))
         // Registered BEFORE route_layer so it sits INSIDE the Bearer group:
         // unknown paths answer 401 without a token, 404 problem+json with
         // one. NEVER Router::fallback — a merged router's fallback becomes
@@ -1751,5 +1839,74 @@ mod tests {
         let a = body_bytes(get(app.clone(), "/api/v1/docs", None, None).await).await;
         let b = body_bytes(get(app, "/api/v1/docs", None, None).await).await;
         assert_eq!(a, b, "static page: two responses byte-identical");
+    }
+
+    // ---- 16-REVIEW regression tests (M-01, M-02, L-01) ----
+
+    #[tokio::test]
+    async fn api_index_advertises_vault_param_not_slug() {
+        // M-01: the index must advertise the param the code actually reads
+        // (?vault=); advertising &slug= would silently give clients unscoped search.
+        let (app, s) = api_app().await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1", Some(&tok), None).await;
+        let j = body_json(res).await;
+        let search = j["endpoints"]["/api/v1/search"].as_str().unwrap();
+        assert!(
+            search.contains("&vault="),
+            "index must advertise &vault=: {search}"
+        );
+        assert!(
+            !search.contains("&slug="),
+            "index must not advertise &slug=: {search}"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_method_mismatch_is_problem_405() {
+        // M-02: D-03 — a method mismatch on a valid API path must answer
+        // problem+json (with Allow), not axum's bare 405.
+        let (app, s) = api_app().await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/vaults")
+                    .header(AUTHORIZATION, format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            res.headers()[CONTENT_TYPE],
+            "application/problem+json",
+            "405 body is RFC 9457 problem+json (D-03)"
+        );
+        let allow = res
+            .headers()
+            .get("allow")
+            .map(|v| v.to_str().unwrap_or_default().to_string());
+        let j = body_json(res).await;
+        assert_eq!(j["code"], "method_not_allowed");
+        assert_eq!(j["status"], 405);
+        assert!(
+            allow.map(|v| v.contains("GET")).unwrap_or(false),
+            "405 carries Allow per RFC 9110"
+        );
+    }
+
+    #[test]
+    fn rate_limiter_clock_rewind_safe() {
+        // L-01: a backwards system-clock jump must not underflow-panic.
+        let map = std::sync::Mutex::new(std::collections::HashMap::new());
+        assert_eq!(api_rate_check(&map, "k", 1000), Ok(()));
+        assert_eq!(
+            api_rate_check(&map, "k", 900),
+            Ok(()),
+            "clock rewind must not panic"
+        );
     }
 }
