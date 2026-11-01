@@ -267,11 +267,17 @@ pub fn build_router_with_email(
         .route("/mcp", any(mcp_entry))
         .with_state(state.store.clone());
 
+    // REST API (Phase 16): Bearer-only standalone group with its own
+    // route_layer — a SIBLING of `.merge(mcp)`, never inside `protected`
+    // (D-01/B4: require_session cookies must never authenticate /api/v1).
+    let api = crate::api::router(&state);
+
     public
         .merge(protected)
         .merge(admin)
         .merge(webdav)
         .merge(mcp)
+        .merge(api)
 }
 
 /// `ANY /mcp` — MCP StreamableHttp endpoint (Phase 10). Auth is a dedicated

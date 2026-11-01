@@ -7,7 +7,16 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::store::{AccessibleVault, Store};
+use axum::extract::{Request, State};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
+use axum::http::{HeaderValue, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::routing::any;
+use axum::{Json, Router};
+
+use crate::server::SharedState;
+use crate::store::{AccessibleVault, Store, User};
 
 /// Typed reason a read failed. Each transport maps these to its own error
 /// shape: MCP to the legacy strings via [`ApiReadError::mcp_message`], REST
@@ -132,6 +141,116 @@ pub(crate) async fn search_notes(
             .collect(),
     };
     Ok(crate::mcp::search_md(&vaults, query, 50))
+}
+
+// ---- RFC 9457 problem+json + Bearer gate (16-02, D-01/D-03) ----
+
+/// The ONE error constructor for the whole `/api/v1` surface (D-03). Every
+/// error path — middleware 401, unknown route 404, wave-3 400/404/429 —
+/// routes through here so the surface has a single error shape. `code`
+/// comes from the CLOSED vocabulary fixed by the plan: `unauthorized` (401),
+/// `not_found` (404), `invalid_request` (400), `precondition_failed` (400),
+/// `rate_limited` (429), `internal_error` (500) — no other codes exist.
+/// `detail` is a fixed human string: NEVER echo the token or vault content
+/// (B2). Nothing here logs anything (B2 grep gate).
+pub(crate) fn problem(status: StatusCode, code: &str, detail: &str) -> Response {
+    (
+        status,
+        [(CONTENT_TYPE, "application/problem+json")],
+        Json(serde_json::json!({
+            "type": "about:blank",
+            "title": problem_title(code),
+            "status": status.as_u16(),
+            "detail": detail,
+            "code": code,
+        })),
+    )
+        .into_response()
+}
+
+/// RFC 9457 `title` from the code slug: `not_found` → "Not Found".
+fn problem_title(code: &str) -> String {
+    code.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Bearer-only gate for `/api/v1` (D-01). Reads ONLY the AUTHORIZATION
+/// header — session cookies are structurally never consulted, so a browser
+/// session can never authenticate the API (Avoids B4). The resolved `User`
+/// is handed to handlers via request extensions (the `require_dav_auth`
+/// `Claims`-insert pattern, server.rs:350-353); handlers must NOT re-look-up
+/// the token.
+async fn require_api_bearer(
+    State(state): State<SharedState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let bearer = req
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.trim().to_string());
+    let user = match bearer {
+        Some(token) => state
+            .store
+            .user_for_api_token(&token)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let Some(user) = user else {
+        let mut res = problem(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "a valid Bearer API token is required (create one on /account)",
+        );
+        res.headers_mut()
+            .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        return res;
+    };
+    req.extensions_mut().insert(user);
+    next.run(req).await
+}
+
+/// `ANY /api/v1/{*rest}` catch-all for unknown API paths: one uniform
+/// `not_found` problem instead of axum's bare-status default 404 (D-03).
+async fn api_not_found() -> Response {
+    problem(
+        StatusCode::NOT_FOUND,
+        "not_found",
+        "no such API endpoint",
+    )
+}
+
+/// The `/api/v1` group (API-01): a standalone merged router with its own
+/// Bearer `route_layer` — NEVER inside the `protected` group, so
+/// `require_session` cookies can never authenticate it (D-01 / Avoids B4).
+///
+/// Wave 3 appends the note/search endpoint routes BEFORE the catch-all
+/// route (static/param routes win over `{*rest}` in matchit) and keeps
+/// everything inside the single `route_layer` below.
+pub fn router(state: &SharedState) -> Router {
+    Router::new()
+        // Registered BEFORE route_layer so it sits INSIDE the Bearer group:
+        // unknown paths answer 401 without a token, 404 problem+json with
+        // one. NEVER Router::fallback — a merged router's fallback becomes
+        // the whole-app fallback and would change site-wide non-API 404s.
+        .route("/api/v1/{*rest}", any(api_not_found))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_api_bearer,
+        ))
+        .with_state(state.clone())
 }
 
 #[cfg(test)]
@@ -262,6 +381,181 @@ mod tests {
             search_notes(&s, "stranger@api.test", "secret needle", Some("ss1")).await,
             Err(ApiReadError::NotFound)
         ));
+    }
+
+    // ---- router-level harness (16-02: Bearer gate + problem+json) ----
+
+    use crate::config::RuntimeConfig;
+    use crate::email::InMemorySender;
+    use crate::server::build_router_with_email;
+    use axum::body::{to_bytes, Body};
+    use axum::extract::Request;
+    use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, WWW_AUTHENTICATE};
+    use axum::http::StatusCode;
+    use axum::response::Response;
+    use std::sync::Arc;
+    use tower::ServiceExt; // oneshot
+
+    fn router_cfg() -> RuntimeConfig {
+        RuntimeConfig {
+            bind_addr: "127.0.0.1:0".to_string(),
+            base_url: "http://localhost:8080".to_string(),
+            cookie_secret: b"test-secret-0123456789abcdef".to_vec(),
+            cookie_name: "morinet_session".to_string(),
+            admin_email: "admin@api.test".to_string(),
+            admin_password: "pw".to_string(),
+            smtp: Default::default(),
+            data_dir: std::env::temp_dir().join("morinet-api-test-data"),
+            vault_book_dir: None,
+            locked_accounts: Vec::new(),
+        }
+    }
+
+    /// Full app router (same wiring as production) + its store, so tests can
+    /// mint real API tokens against it.
+    async fn api_app() -> (axum::Router, Store) {
+        let s = store().await;
+        s.ensure_admin("admin@api.test", "pw").await.unwrap();
+        let app = build_router_with_email(
+            router_cfg(),
+            s.clone(),
+            Arc::new(InMemorySender::new()),
+        );
+        (app, s)
+    }
+
+    async fn mint_token(s: &Store, email: &str) -> String {
+        let uid = s.verify_login(email, "pw").await.unwrap().unwrap().id;
+        let (_id, plain) = s.create_api_token(uid, "api-test").await.unwrap();
+        plain
+    }
+
+    async fn get(
+        app: axum::Router,
+        uri: &str,
+        bearer: Option<&str>,
+        cookie: Option<&str>,
+    ) -> Response {
+        let mut builder = Request::builder().method("GET").uri(uri);
+        if let Some(b) = bearer {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {b}"));
+        }
+        if let Some(c) = cookie {
+            builder = builder.header(COOKIE, c);
+        }
+        app.oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn body_json(res: Response) -> serde_json::Value {
+        let bytes = to_bytes(res.into_body(), 65536).await.unwrap();
+        serde_json::from_slice(&bytes).expect("JSON body")
+    }
+
+    #[tokio::test]
+    async fn api_requires_bearer() {
+        let (app, _s) = api_app().await;
+        let res = get(app, "/api/v1/vaults", None, None).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no Bearer → 401");
+        assert_eq!(
+            res.headers()[CONTENT_TYPE],
+            "application/problem+json",
+            "401 body is RFC 9457 problem+json (D-03)"
+        );
+        assert_eq!(
+            res.headers()[WWW_AUTHENTICATE], "Bearer",
+            "401 carries the Bearer challenge"
+        );
+        let j = body_json(res).await;
+        assert_eq!(j["type"], "about:blank");
+        assert_eq!(j["code"], "unauthorized");
+        assert_eq!(j["status"], 401);
+        // B2: fixed detail string — never echoes any submitted token.
+        assert_eq!(
+            j["detail"].as_str().unwrap(),
+            "a valid Bearer API token is required (create one on /account)"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_rejects_forged_and_revoked_tokens() {
+        let (app, s) = api_app().await;
+        let res = get(app.clone(), "/api/v1/vaults", Some("mn_forged"), None).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "forged → 401");
+        assert_eq!(
+            res.headers()[CONTENT_TYPE],
+            "application/problem+json",
+            "forged 401 is problem+json too"
+        );
+
+        let uid = s
+            .verify_login("admin@api.test", "pw")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let (id, plain) = s.create_api_token(uid, "doomed").await.unwrap();
+        // Gate passes on a live token (endpoint returns 200 once 16-02 task 2
+        // lands; here the Bearer-gated catch-all answers 404, never 401).
+        let res = get(app.clone(), "/api/v1/vaults", Some(&plain), None).await;
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED, "live token passes gate");
+
+        s.revoke_api_token(uid, id).await.unwrap();
+        let res = get(app, "/api/v1/vaults", Some(&plain), None).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "revoked → 401");
+    }
+
+    #[tokio::test]
+    async fn api_ignores_session_cookie() {
+        // B4 / D-01: cookies can never authenticate the API, and a request
+        // carrying BOTH succeeds on the Bearer alone.
+        let (app, s) = api_app().await;
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults",
+            None,
+            Some("morinet_session=bogus-cookie-value"),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "session cookie alone → 401"
+        );
+
+        let plain = mint_token(&s, "admin@api.test").await;
+        let res = get(
+            app,
+            "/api/v1/vaults",
+            Some(&plain),
+            Some("morinet_session=bogus-cookie-value"),
+        )
+        .await;
+        assert_ne!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "Bearer + unrelated cookie passes on the Bearer alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_unknown_path_is_problem_not_found() {
+        let (app, s) = api_app().await;
+        let plain = mint_token(&s, "admin@api.test").await;
+        let res = get(app.clone(), "/api/v1/nope", Some(&plain), None).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "unknown path → 404");
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        let j = body_json(res).await;
+        assert_eq!(j["code"], "not_found");
+        assert_eq!(j["status"], 404);
+        // The catch-all sits INSIDE the Bearer group: no token → 401, not 404.
+        let res = get(app, "/api/v1/nope", None, None).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "unknown path without token → 401 (catch-all is gated)"
+        );
     }
 
     #[tokio::test]
