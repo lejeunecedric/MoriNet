@@ -1445,4 +1445,221 @@ mod tests {
             "budget is shared across endpoints"
         );
     }
+
+    // ---- 16-05: MCP ACL matrix ported 1:1 to REST (D-07, API-05) ----
+    //
+    // These are the REST ports of the six behavioral tests in `mcp.rs`
+    // `mod tests` (16-PATTERNS §10), named `api_*` to mirror each source
+    // 1:1. The three LOGGING tests (`mcp_denied_call_logs_nothing`,
+    // `mcp_read_note_logs_access`, `mcp_list_and_search_log`) are
+    // DELIBERATELY not ported: REST access logging is skipped in v1 because
+    // migrations/0008_*.sql CHECK-constrains `access_log.source` to
+    // ('web','mcp') and a table-rebuild migration is unjustified for an
+    // unrequired best-effort feature (planner decision, 16-01). The gap is
+    // intentional, not forgotten.
+
+    /// Port of mcp.rs `tools_are_acl_scoped`: a reader with no grants sees
+    /// nothing, and a guessed slug answers 404 problem+json on every read
+    /// endpoint — no existence leak, never 403 (D-02).
+    #[tokio::test]
+    async fn api_tools_are_acl_scoped() {
+        let (app, s) = api_app().await;
+        s.create_user("reader@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        let tok = mint_token(&s, "reader@api.test").await;
+
+        let res = get(app.clone(), "/api/v1/vaults", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(res).await,
+            serde_json::json!([]),
+            "no vaults for a reader with no grants"
+        );
+
+        for (uri, desc) in [
+            ("/api/v1/vaults/secret/notes", "notes list"),
+            ("/api/v1/vaults/secret/notes/note.md", "note read"),
+            ("/api/v1/search?q=x&vault=secret", "scoped search"),
+        ] {
+            let res = get(app.clone(), uri, Some(&tok), None).await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{desc}: {uri} → 404");
+            assert_eq!(
+                res.headers()[CONTENT_TYPE],
+                "application/problem+json",
+                "{desc}: 404 is problem+json"
+            );
+            assert_eq!(
+                body_json(res).await["code"],
+                "not_found",
+                "{desc}: no existence leak, never 403"
+            );
+        }
+    }
+
+    /// Port of mcp.rs `read_note_refuses_traversal_even_with_access`: even
+    /// with full access, `..` traversal (raw and percent-encoded) answers
+    /// 404 and never reads outside the vault source.
+    #[tokio::test]
+    async fn api_read_note_refuses_traversal_even_with_access() {
+        let (app, s, src) = seed_notes_app("mcp-trav", "mtrav", &["note.md"]).await;
+        // A real file OUTSIDE the source dir — serving it would prove escape.
+        std::fs::write(src.parent().unwrap().join("secret.md"), b"outside").unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/mtrav/notes/note.md",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK, "real note reads fine");
+
+        for path in ["../secret.md", "%2e%2e%2fsecret.md"] {
+            let res = get(
+                app.clone(),
+                &format!("/api/v1/vaults/mtrav/notes/{path}"),
+                Some(&tok),
+                None,
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path} refused");
+            assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+            assert_eq!(body_json(res).await["code"], "not_found");
+        }
+    }
+
+    /// Port of mcp.rs `mcp_sharee_sees_shared_vault`: reader and writer
+    /// shares both list (with role read/write), read and list notes via REST.
+    #[tokio::test]
+    async fn api_sharee_sees_shared_vault() {
+        for role in ["reader", "writer"] {
+            let want_role = if role == "writer" { "write" } else { "read" };
+            let (app, s) = share_app(&format!("mcp-share-{role}"), "sh1", role).await;
+            let tok = mint_token(&s, "sharee@api.test").await;
+
+            let res = get(app.clone(), "/api/v1/vaults", Some(&tok), None).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            let j = body_json(res).await;
+            let entry = j
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["slug"] == serde_json::json!("sh1"))
+                .unwrap_or_else(|| panic!("{role} share listed: {j}"));
+            assert_eq!(entry["role"], want_role, "{role} share role {want_role}");
+
+            let res = get(
+                app.clone(),
+                "/api/v1/vaults/sh1/notes/note.md",
+                Some(&tok),
+                None,
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK, "{role} can read");
+            assert!(
+                String::from_utf8_lossy(&body_bytes(res).await).contains("secret needle content"),
+                "{role} reads the shared content"
+            );
+
+            let res = get(app.clone(), "/api/v1/vaults/sh1/notes", Some(&tok), None).await;
+            assert_eq!(res.status(), StatusCode::OK, "{role} can list notes");
+            let j = body_json(res).await;
+            assert!(j["notes"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("note.md")));
+        }
+    }
+
+    /// Port of mcp.rs `mcp_hidden_share_invisible`: after hide_share the
+    /// vault is absent from the list and reads answer 404 problem+json —
+    /// the REST analog of the verbatim MCP string "vault not found or
+    /// access denied" is the `not_found` code slug.
+    #[tokio::test]
+    async fn api_hidden_share_invisible() {
+        let (app, s) = share_app("mcp-share-hidden", "sh2", "reader").await;
+        s.hide_share("sh2", "sharee@api.test").await.unwrap();
+        let tok = mint_token(&s, "sharee@api.test").await;
+
+        let res = get(app.clone(), "/api/v1/vaults", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        assert!(
+            !j.to_string().contains("sh2"),
+            "hidden share absent from /vaults: {j}"
+        );
+
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/sh2/notes/note.md",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+        assert_eq!(body_json(res).await["code"], "not_found");
+    }
+
+    /// Port of mcp.rs `mcp_revoked_share_denied`: access works, `revoke_share`,
+    /// and access is gone immediately on every endpoint.
+    #[tokio::test]
+    async fn api_revoked_share_denied() {
+        let (app, s) = share_app("mcp-share-revoked", "sh3", "reader").await;
+        let tok = mint_token(&s, "sharee@api.test").await;
+
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/sh3/notes/note.md",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK, "access works before revoke");
+
+        s.revoke_share("sh3", "sharee@api.test").await.unwrap();
+
+        for (uri, desc) in [
+            ("/api/v1/vaults/sh3/notes", "notes list"),
+            ("/api/v1/vaults/sh3/notes/note.md", "note read"),
+            ("/api/v1/search?q=x&vault=sh3", "scoped search"),
+        ] {
+            let res = get(app.clone(), uri, Some(&tok), None).await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{desc} gone: {uri}");
+            assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+            assert_eq!(body_json(res).await["code"], "not_found");
+        }
+        let res = get(app.clone(), "/api/v1/vaults", Some(&tok), None).await;
+        let j = body_json(res).await;
+        assert!(
+            !j.to_string().contains("sh3"),
+            "revoked share absent from /vaults: {j}"
+        );
+    }
+
+    /// Port of mcp.rs `mcp_search_finds_notes_in_shared_vault`: global
+    /// search hits the shared vault (D-10 scoping).
+    #[tokio::test]
+    async fn api_search_finds_notes_in_shared_vault() {
+        let (app, s) = share_app("mcp-share-search", "sh4", "reader").await;
+        let tok = mint_token(&s, "sharee@api.test").await;
+        let res = get(
+            app,
+            "/api/v1/search?q=secret%20needle",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        assert!(
+            j.as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["slug"] == serde_json::json!("sh4")),
+            "global search hits the shared vault: {j}"
+        );
+    }
 }
