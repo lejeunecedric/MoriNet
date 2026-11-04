@@ -501,7 +501,7 @@ schemars = "1"
 rpassword = "7"
 ```
 
-`openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "reqwest/rustls-tls"] }`
+`openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }`
 joins this block (D-01: only new dependency). **TLS-stack audit (measured):**
 - `reqwest`: **absent from Cargo.lock today** — openidconnect introduces it. Pin its
   rustls path (`rustls-tls`) so it resolves to the existing single
