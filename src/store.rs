@@ -1554,6 +1554,74 @@ impl Store {
         Ok(r.rows_affected())
     }
 
+    /// SSO email lookup — **the D-12 normalization rule, documented here**:
+    /// SSO email matching normalizes with `trim() + to_ascii_lowercase()` and
+    /// matches via `LOWER(email) = ?`; password login ([`Store::verify_login`],
+    /// `WHERE email = ?`) does exact BINARY matching — a deliberate divergence:
+    /// IdP emails are user-supplied at the IdP and case varies, and
+    /// provisioned emails are stored lowercase. The input is expected to be
+    /// already normalized by the caller (the helper re-applies the rule
+    /// idempotently as defense-in-depth). `LOWER(email)` on the column side
+    /// cannot use an index — a full scan, acceptable at MoriNet scale.
+    /// Returns `(id, email, role)` with the row's email verbatim as stored.
+    pub async fn user_by_email_normalized(
+        &self,
+        email: &str,
+    ) -> anyhow::Result<Option<(i64, String, String)>> {
+        let norm = email.trim().to_ascii_lowercase();
+        let row = sqlx::query("SELECT id, email, role FROM users WHERE LOWER(email) = ?")
+            .bind(&norm)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| {
+            use sqlx::Row;
+            (
+                r.get::<i64, _>("id"),
+                r.get::<String, _>("email"),
+                r.get::<String, _>("role"),
+            )
+        }))
+    }
+
+    /// Create an SSO-provisioned account with an **unguessable** password
+    /// placeholder: bcrypt over a fresh random 2x-uuid-v4 string (128+ hex
+    /// chars), so no human or IdP can ever set or guess a password that
+    /// `verify_login` would accept (ROADMAP criterion 7, T-17-13). The INSERT
+    /// mirrors [`Store::create_user`] including the default plan-group
+    /// auto-join; the role is hard-pinned to `reader` (D-04, T-17-12) —
+    /// provisioning is the only caller. `email` must be pre-normalized
+    /// lowercase (D-12: provisioned emails are STORED lowercase).
+    pub async fn create_user_without_password(
+        &self,
+        email: &str,
+        role: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            role == "reader",
+            "SSO provisioning is reader-only, got {role}"
+        );
+        let placeholder = format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let hash = bcrypt::hash(&placeholder, bcrypt::DEFAULT_COST)?;
+        sqlx::query("INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)")
+            .bind(email)
+            .bind(hash)
+            .bind(role)
+            .execute(&self.pool)
+            .await?;
+        // Same `free` plan-group auto-join as create_user (REQ-GRP-006/007);
+        // a no-op when the builtin groups don't exist (bare test stores).
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id)
+             SELECT g.id, u.id FROM groups g, users u
+             WHERE g.name = 'free' AND u.email = ?
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(email)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // ─── Vault changes log (Phase 13, REQ-CHG-001) ───────────────────────
 
     /// Record one vault file change. Callers treat this as best-effort:
@@ -3773,5 +3841,120 @@ mod identity_tests {
 
         // Idempotent: a second prune deletes nothing.
         assert_eq!(s.prune_auth_events().await.unwrap(), 0);
+    }
+
+    // ---------- Phase 17 / PLAN 17-03 Task 1: normalized lookup + placeholder provisioning ----------
+
+    /// D-12: SSO email matching is case-insensitive via `LOWER(email) = ?` —
+    /// both directions (mixed-case stored / lowercase query and vice versa).
+    #[tokio::test]
+    async fn user_by_email_normalized_matches_case_insensitively() {
+        let s = st().await;
+        s.create_user("User@X.com", "pw", "reader").await.unwrap();
+        // Mixed-case stored row found by the normalized (lowercase) query.
+        let hit = s.user_by_email_normalized("user@x.com").await.unwrap();
+        let (id, email, role) = hit.expect("mixed-case stored row found by lowercase query");
+        assert_eq!(email, "User@X.com", "row returned verbatim as stored");
+        assert_eq!(role, "reader");
+        assert!(id > 0);
+        // Lowercase stored row found by a mixed-case query (LOWER covers both).
+        s.create_user("lower@y.com", "pw", "reader").await.unwrap();
+        assert!(s
+            .user_by_email_normalized("LOWER@Y.COM")
+            .await
+            .unwrap()
+            .is_some());
+        // Unknown email misses.
+        assert!(s
+            .user_by_email_normalized("nobody@x.com")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// Surrounding whitespace never defeats the lookup (helper is idempotent
+    /// over already-normalized input: trim + to_ascii_lowercase again is a no-op).
+    #[tokio::test]
+    async fn user_by_email_normalized_trims() {
+        let s = st().await;
+        s.create_user("trim@x.com", "pw", "reader").await.unwrap();
+        assert!(s
+            .user_by_email_normalized("  trim@x.com  ")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// Provisioned account: role reader + the same `free` plan-group auto-join
+    /// `create_user` performs (PATTERNS §5).
+    #[tokio::test]
+    async fn create_user_without_password_inserts_reader() {
+        let s = st().await;
+        s.ensure_builtin_groups().await.unwrap();
+        s.create_user_without_password("prov@x.com", "reader")
+            .await
+            .unwrap();
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT role FROM users WHERE email = 'prov@x.com'")
+                .fetch_optional(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(row.map(|r| r.0).as_deref(), Some("reader"));
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM group_members m \
+             JOIN groups g ON g.id = m.group_id \
+             JOIN users u ON u.id = m.user_id \
+             WHERE g.name = 'free' AND u.email = 'prov@x.com'",
+        )
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 1, "free plan group auto-joined like create_user");
+    }
+
+    /// Provisioning is reader-only (D-04): any other role is refused and
+    /// creates no row (T-17-12).
+    #[tokio::test]
+    async fn create_user_without_password_rejects_non_reader() {
+        let s = st().await;
+        assert!(s
+            .create_user_without_password("evil@x.com", "admin")
+            .await
+            .is_err());
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE email = 'evil@x.com'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "refused role creates no account");
+    }
+
+    /// The bcrypt placeholder is a random 2x-uuid-v4 string: no human- or
+    /// IdP-guessable password verifies, and two provisions differ (T-17-13).
+    #[tokio::test]
+    async fn create_user_without_password_placeholder_is_unguessable() {
+        let s = st().await;
+        s.create_user_without_password("guess@x.com", "reader")
+            .await
+            .unwrap();
+        for pw in ["", "password", "guess@x.com", "changeme"] {
+            assert!(
+                s.verify_login("guess@x.com", pw).await.unwrap().is_none(),
+                "password login must fail for {pw:?}"
+            );
+        }
+        s.create_user_without_password("guess2@x.com", "reader")
+            .await
+            .unwrap();
+        let (h1,): (String,) =
+            sqlx::query_as("SELECT password_hash FROM users WHERE email = 'guess@x.com'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        let (h2,): (String,) =
+            sqlx::query_as("SELECT password_hash FROM users WHERE email = 'guess2@x.com'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_ne!(h1, h2, "placeholder hashes differ per user");
     }
 }
