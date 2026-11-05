@@ -148,6 +148,11 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
     store.prune_access_log().await?;
     // REQ-CHG-001: same 90-day window, same call site, for the wiki changes log.
     store.prune_vault_changes().await?;
+    // Phase 17 (D-05): same window for the auth audit log — best-effort,
+    // a failed prune must never abort boot.
+    if let Err(e) = store.prune_auth_events().await {
+        eprintln!("warning: prune_auth_events failed: {e}");
+    }
     // REQ-VLT-013: boot-seed the global "MoriNet Documentation" vault.
     // Warning-only: a missing mdbook or a failed build must never abort boot.
     if let Err(e) = morinet::docs_seed::seed_docs_vault(&data_dir, &store).await {

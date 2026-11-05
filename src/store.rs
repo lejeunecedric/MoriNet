@@ -1430,6 +1430,118 @@ impl Store {
         Ok(r.rows_affected())
     }
 
+    // ─── OIDC identities + auth audit (Phase 17, D-11 / D-05) ─────────────
+
+    /// Link an external OIDC identity to a local user. INSERT OR IGNORE:
+    /// `false` means the (provider, iss, sub) triple is already linked —
+    /// UNIQUE(provider, iss, sub) makes a second link a no-op, never a
+    /// duplicate row (T-17-02).
+    pub async fn link_identity(
+        &self,
+        provider: &str,
+        iss: &str,
+        sub: &str,
+        user_id: i64,
+    ) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "INSERT OR IGNORE INTO user_identities (provider, iss, sub, user_id) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(provider)
+        .bind(iss)
+        .bind(sub)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    /// The identity linked to a local user: (provider, iss, sub). `None` for
+    /// password-only accounts (drives the "linked via SSO" indicator, D-13).
+    pub async fn identity_for_user(
+        &self,
+        user_id: i64,
+    ) -> anyhow::Result<Option<(String, String, String)>> {
+        let row =
+            sqlx::query("SELECT provider, iss, sub FROM user_identities WHERE user_id = ? LIMIT 1")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|r| {
+            use sqlx::Row;
+            (
+                r.get::<String, _>("provider"),
+                r.get::<String, _>("iss"),
+                r.get::<String, _>("sub"),
+            )
+        }))
+    }
+
+    /// The local user behind an external identity: (id, email, role). This is
+    /// the authoritative returning-user lookup — email is never the join key
+    /// after first link (D-03).
+    pub async fn user_by_provider_iss_sub(
+        &self,
+        provider: &str,
+        iss: &str,
+        sub: &str,
+    ) -> anyhow::Result<Option<(i64, String, String)>> {
+        let row = sqlx::query(
+            "SELECT u.id, u.email, u.role FROM user_identities i \
+             JOIN users u ON u.id = i.user_id \
+             WHERE i.provider = ? AND i.iss = ? AND i.sub = ? LIMIT 1",
+        )
+        .bind(provider)
+        .bind(iss)
+        .bind(sub)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| {
+            use sqlx::Row;
+            (
+                r.get::<i64, _>("id"),
+                r.get::<String, _>("email"),
+                r.get::<String, _>("role"),
+            )
+        }))
+    }
+
+    /// Record one auth event (link / provision / deny / demote / group_sync).
+    /// Callers treat this as best-effort: errors must be logged and swallowed,
+    /// never propagated into a response (mirrors `log_vault_change`). `kind`
+    /// is CHECK-enforced by migration 0012; rows carry actor + iss + sub +
+    /// short `detail` only — never tokens or codes (T-17-04).
+    pub async fn log_auth_event(
+        &self,
+        kind: &str,
+        actor_email: &str,
+        iss: &str,
+        sub: &str,
+        detail: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO auth_events (kind, actor_email, iss, sub, detail) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(kind)
+        .bind(actor_email)
+        .bind(iss)
+        .bind(sub)
+        .bind(detail)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 90-day retention sweep for `auth_events` (same window and call site as
+    /// `prune_access_log`): delete rows older than 90 days, return the count.
+    pub async fn prune_auth_events(&self) -> anyhow::Result<u64> {
+        let r = sqlx::query("DELETE FROM auth_events WHERE ts < datetime('now', '-90 days')")
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
     // ─── Vault changes log (Phase 13, REQ-CHG-001) ───────────────────────
 
     /// Record one vault file change. Callers treat this as best-effort:
@@ -3422,5 +3534,232 @@ mod vault_changes_tests {
         let capped = s.vault_changes_for_path("vcfp", "a.md", 1).await.unwrap();
         assert_eq!(capped.len(), 1);
         assert_eq!(capped[0].3, "e-new", "limit keeps the newest row");
+    }
+}
+
+// ---------- Phase 17 / PLAN 17-01 Task 3: user_identities + auth_events (D-11) ----------
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use sqlx::Row;
+
+    async fn st() -> Store {
+        Store::connect_memory().await.expect("store")
+    }
+
+    /// Migration 0012 shape: both tables exist with the exact column set,
+    /// `UNIQUE(provider, iss, sub)` is enforced by a unique index, and
+    /// auth_events carries NO token/code column at all (T-17-04).
+    #[tokio::test]
+    async fn user_identities_migration_shape() {
+        let s = st().await;
+
+        let cols: Vec<String> = sqlx::query("PRAGMA table_info(user_identities)")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get::<String, _>("name"))
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                "id".to_string(),
+                "provider".to_string(),
+                "iss".to_string(),
+                "sub".to_string(),
+                "user_id".to_string(),
+                "linked_at".to_string(),
+            ],
+            "user_identities column set is locked (D-11)"
+        );
+
+        let acols: Vec<String> = sqlx::query("PRAGMA table_info(auth_events)")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get::<String, _>("name"))
+            .collect();
+        assert_eq!(
+            acols,
+            vec![
+                "id".to_string(),
+                "ts".to_string(),
+                "kind".to_string(),
+                "actor_email".to_string(),
+                "iss".to_string(),
+                "sub".to_string(),
+                "detail".to_string(),
+            ],
+            "auth_events has no token/code column — never a credential cache (T-17-04)"
+        );
+
+        // A unique index covers exactly (provider, iss, sub) (T-17-02).
+        let mut found = false;
+        for idx in sqlx::query("PRAGMA index_list(user_identities)")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap()
+        {
+            let name: String = idx.get("name");
+            let unique: i64 = idx.get("unique");
+            if unique != 1 {
+                continue;
+            }
+            let cols: Vec<String> = sqlx::query(&format!("PRAGMA index_info('{name}')"))
+                .fetch_all(&s.pool)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.get::<String, _>("name"))
+                .collect();
+            if cols == vec!["provider".to_string(), "iss".to_string(), "sub".to_string()] {
+                found = true;
+            }
+        }
+        assert!(
+            found,
+            "UNIQUE(provider, iss, sub) must exist (D-11, T-17-02)"
+        );
+    }
+
+    /// The kind vocabulary is CHECK-locked; anything else is rejected (D-05:
+    /// every auth event is recorded, and only with a known kind).
+    #[tokio::test]
+    async fn auth_events_check_rejects_unknown_kind() {
+        let s = st().await;
+        let bad = sqlx::query("INSERT INTO auth_events (kind) VALUES ('bogus')")
+            .execute(&s.pool)
+            .await;
+        assert!(bad.is_err(), "kind CHECK must reject 'bogus'");
+        for kind in ["link", "provision", "deny", "demote", "group_sync"] {
+            sqlx::query("INSERT INTO auth_events (kind) VALUES (?)")
+                .bind(kind)
+                .execute(&s.pool)
+                .await
+                .unwrap_or_else(|e| panic!("vocab kind '{kind}' must be accepted: {e}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_link_roundtrip() {
+        let s = st().await;
+        s.create_user("sso-user@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let (uid,): (i64,) =
+            sqlx::query_as("SELECT id FROM users WHERE email = 'sso-user@example.com'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert!(
+            s.link_identity("oidc", "https://idp.example.com/", "sub-42", uid)
+                .await
+                .unwrap(),
+            "first link inserts"
+        );
+        let back = s
+            .user_by_provider_iss_sub("oidc", "https://idp.example.com/", "sub-42")
+            .await
+            .unwrap()
+            .expect("identity resolves to the user");
+        assert_eq!(
+            back,
+            (
+                uid,
+                "sso-user@example.com".to_string(),
+                "reader".to_string()
+            )
+        );
+        let fwd = s
+            .identity_for_user(uid)
+            .await
+            .unwrap()
+            .expect("forward lookup");
+        assert_eq!(
+            fwd,
+            (
+                "oidc".to_string(),
+                "https://idp.example.com/".to_string(),
+                "sub-42".to_string()
+            ),
+            "both directions agree"
+        );
+    }
+
+    /// A second link of the same (provider, iss, sub) is ignored, not an
+    /// error, and never duplicates the row (T-17-02).
+    #[tokio::test]
+    async fn identity_unique_conflict_is_ignored() {
+        let s = st().await;
+        s.create_user("dup@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let (uid,): (i64,) = sqlx::query_as("SELECT id FROM users WHERE email = 'dup@example.com'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert!(
+            s.link_identity("oidc", "iss", "sub", uid).await.unwrap(),
+            "first link true"
+        );
+        assert!(
+            !s.link_identity("oidc", "iss", "sub", uid).await.unwrap(),
+            "duplicate link returns false (INSERT OR IGNORE)"
+        );
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_identities")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "exactly one row");
+    }
+
+    #[tokio::test]
+    async fn identity_for_user_none_when_unlinked() {
+        let s = st().await;
+        s.create_user("plain@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let (uid,): (i64,) =
+            sqlx::query_as("SELECT id FROM users WHERE email = 'plain@example.com'")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert!(
+            s.identity_for_user(uid).await.unwrap().is_none(),
+            "password-only account has no identity row"
+        );
+    }
+
+    /// log_auth_event inserts with defaults; prune_auth_events removes only
+    /// rows beyond the 90-day window (mirrors prune_access_log).
+    #[tokio::test]
+    async fn log_auth_event_and_prune_window() {
+        let s = st().await;
+        s.log_auth_event("link", "a@x.fr", "https://idp/", "sub-1", "admin_match")
+            .await
+            .unwrap();
+        // One row 91 days old — beyond the retention window.
+        sqlx::query(
+            "INSERT INTO auth_events (kind, actor_email, ts) \
+             VALUES ('deny', 'old@x.fr', datetime('now', '-91 days'))",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+        let removed = s.prune_auth_events().await.unwrap();
+        assert_eq!(removed, 1, "only the out-of-window row is pruned");
+
+        let remaining: Vec<(String,)> = sqlx::query_as("SELECT actor_email FROM auth_events")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, vec![("a@x.fr".to_string(),)]);
+
+        // Idempotent: a second prune deletes nothing.
+        assert_eq!(s.prune_auth_events().await.unwrap(), 0);
     }
 }

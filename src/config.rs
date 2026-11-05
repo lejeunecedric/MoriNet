@@ -672,10 +672,8 @@ starttls = true
             ENV_OIDC_CLIENT_SECRET,
             ENV_OIDC_ALLOWED_DOMAINS,
         ];
-        let saved: Vec<(&'static str, Option<String>)> = keys
-            .iter()
-            .map(|k| (*k, std::env::var(k).ok()))
-            .collect();
+        let saved: Vec<(&'static str, Option<String>)> =
+            keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
         for k in keys {
             std::env::remove_var(k);
         }
