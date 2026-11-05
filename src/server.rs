@@ -138,7 +138,7 @@ pub(crate) fn unix_now() -> u64 {
 }
 
 /// Extract cookie values from a `Cookie` header into a name→value map.
-fn parse_cookies(header: &str) -> Option<HashMap<String, String>> {
+pub(crate) fn parse_cookies(header: &str) -> Option<HashMap<String, String>> {
     let mut map = HashMap::new();
     for pair in header.split(';') {
         let pair = pair.trim();
@@ -190,6 +190,10 @@ pub fn build_router_with_email(
         // `/api/v1/{*rest}` catch-all regardless of merge order.
         .route("/api/v1/docs", get(|| async { crate::api::docs_page() }))
         .route("/login", get(login_form).post(login_submit))
+        // Phase 17 (SSO-01): generic OIDC SSO — always registered, the
+        // handlers answer 404 when [oidc] is absent (no gate is touched).
+        .route("/sso/login", get(crate::oidc::sso_login))
+        .route("/sso/callback", get(crate::oidc::sso_callback))
         .route("/reset", get(reset_request_form).post(reset_request_submit))
         .route("/reset/{token}", get(reset_form).post(reset_submit))
         .route(
@@ -3795,7 +3799,7 @@ async fn admin_create_vault(
     }
 }
 
-fn error_page(msg: &str) -> Response {
+pub(crate) fn error_page(msg: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Html(format!(

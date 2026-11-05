@@ -1533,6 +1533,18 @@ impl Store {
         Ok(())
     }
 
+    /// Count `auth_events` rows with the given kind + detail (audit read surface
+    /// used by the SSO tests; never exposes tokens/codes — none are stored).
+    pub async fn count_auth_events(&self, kind: &str, detail: &str) -> anyhow::Result<u64> {
+        let row = sqlx::query("SELECT COUNT(*) FROM auth_events WHERE kind = ? AND detail = ?")
+            .bind(kind)
+            .bind(detail)
+            .fetch_one(&self.pool)
+            .await?;
+        use sqlx::Row;
+        Ok(row.get::<i64, _>(0) as u64)
+    }
+
     /// 90-day retention sweep for `auth_events` (same window and call site as
     /// `prune_access_log`): delete rows older than 90 days, return the count.
     pub async fn prune_auth_events(&self) -> anyhow::Result<u64> {
