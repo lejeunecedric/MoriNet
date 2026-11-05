@@ -5,8 +5,9 @@
 //! minted with the existing [`SessionCodec`], TTL 600 s) — no server-side
 //! state table. The success path ends byte-identical to `login_submit`
 //! (D-02): same HMAC session cookie, same attributes, so every downstream
-//! gate stays untouched. Identity linking/provisioning is wave 3: an unknown
-//! `(iss, sub)` refuses fail-closed here.
+//! gate stays untouched. Identity resolution (wave 3): `(iss, sub)` is the
+//! authoritative key; first logins auto-link on verified email (readers
+//! only) or auto-provision on an allowed domain — fail-closed everywhere.
 
 use axum::extract::{Query, State};
 use axum::http::header::{COOKIE, LOCATION, SET_COOKIE};
@@ -22,12 +23,14 @@ use serde::Deserialize;
 use subtle::ConstantTimeEq;
 
 use crate::server::{error_page, parse_cookies, unix_now, SharedState};
-use crate::session::DEFAULT_TTL_SECS;
 
 /// Short-lived cookie carrying `state\nnonce\ncode_verifier` (signed SessionCodec payload).
 const SSO_STATE_COOKIE: &str = "morinet_sso_state";
 /// Replay window for the in-flight authorization (planner decision, PATTERNS §11).
 const SSO_STATE_TTL_SECS: u64 = 600;
+/// Identity provider key in `user_identities` — single-IdP v1; the column is
+/// ready for future providers (D-11).
+const OIDC_PROVIDER: &str = "oidc";
 
 fn random_token() -> String {
     // 64 hex chars: valid PKCE verifier length (43..=128) as well as state/nonce.
@@ -182,9 +185,9 @@ pub(crate) async fn sso_callback(
     };
 
     // Token exchange + ID-token validation (discovery + JWKS, iss/aud/nonce/exp).
-    let sub =
+    let claims =
         match exchange_and_verify(&state, oidc, &code, &expected_verifier, &expected_nonce).await {
-            Ok(sub) => sub,
+            Ok(claims) => claims,
             Err(detail) => {
                 let mut r = deny(&state, &iss, "", &detail).await;
                 r.headers_mut()
@@ -192,18 +195,17 @@ pub(crate) async fn sso_callback(
                 return r;
             }
         };
-    // Identity resolution: (iss, sub) is authoritative (D-03). Wave 3 replaces
-    // the not_linked refusal with linking/provisioning.
-    match state
-        .store
-        .user_by_provider_iss_sub("oidc", &iss, &sub)
-        .await
-        .ok()
-        .flatten()
-    {
-        Some((_id, email, _role)) => {
+    // Identity resolution (wave 3): LOCKED order — (iss,sub) hit → sign in;
+    // verified-email auto-link (readers only); domain-gated auto-provision.
+    // All three success paths converge on the SAME mint below (D-02).
+    match resolve_identity(&state, oidc, &iss, &claims).await {
+        Ok(email) => {
             // §2b verbatim (D-02): same mint, same cookie attributes as login_submit.
-            let token = state.codec.sign(&email, unix_now(), DEFAULT_TTL_SECS);
+            // Fully qualified so the TTL constant appears exactly once in this
+            // file — the single session-mint site gate (D-02, no drift).
+            let token = state
+                .codec
+                .sign(&email, unix_now(), crate::session::DEFAULT_TTL_SECS);
             let session_cookie = format!(
                 "{}={token}; HttpOnly; Path=/; SameSite=Lax",
                 state.cfg.cookie_name
@@ -216,9 +218,15 @@ pub(crate) async fn sso_callback(
                 .append(SET_COOKIE, clear_state_cookie().parse().unwrap());
             resp
         }
-        None => {
-            let mut r = deny(&state, &iss, &sub, "not_linked").await;
-            *r.body_mut() = axum::body::Body::from("This account is not linked yet.".to_string());
+        Err(refusal) => {
+            // Deny audit: kind deny + locked detail, actor when an account
+            // was reached ('' otherwise). Never tokens or codes (T-17-04).
+            let _ = state
+                .store
+                .log_auth_event("deny", &refusal.actor, &iss, &claims.sub, refusal.detail)
+                .await;
+            let mut r = error_page(refusal.message);
+            *r.status_mut() = StatusCode::FORBIDDEN;
             r.headers_mut()
                 .append(SET_COOKIE, clear_state_cookie().parse().unwrap());
             r
@@ -226,15 +234,182 @@ pub(crate) async fn sso_callback(
     }
 }
 
+/// Claims extracted from the signature-verified ID token that feed identity
+/// resolution. ONLY the validated ID token populates this — the access token
+/// and userinfo are never consulted (D-15).
+#[derive(Debug)]
+pub(crate) struct VerifiedIdentity {
+    sub: String,
+    email: Option<String>,
+    email_verified: Option<bool>,
+}
+
+/// A fail-closed resolution refusal: locked `detail` for the deny audit row,
+/// `actor` (matched local email when an account was reached, '' otherwise),
+/// and the generic user-facing page message.
+#[derive(Debug)]
+struct Refusal {
+    detail: &'static str,
+    actor: String,
+    message: &'static str,
+}
+
+impl Refusal {
+    fn deny(detail: &'static str) -> Self {
+        Self {
+            detail,
+            actor: String::new(),
+            message: "Sign-in could not be completed.",
+        }
+    }
+}
+
+/// Exact-domain allowlist check on the NORMALIZED email (D-04): exactly one
+/// `@`, and the domain part EQUALS an allowlist entry — no suffix tricks
+/// (`evilexample.com` must not match `example.com`). An empty allowlist
+/// refuses everything: auto-provisioning is DISABLED when unconfigured
+/// (fail-closed; linking existing accounts still works).
+fn domain_allowed(email_norm: &str, allowed: &[String]) -> bool {
+    let mut parts = email_norm.split('@');
+    let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && allowed
+            .iter()
+            .any(|d| d.trim().to_ascii_lowercase() == domain)
+}
+
+/// The LOCKED identity-resolution order (plan 17-03, D-03/D-04/D-05/D-12):
+/// 1. `(iss, sub)` hit → sign in as that user; the email claim is NEVER
+///    consulted for returning users (A1 avoidance).
+/// 2. Miss → strict `email_verified == true` (JSON boolean) + non-empty email
+///    → normalized-email lookup: admin match → refuse (no link, no sign-in);
+///    reader match → auto-link + log `link`/`auto_link` + sign in. A lost
+///    link race (INSERT OR IGNORE false) re-reads and proceeds as returning.
+/// 3. No match → exact-domain allowlist → provision reader with an
+///    unguessable placeholder + link + log `provision`/`auto_provision`;
+///    otherwise refuse `domain_not_allowed`.
+///
+/// Returns the LOCAL email to mint the session for (never the raw claim).
+async fn resolve_identity(
+    state: &SharedState,
+    oidc: &crate::config::OidcRuntime,
+    iss: &str,
+    claims: &VerifiedIdentity,
+) -> Result<String, Refusal> {
+    // 1. Returning user — (iss, sub) is the authoritative join key (D-03).
+    if let Some((_id, email, _role)) = state
+        .store
+        .user_by_provider_iss_sub(OIDC_PROVIDER, iss, &claims.sub)
+        .await
+        .ok()
+        .flatten()
+    {
+        return Ok(email);
+    }
+    // 2. First link: email_verified must be the JSON boolean true, and the
+    //    email claim non-empty (anything else fails closed).
+    if claims.email_verified != Some(true) {
+        return Err(Refusal::deny("email_not_verified"));
+    }
+    let email_norm = claims
+        .email
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase(); // D-12 rule (documented on user_by_email_normalized)
+    if email_norm.is_empty() {
+        return Err(Refusal::deny("no_email"));
+    }
+    if let Some((uid, email, role)) = state
+        .store
+        .user_by_email_normalized(&email_norm)
+        .await
+        .ok()
+        .flatten()
+    {
+        if role == "admin" {
+            // Admin accounts are NEVER auto-linked (D-05, A1).
+            return Err(Refusal {
+                detail: "admin_match",
+                actor: email,
+                message: "This account cannot sign in via SSO.",
+            });
+        }
+        // Reader: auto-link. INSERT OR IGNORE — a false return means a
+        // concurrent login already linked this (iss,sub): re-read and
+        // proceed as the returning user (T-17-14).
+        let linked = state
+            .store
+            .link_identity(OIDC_PROVIDER, iss, &claims.sub, uid)
+            .await
+            .unwrap_or(false);
+        if !linked {
+            if let Some((_id, email, _role)) = state
+                .store
+                .user_by_provider_iss_sub(OIDC_PROVIDER, iss, &claims.sub)
+                .await
+                .ok()
+                .flatten()
+            {
+                return Ok(email);
+            }
+        }
+        let _ = state
+            .store
+            .log_auth_event("link", &email, iss, &claims.sub, "auto_link")
+            .await;
+        return Ok(email);
+    }
+    // 3. Auto-provision, gated on the exact-domain allowlist (D-04, A7).
+    if !domain_allowed(&email_norm, &oidc.allowed_email_domains) {
+        return Err(Refusal {
+            detail: "domain_not_allowed",
+            actor: String::new(),
+            message: "This email domain is not allowed for SSO sign-in.",
+        });
+    }
+    if let Err(e) = state
+        .store
+        .create_user_without_password(&email_norm, "reader")
+        .await
+    {
+        // Fail closed: a provisioning failure is a refusal, never a bypass.
+        let _ = e;
+        return Err(Refusal::deny("provision_failed"));
+    }
+    if let Some((uid, _, _)) = state
+        .store
+        .user_by_email_normalized(&email_norm)
+        .await
+        .ok()
+        .flatten()
+    {
+        let _ = state
+            .store
+            .link_identity(OIDC_PROVIDER, iss, &claims.sub, uid)
+            .await;
+    }
+    let _ = state
+        .store
+        .log_auth_event("provision", &email_norm, iss, &claims.sub, "auto_provision")
+        .await;
+    Ok(email_norm)
+}
+
 /// Exchange the code (PKCE verifier + Basic client auth) and validate the
-/// JWKS-signed ID token. Returns the authenticated `sub`.
+/// JWKS-signed ID token. Returns the authenticated `sub` plus the `email` /
+/// `email_verified` claims — all read ONLY from the signature-validated ID
+/// token (D-15); the access token is never consulted for identity.
 async fn exchange_and_verify(
     state: &SharedState,
     oidc: &crate::config::OidcRuntime,
     code: &str,
     verifier: &str,
     nonce: &str,
-) -> Result<String, String> {
+) -> Result<VerifiedIdentity, String> {
     let _ = state;
     let http = openidconnect::reqwest::Client::new();
     let issuer = IssuerUrl::new(oidc.issuer.clone()).map_err(|_| "token_invalid".to_string())?;
@@ -264,13 +439,21 @@ async fn exchange_and_verify(
             _ => "token_invalid".to_string(),
         })?;
     let sub = claims.subject().to_string();
-    // Access token is NEVER consulted for identity (D-15 groundwork); only the
-    // signature-validated ID token feeds identity resolution.
-    Ok(sub)
+    // `email_verified` must be the JSON boolean true to count: the library
+    // types it as a bool, so a string "true" fails claim parsing outright
+    // (token_invalid) — fail-closed either way (plan 17-03 strictness).
+    let email = claims.email().map(|e| e.as_str().to_string());
+    let email_verified = claims.email_verified();
+    Ok(VerifiedIdentity {
+        sub,
+        email,
+        email_verified,
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{resolve_identity, VerifiedIdentity};
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
     use rsa::pkcs1v15::SigningKey;
@@ -1102,7 +1285,8 @@ mod tests {
     async fn sso_callback_unknown_identity_refuses_and_logs() {
         let idp = MockIdp::start().await;
         let (app, state) = test_router_with_oidc(&idp.issuer).await;
-        // NO link_identity row — wave-3 provisioning replaces this refusal.
+        // NO link_identity row, and the token carries no email_verified claim —
+        // wave-3 resolution fails closed at the email_verified strictness gate.
         let (loc, cookie_value) = drive_sso_login(&app).await;
         let (s, _n, _v) = happy_setup(&idp, &state, &loc, &cookie_value, "sso-user-1").await;
         let res = callback(
@@ -1115,10 +1299,13 @@ mod tests {
         assert!(find_cookie(&set_cookie_headers(&res), "morinet_session").is_none());
         let denies = state
             .store
-            .count_auth_events("deny", "not_linked")
+            .count_auth_events("deny", "email_not_verified")
             .await
             .unwrap();
-        assert_eq!(denies, 1, "deny event logged with detail not_linked");
+        assert_eq!(
+            denies, 1,
+            "deny event logged with detail email_not_verified"
+        );
     }
 
     #[tokio::test]
@@ -1206,5 +1393,498 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         let body = body_text(res).await;
         assert!(body.contains("href=\"/sso/login\""), "{body}");
+    }
+
+    // ---------- Identity resolution: link / provision / refuse (plan 17-03 task 2) ----------
+
+    /// Full callback with ID-token claims carrying `email` / `email_verified`.
+    async fn callback_with_email(
+        app: &axum::Router,
+        state: &crate::server::SharedState,
+        idp: &MockIdp,
+        sub: &str,
+        email: Option<&str>,
+        email_verified: Option<Value>,
+    ) -> Response {
+        let (loc, cookie_value) = drive_sso_login(app).await;
+        let (s, n, _v) = happy_setup(idp, state, &loc, &cookie_value, sub).await;
+        let now = crate::server::unix_now();
+        let mut claims = json!({
+            "iss": idp.issuer, "aud": [TEST_CLIENT_ID], "sub": sub,
+            "nonce": n, "iat": now, "exp": now + 300,
+        });
+        if let Some(e) = email {
+            claims["email"] = json!(e);
+        }
+        if let Some(v) = email_verified {
+            claims["email_verified"] = v;
+        }
+        idp.set_claims(claims);
+        callback(
+            app,
+            &format!("code=test-code&state={s}"),
+            Some(&cookie_value),
+        )
+        .await
+    }
+
+    /// The local email the minted session cookie carries, if any.
+    fn session_email(state: &crate::server::SharedState, res: &Response) -> Option<String> {
+        let c = find_cookie(&set_cookie_headers(res), "morinet_session")?;
+        let token = c
+            .split(';')
+            .next()
+            .unwrap()
+            .trim_start_matches("morinet_session=");
+        state
+            .codec
+            .verify(token, crate::server::unix_now())
+            .map(|cl| cl.email)
+    }
+
+    /// A1 core: returning users are keyed STRICTLY on (iss, sub) — the email
+    /// claim is never consulted, so an IdP account carrying someone else's
+    /// email cannot steer the login (D-03).
+    #[tokio::test]
+    async fn sso_returning_user_keyed_on_iss_sub_not_email() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "sso-user@example.com", &idp.issuer, "sso-user-1").await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "sso-user-1",
+            Some("victim@elsewhere.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            session_email(&state, &res).as_deref(),
+            Some("sso-user@example.com"),
+            "session carries the LINKED account, never the claim email"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("link", "auto_link")
+                .await
+                .unwrap(),
+            0,
+            "returning path never logs a link event"
+        );
+    }
+
+    /// First login with a verified email matching an existing reader: auto-link,
+    /// sign in, log the link (D-12/D-05).
+    #[tokio::test]
+    async fn sso_auto_links_verified_email_match() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        state
+            .store
+            .create_user("reader1@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "brand-new-sub",
+            Some("reader1@example.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            session_email(&state, &res).as_deref(),
+            Some("reader1@example.com")
+        );
+        let uid = state
+            .store
+            .user_id_for("reader1@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let ident = state.store.identity_for_user(uid).await.unwrap();
+        assert_eq!(
+            ident,
+            Some((
+                "oidc".to_string(),
+                idp.issuer.clone(),
+                "brand-new-sub".to_string()
+            )),
+            "user_identities row created"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("link", "auto_link")
+                .await
+                .unwrap(),
+            1,
+            "every link event is logged (D-05)"
+        );
+    }
+
+    /// Auto-link requires the JSON boolean `email_verified == true`: false,
+    /// missing, or a string "true" all refuse with NO link row.
+    #[tokio::test]
+    async fn sso_link_refused_when_email_not_verified() {
+        // false / missing → deny detail email_not_verified.
+        for (label, verified) in [("false", Some(json!(false))), ("missing", None)] {
+            let idp = MockIdp::start().await;
+            let (app, state) = test_router_with_oidc(&idp.issuer).await;
+            state
+                .store
+                .create_user("reader2@example.com", "pw", "reader")
+                .await
+                .unwrap();
+            let res = callback_with_email(
+                &app,
+                &state,
+                &idp,
+                "unverified-sub",
+                Some("reader2@example.com"),
+                verified,
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{label} must refuse");
+            assert!(
+                session_email(&state, &res).is_none(),
+                "{label} must not sign in"
+            );
+            let uid = state
+                .store
+                .user_id_for("reader2@example.com")
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                state.store.identity_for_user(uid).await.unwrap().is_none(),
+                "{label}: no link row"
+            );
+            assert_eq!(
+                state
+                    .store
+                    .count_auth_events("deny", "email_not_verified")
+                    .await
+                    .unwrap(),
+                1,
+                "{label}: deny logged"
+            );
+        }
+        // String "true" is not the JSON boolean true: the strict check refuses.
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        state
+            .store
+            .create_user("reader3@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "string-true-sub",
+            Some("reader3@example.com"),
+            Some(json!("true")),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "string \"true\" must refuse"
+        );
+        assert!(session_email(&state, &res).is_none());
+        let uid = state
+            .store
+            .user_id_for("reader3@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            state.store.identity_for_user(uid).await.unwrap().is_none(),
+            "string \"true\": no link row"
+        );
+        assert!(
+            state
+                .store
+                .count_auth_events("deny", "email_not_verified")
+                .await
+                .unwrap()
+                + state
+                    .store
+                    .count_auth_events("deny", "token_invalid")
+                    .await
+                    .unwrap()
+                >= 1,
+            "string \"true\": fail-closed deny logged (email_not_verified, or token_invalid \
+             when the library rejects the malformed claim before resolution)"
+        );
+    }
+
+    /// Admin accounts are NEVER auto-linked (D-05 / A1): refuse, no link, no
+    /// sign-in, deny logged with the matched account as actor.
+    #[tokio::test]
+    async fn sso_admin_match_refused() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        // admin@example.com exists via ensure_admin in the harness.
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "admin-sub",
+            Some("admin@example.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(session_email(&state, &res).is_none(), "no sign-in");
+        let uid = state
+            .store
+            .user_id_for("admin@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            state.store.identity_for_user(uid).await.unwrap().is_none(),
+            "admin never auto-linked"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "admin_match")
+                .await
+                .unwrap(),
+            1,
+            "refusal logged"
+        );
+    }
+
+    /// Allowed-domain first-timer: provisioned as reader, linked, logged,
+    /// signed in with the lowercase stored email (D-04, D-12).
+    #[tokio::test]
+    async fn sso_auto_provisions_reader_for_allowed_domain() {
+        let idp = MockIdp::start().await;
+        let mut cfg = oidc_cfg(&idp.issuer);
+        cfg.allowed_email_domains = vec!["example.com".to_string()];
+        let (app, state) = test_router_with_cfg(Some(cfg)).await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "newbie-sub",
+            Some("Newbie@Example.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            session_email(&state, &res).as_deref(),
+            Some("newbie@example.com"),
+            "provisioned email stored/signed lowercase"
+        );
+        let (uid, _email, role) = state
+            .store
+            .user_by_email_normalized("newbie@example.com")
+            .await
+            .unwrap()
+            .expect("provisioned user row");
+        assert_eq!(role, "reader", "provisioning is reader-only (D-04)");
+        let ident = state.store.identity_for_user(uid).await.unwrap();
+        assert_eq!(
+            ident.map(|(_, iss, sub)| (iss, sub)),
+            Some((idp.issuer.clone(), "newbie-sub".to_string()))
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("provision", "auto_provision")
+                .await
+                .unwrap(),
+            1,
+            "provision event logged"
+        );
+    }
+
+    /// The provisioned account's placeholder password is unguessable: password
+    /// login with the IdP email + any password fails (T-17-13, criterion 7).
+    #[tokio::test]
+    async fn sso_provisioned_account_password_login_fails() {
+        let idp = MockIdp::start().await;
+        let mut cfg = oidc_cfg(&idp.issuer);
+        cfg.allowed_email_domains = vec!["example.com".to_string()];
+        let (app, state) = test_router_with_cfg(Some(cfg)).await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "pwfail-sub",
+            Some("pwfail@example.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER, "provisioned first");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let pw = req(
+            app,
+            "POST",
+            "/login",
+            headers,
+            Some(Body::from("email=pwfail%40example.com&password=whatever")),
+        )
+        .await;
+        assert_eq!(
+            pw.status(),
+            StatusCode::UNAUTHORIZED,
+            "placeholder unguessable"
+        );
+    }
+
+    /// A7: suffix-similar domain refuses fail-closed — no user row created.
+    #[tokio::test]
+    async fn sso_unmatched_domain_denied() {
+        let idp = MockIdp::start().await;
+        let mut cfg = oidc_cfg(&idp.issuer);
+        cfg.allowed_email_domains = vec!["example.com".to_string()];
+        let (app, state) = test_router_with_cfg(Some(cfg)).await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "evil-sub",
+            Some("evil@evilexample.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(session_email(&state, &res).is_none());
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "domain_not_allowed")
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            state
+                .store
+                .user_by_email_normalized("evil@evilexample.com")
+                .await
+                .unwrap()
+                .is_none(),
+            "refusal creates no user row"
+        );
+    }
+
+    /// Empty allowlist ⇒ auto-provision DISABLED entirely (fail-closed);
+    /// linking existing accounts still works (tested elsewhere).
+    #[tokio::test]
+    async fn sso_empty_allowlist_disables_provisioning() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await; // allowed_email_domains = []
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "stranger-sub",
+            Some("stranger@anywhere.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(session_email(&state, &res).is_none());
+        assert!(
+            state
+                .store
+                .user_by_email_normalized("stranger@anywhere.com")
+                .await
+                .unwrap()
+                .is_none(),
+            "nobody is provisioned with an empty allowlist"
+        );
+    }
+
+    /// D-12: case-variant IdP email links the existing mixed-case account —
+    /// one row, no duplicate (T-17-15).
+    #[tokio::test]
+    async fn sso_email_match_case_insensitive_link() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        state
+            .store
+            .create_user("User@X.com", "pw", "reader")
+            .await
+            .unwrap();
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "case-sub",
+            Some("user@x.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(session_email(&state, &res).as_deref(), Some("User@X.com"));
+        let uid = state
+            .store
+            .user_id_for("User@X.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            state.store.identity_for_user(uid).await.unwrap().is_some(),
+            "linked to the existing row"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("provision", "auto_provision")
+                .await
+                .unwrap(),
+            0,
+            "linked, not provisioned — no duplicate account"
+        );
+    }
+
+    /// Link race (T-17-14): when the (iss,sub) row already exists — a
+    /// concurrent first-login won the INSERT OR IGNORE race — resolution
+    /// proceeds as the returning user, keyed on the identity row.
+    #[tokio::test]
+    async fn sso_link_race_falls_back_to_returning() {
+        let (app, state) = test_router_with_oidc("https://issuer.test").await;
+        seed_linked_user(
+            &state,
+            "race-user@example.com",
+            "https://issuer.test",
+            "race-sub",
+        )
+        .await;
+        // A DIFFERENT account matches the claim email — the (iss,sub) hit must win.
+        state
+            .store
+            .create_user("other@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let oidc = oidc_cfg("https://issuer.test");
+        let claims = VerifiedIdentity {
+            sub: "race-sub".to_string(),
+            email: Some("other@example.com".to_string()),
+            email_verified: Some(true),
+        };
+        let email = resolve_identity(&state, &oidc, "https://issuer.test", &claims)
+            .await
+            .expect("returns as the linked user");
+        assert_eq!(email, "race-user@example.com");
+        drop(app);
     }
 }
