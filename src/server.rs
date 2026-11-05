@@ -3925,6 +3925,7 @@ mod tests {
             data_dir: std::env::temp_dir().join("morinet-test-data"),
             vault_book_dir: None, // Phase 2: book dirs live in the vaults table
             locked_accounts: Vec::new(), // Phase 12: guard off unless a test opts in
+            oidc: None, // Phase 17: SSO off unless a test opts in
         }
     }
 
@@ -5713,6 +5714,7 @@ mod tests {
     fn email_cfg() -> RuntimeConfig {
         RuntimeConfig {
             smtp: smtp_cfg(),
+            oidc: None,
             ..test_config()
         }
     }

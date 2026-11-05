@@ -14,6 +14,14 @@ pub const ENV_ADMIN_PASSWORD: &str = "MORINET_ADMIN_PASSWORD";
 /// Phase 12 (D-01): comma-separated emails whose vault mutations are refused
 /// on the public demo instance. Wins over the `[security]` file section.
 pub const ENV_LOCKED_ACCOUNTS: &str = "MORINET_LOCKED_ACCOUNTS";
+/// Phase 17 (SSO-05, D-06): generic OIDC SSO. Env vars win per field over the
+/// `[oidc]` file section; a set-but-blank value counts as UNSET (Phase 12
+/// lesson — it must never silently shadow the file section).
+pub const ENV_OIDC_ISSUER: &str = "MORINET_OIDC_ISSUER";
+pub const ENV_OIDC_CLIENT_ID: &str = "MORINET_OIDC_CLIENT_ID";
+pub const ENV_OIDC_CLIENT_SECRET: &str = "MORINET_OIDC_CLIENT_SECRET";
+/// Comma-separated email domains allowed for auto-provisioning (D-04).
+pub const ENV_OIDC_ALLOWED_DOMAINS: &str = "MORINET_OIDC_ALLOWED_DOMAINS";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileConfig {
@@ -35,6 +43,55 @@ pub struct FileConfig {
     /// Phase 12: locked-account guard (demo instance). Absent = nobody locked.
     #[serde(default)]
     pub security: SecuritySection,
+    /// Phase 17 (D-06): generic OIDC SSO. Absent = SSO disabled — password
+    /// login is completely unaffected; a partial section never breaks boot.
+    #[serde(default)]
+    pub oidc: OidcSection,
+}
+
+/// `[oidc]` section: generic OIDC SSO (Phase 17). Every key is optional; SSO
+/// is enabled only when issuer + client_id + client_secret ALL resolve
+/// (env-wins per field, blank env = unset). Absent section = SSO disabled
+/// (D-06: fully removable without affecting password login, SSO-05).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct OidcSection {
+    #[serde(default)]
+    pub issuer: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    /// Login-page button label (D-14, default "SSO").
+    #[serde(default)]
+    pub sso_label: Option<String>,
+    /// Verified emails in these domains may be auto-provisioned as readers
+    /// (D-04); anything else fails closed.
+    #[serde(default)]
+    pub allowed_email_domains: Vec<String>,
+    /// Name of the groups claim in the ID token (D-15, default "groups").
+    #[serde(default)]
+    pub groups_claim: Option<String>,
+    /// groups claim value -> MoriNet group name (D-15).
+    #[serde(default)]
+    pub group_map: std::collections::HashMap<String, String>,
+}
+
+/// Fully-resolved `[oidc]` config. Present ⇔ SSO enabled (all-or-nothing:
+/// a partial section never produces this — mirrors the `SmtpConfig::is_usable`
+/// idiom, but as `Option` since the flow needs every field at once).
+#[derive(Debug, Clone)]
+pub struct OidcRuntime {
+    pub issuer: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// Lowercased, trimmed email domains allowed for auto-provisioning (D-04).
+    pub allowed_email_domains: Vec<String>,
+    /// Groups claim name in the ID token (D-15, default "groups").
+    pub groups_claim: String,
+    /// claim value -> MoriNet group name (D-15).
+    pub group_map: std::collections::HashMap<String, String>,
+    /// Login-page button label (D-14, default "SSO").
+    pub sso_label: String,
 }
 
 /// `[security]` section: `locked_accounts = ["demo@x"]` — emails whose vault
@@ -141,6 +198,76 @@ pub struct RuntimeConfig {
     /// Phase 12 (D-01): emails whose vault mutations are refused server-side
     /// (lowercase, trimmed). Empty = guard disabled.
     pub locked_accounts: Vec<String>,
+    /// Phase 17 (D-06): resolved `[oidc]` config. `None` = SSO disabled
+    /// (section absent or partially configured) — password login unaffected.
+    pub oidc: Option<OidcRuntime>,
+}
+
+/// Env value that counts as set: present AND not blank after trimming
+/// (Phase 12 lesson — a set-but-blank env must never shadow the file value).
+fn env_nonblank(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.trim().is_empty())
+}
+
+/// Resolve the `[oidc]` section (D-06, SSO-05): opt-in, env-wins per field,
+/// fail-closed. SSO enables only when issuer + client_id + client_secret ALL
+/// resolve; a partial set yields `None` + one startup warning — never a hard
+/// boot error, never a half-enabled flow (a misconfigured `[oidc]` must not
+/// break boot or password login, SSO-06).
+fn resolve_oidc(section: &OidcSection) -> Option<OidcRuntime> {
+    let pick = |env_key: &str, file: &Option<String>| {
+        env_nonblank(env_key).or_else(|| file.clone().filter(|s| !s.trim().is_empty()))
+    };
+    let issuer = pick(ENV_OIDC_ISSUER, &section.issuer);
+    let client_id = pick(ENV_OIDC_CLIENT_ID, &section.client_id);
+    let client_secret = pick(ENV_OIDC_CLIENT_SECRET, &section.client_secret);
+    let missing: Vec<&str> = [
+        ("issuer", issuer.as_ref()),
+        ("client_id", client_id.as_ref()),
+        ("client_secret", client_secret.as_ref()),
+    ]
+    .into_iter()
+    .filter(|(_, v)| v.is_none())
+    .map(|(k, _)| k)
+    .collect();
+    if !missing.is_empty() {
+        // Nothing configured at all = silently disabled; a partial set warns.
+        if missing.len() < 3 {
+            eprintln!(
+                "warning: [oidc] partially configured (missing {}); SSO disabled",
+                missing.join(", ")
+            );
+        }
+        return None;
+    }
+    // Env wins; a blank/empty env list falls back to the file section
+    // (same fail-closed normalization as locked_accounts).
+    let allowed_email_domains = env_nonblank(ENV_OIDC_ALLOWED_DOMAINS)
+        .map(|raw| normalize_locked_list(raw.split(',')))
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            let from_file =
+                normalize_locked_list(section.allowed_email_domains.iter().map(String::as_str));
+            (!from_file.is_empty()).then_some(from_file)
+        })
+        .unwrap_or_default();
+    Some(OidcRuntime {
+        issuer: issuer.expect("checked above"),
+        client_id: client_id.expect("checked above"),
+        client_secret: client_secret.expect("checked above"),
+        allowed_email_domains,
+        groups_claim: section
+            .groups_claim
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "groups".to_string()),
+        group_map: section.group_map.clone(),
+        sso_label: section
+            .sso_label
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "SSO".to_string()),
+    })
 }
 
 /// Normalize a locked-accounts list: trim, lowercase, drop empties (T-12-03:
@@ -211,6 +338,7 @@ pub fn resolve(cfg: FileConfig, vault_book_dir: Option<PathBuf>) -> anyhow::Resu
         data_dir: PathBuf::from(cfg.storage.data_dir),
         vault_book_dir,
         locked_accounts,
+        oidc: resolve_oidc(&cfg.oidc),
     })
 }
 
@@ -528,5 +656,150 @@ starttls = true
             Some(s) => std::env::set_var(ENV_LOCKED_ACCOUNTS, s),
             None => std::env::remove_var(ENV_LOCKED_ACCOUNTS),
         }
+    }
+
+    // ─── Phase 17 (SSO-05, D-06): [oidc] section — opt-in, env-wins ──────
+
+    /// Save + neutralize every env var `resolve` reads so `[oidc]` tests are
+    /// deterministic (ENV_LOCK already serializes them); returns saved values.
+    fn oidc_env_setup() -> Vec<(&'static str, Option<String>)> {
+        let keys = [
+            ENV_COOKIE_SECRET,
+            ENV_ADMIN_EMAIL,
+            ENV_ADMIN_PASSWORD,
+            ENV_OIDC_ISSUER,
+            ENV_OIDC_CLIENT_ID,
+            ENV_OIDC_CLIENT_SECRET,
+            ENV_OIDC_ALLOWED_DOMAINS,
+        ];
+        let saved: Vec<(&'static str, Option<String>)> = keys
+            .iter()
+            .map(|k| (*k, std::env::var(k).ok()))
+            .collect();
+        for k in keys {
+            std::env::remove_var(k);
+        }
+        std::env::set_var(ENV_COOKIE_SECRET, "filesecret");
+        std::env::set_var(ENV_ADMIN_EMAIL, "a@example.com");
+        std::env::set_var(ENV_ADMIN_PASSWORD, "test-pass-9f3a");
+        saved
+    }
+
+    fn oidc_env_restore(saved: Vec<(&'static str, Option<String>)>) {
+        for (k, v) in saved {
+            match v {
+                Some(s) => std::env::set_var(k, s),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    /// D-06: an absent `[oidc]` section deserializes to "disabled" — boot
+    /// succeeds and `rt.oidc` is `None` (SSO fully removable, SSO-05).
+    #[test]
+    fn oidc_absent_section_disables() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = oidc_env_setup();
+        let cfg: FileConfig = toml::from_str("[server]\n").unwrap();
+        let rt = resolve(cfg, None).expect("absent [oidc] must never break boot");
+        assert!(rt.oidc.is_none(), "absent section = SSO disabled");
+        oidc_env_restore(saved);
+    }
+
+    /// A complete `[oidc]` file section enables SSO with the locked defaults
+    /// (`groups_claim = "groups"`, `sso_label = "SSO"`).
+    #[test]
+    fn oidc_full_section_enables() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = oidc_env_setup();
+        let cfg: FileConfig = toml::from_str(
+            "[oidc]\nissuer = \"https://idp.example.com/\"\nclient_id = \"morinet\"\nclient_secret = \"file-s3cret\"\nallowed_email_domains = [\"Example.com\"]\n\n[oidc.group_map]\n\"idp-admins\" = \"admin\"\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("full [oidc] section resolves");
+        let oidc = rt.oidc.expect("full section enables SSO");
+        assert_eq!(oidc.issuer, "https://idp.example.com/");
+        assert_eq!(oidc.client_id, "morinet");
+        assert_eq!(oidc.client_secret, "file-s3cret");
+        assert_eq!(oidc.allowed_email_domains, vec!["example.com".to_string()]);
+        assert_eq!(oidc.groups_claim, "groups");
+        assert_eq!(oidc.sso_label, "SSO");
+        assert_eq!(
+            oidc.group_map.get("idp-admins").map(String::as_str),
+            Some("admin")
+        );
+        oidc_env_restore(saved);
+    }
+
+    /// Env-wins per field (same pattern as `[admin]` / locked_accounts).
+    #[test]
+    fn oidc_env_wins_over_file() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = oidc_env_setup();
+        std::env::set_var(ENV_OIDC_ISSUER, "https://env-idp.example.com/");
+        let cfg: FileConfig = toml::from_str(
+            "[oidc]\nissuer = \"https://file-idp.example.com/\"\nclient_id = \"morinet\"\nclient_secret = \"file-s3cret\"\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("resolve");
+        let oidc = rt.oidc.expect("env issuer keeps the section enabled");
+        assert_eq!(oidc.issuer, "https://env-idp.example.com/");
+        assert_eq!(oidc.client_id, "morinet");
+        oidc_env_restore(saved);
+    }
+
+    /// Phase 12 lesson: a set-but-blank env value must NOT shadow the file
+    /// section (a blank `ENV:` in docker-compose would silently disable SSO).
+    #[test]
+    fn oidc_blank_env_does_not_shadow_file() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = oidc_env_setup();
+        std::env::set_var(ENV_OIDC_ISSUER, "");
+        let cfg: FileConfig = toml::from_str(
+            "[oidc]\nissuer = \"https://file-idp.example.com/\"\nclient_id = \"morinet\"\nclient_secret = \"file-s3cret\"\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("resolve");
+        let oidc = rt.oidc.expect("blank env issuer is treated as unset");
+        assert_eq!(oidc.issuer, "https://file-idp.example.com/");
+        oidc_env_restore(saved);
+    }
+
+    /// Fail-closed: issuer + client_id but no secret ⇒ SSO disabled with a
+    /// warning — never a half-enabled flow, never a hard boot error (D-06).
+    #[test]
+    fn oidc_partial_config_disables_not_half_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = oidc_env_setup();
+        let cfg: FileConfig = toml::from_str(
+            "[oidc]\nissuer = \"https://idp.example.com/\"\nclient_id = \"morinet\"\n",
+        )
+        .unwrap();
+        let rt = resolve(cfg, None).expect("partial [oidc] must not break boot");
+        assert!(
+            rt.oidc.is_none(),
+            "partial section disables SSO — never half-enabled"
+        );
+        oidc_env_restore(saved);
+    }
+
+    /// `MORINET_OIDC_ALLOWED_DOMAINS` is comma-separated, trimmed, lowercased,
+    /// empties dropped (same normalization as locked_accounts).
+    #[test]
+    fn oidc_allowed_domains_env_normalized() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = oidc_env_setup();
+        std::env::set_var(ENV_OIDC_ISSUER, "https://idp.example.com/");
+        std::env::set_var(ENV_OIDC_CLIENT_ID, "morinet");
+        std::env::set_var(ENV_OIDC_CLIENT_SECRET, "env-s3cret");
+        std::env::set_var(ENV_OIDC_ALLOWED_DOMAINS, " A@X.Fr ,, , b@y.fr ");
+        let cfg: FileConfig = toml::from_str("[server]\n").unwrap();
+        let rt = resolve(cfg, None).expect("resolve");
+        let oidc = rt.oidc.expect("env-provided trio enables SSO");
+        assert_eq!(
+            oidc.allowed_email_domains,
+            vec!["a@x.fr".to_string(), "b@y.fr".to_string()]
+        );
+        oidc_env_restore(saved);
     }
 }

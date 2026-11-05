@@ -840,6 +840,7 @@ mod tests {
             data_dir: std::env::temp_dir().join("morinet-api-test-data"),
             vault_book_dir: None,
             locked_accounts: Vec::new(),
+            oidc: None,
         }
     }
 
