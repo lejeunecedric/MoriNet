@@ -1116,6 +1116,35 @@ impl Store {
         Ok(rows.into_iter().map(|(e,)| e).collect())
     }
 
+    /// Groups a user belongs to: `(id, name)` sorted by name — the reversed
+    /// join of `group_members`, needed by the SSO group-sync diff (plan 17-04,
+    /// D-09: per-user recompute over the managed set).
+    pub async fn group_memberships_for_user(
+        &self,
+        user_id: i64,
+    ) -> anyhow::Result<Vec<(i64, String)>> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT g.id, g.name FROM groups g
+             JOIN group_members m ON m.group_id = g.id
+             WHERE m.user_id = ? ORDER BY g.name",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Resolve a group by exact name (`None` when absent). The SSO group sync
+    /// maps claim targets by name and must NEVER auto-create groups — an
+    /// unknown target is skipped with a deny log (plan 17-04, T-17-16).
+    pub async fn group_id_for_name(&self, name: &str) -> anyhow::Result<Option<i64>> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM groups WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
     /// Assign a group a role on a vault ('read' | 'write', REQ-VLT-004).
     pub async fn set_vault_group_role(
         &self,
@@ -3956,5 +3985,52 @@ mod identity_tests {
                 .await
                 .unwrap();
         assert_ne!(h1, h2, "placeholder hashes differ per user");
+    }
+}
+
+// ---------- Phase 17 / PLAN 17-04 Task 1: reversed group-membership queries (D-09) ----------
+
+#[cfg(test)]
+mod group_sync_store_tests {
+    use super::*;
+
+    async fn st() -> Store {
+        Store::connect_memory().await.expect("store")
+    }
+
+    #[tokio::test]
+    async fn group_memberships_for_user_roundtrip() {
+        let s = st().await;
+        s.create_user("member@x.com", "pw", "reader").await.unwrap();
+        let uid = s.user_id_for("member@x.com").await.unwrap().unwrap();
+        let zeta = s.create_group("zeta").await.unwrap();
+        let alpha = s.create_group("alpha").await.unwrap();
+        s.add_group_member(zeta, "member@x.com").await.unwrap();
+        s.add_group_member(alpha, "member@x.com").await.unwrap();
+        let mut got = s.group_memberships_for_user(uid).await.unwrap();
+        assert_eq!(
+            got,
+            vec![(alpha, "alpha".to_string()), (zeta, "zeta".to_string())],
+            "both memberships present, sorted by name"
+        );
+        s.remove_group_member(alpha, "member@x.com").await.unwrap();
+        got = s.group_memberships_for_user(uid).await.unwrap();
+        assert_eq!(got, vec![(zeta, "zeta".to_string())], "removal reflected");
+    }
+
+    #[tokio::test]
+    async fn group_memberships_for_user_empty_for_new_user() {
+        let s = st().await;
+        s.create_user("fresh@x.com", "pw", "reader").await.unwrap();
+        let uid = s.user_id_for("fresh@x.com").await.unwrap().unwrap();
+        assert!(s.group_memberships_for_user(uid).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn group_id_for_name_known_and_unknown() {
+        let s = st().await;
+        let g = s.create_group("writers").await.unwrap();
+        assert_eq!(s.group_id_for_name("writers").await.unwrap(), Some(g));
+        assert_eq!(s.group_id_for_name("ghost").await.unwrap(), None);
     }
 }
