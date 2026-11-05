@@ -1252,6 +1252,20 @@ async fn account_html(state: &SharedState, claims: &Claims, banner: Option<&str>
     let label = display.unwrap_or_else(|| claims.email.clone());
     let header = account_menu(state, claims).await;
     let uid = state.store.user_id_for(&claims.email).await.ok().flatten();
+    // D-13: "linked via SSO" indicator — same degrade-on-error lookup shape as
+    // display_name_for / list_api_tokens above: a store failure degrades the
+    // row away, never errors the page. Empty string keeps the render
+    // byte-identical for password-only accounts.
+    let sso_row = match uid {
+        Some(uid) => match state.store.identity_for_user(uid).await.ok().flatten() {
+            Some((_provider, iss, _sub)) => format!(
+                "<p><small>Linked via SSO ({iss})</small></p>",
+                iss = html_escape(&iss)
+            ),
+            None => String::new(),
+        },
+        None => String::new(),
+    };
     let tokens = match uid {
         Some(uid) => state.store.list_api_tokens(uid).await.unwrap_or_default(),
         None => Vec::new(),
@@ -1290,7 +1304,7 @@ async fn account_html(state: &SharedState, claims: &Claims, banner: Option<&str>
   <h1 class="page-title">Account</h1>
   <section class="panel">
     <h2>Profile</h2>
-    <p><strong>{label}</strong><br><small>{email}</small></p>
+    <p><strong>{label}</strong><br><small>{email}</small></p>{sso_row}
     <form method="post" action="/account/name" class="stacked">
       <div class="field field-wide"><label for="display-name">Display name</label><input id="display-name" type="text" name="name" value="{label}" placeholder="display name"></div>
       <button type="submit">Save</button>

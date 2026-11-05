@@ -1887,4 +1887,113 @@ mod tests {
         assert_eq!(email, "race-user@example.com");
         drop(app);
     }
+
+    // ---------- Account page "Linked via SSO" indicator (plan 17-03 task 3, D-13) ----------
+
+    /// Password-login cookie for the harness admin (same shape as server.rs tests).
+    async fn account_login_cookie(app: &axum::Router) -> String {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/login",
+            headers,
+            Some(Body::from(
+                "email=admin%40example.com&password=test-pass-9f3a",
+            )),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        res.headers()
+            .get(SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn account_page_shows_sso_identity_row() {
+        let (app, state) = test_router_disabled().await;
+        let cookie = account_login_cookie(&app).await;
+        let uid = state
+            .store
+            .user_id_for("admin@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        state
+            .store
+            .link_identity("oidc", "https://idp.example/", "sub-9", uid)
+            .await
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, cookie.parse().unwrap());
+        let res = req(app, "GET", "/account", headers, None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("Linked via SSO (https://idp.example/)"),
+            "SSO-linked account shows the indicator row: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_page_no_sso_row_for_password_users() {
+        let (app, _) = test_router_disabled().await;
+        let cookie = account_login_cookie(&app).await;
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, cookie.parse().unwrap());
+        let res = req(app, "GET", "/account", headers, None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            !body.contains("Linked via SSO"),
+            "password-only account must be byte-identical to today: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_page_sso_row_survives_token_create_render() {
+        let (app, state) = test_router_disabled().await;
+        let cookie = account_login_cookie(&app).await;
+        let uid = state
+            .store
+            .user_id_for("admin@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        state
+            .store
+            .link_identity("oidc", "https://idp.example/", "sub-9", uid)
+            .await
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, cookie.parse().unwrap());
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app,
+            "POST",
+            "/account/tokens",
+            headers,
+            Some(Body::from("name=laptop")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("Linked via SSO (https://idp.example/)"),
+            "the create_account_token re-render keeps the row: {body}"
+        );
+    }
 }
