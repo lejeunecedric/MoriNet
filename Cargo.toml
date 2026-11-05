@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "net"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
@@ -41,9 +41,14 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 rmcp = { version = "3.7.0", features = ["server", "transport-streamable-http-server"] }
 schemars = "1"
 rpassword = "7"
+# Phase 17 (D-01): the ONLY new runtime dependency. default-features=false keeps
+# native-tls out; reqwest + rustls-tls route through the existing single rustls 0.23.
+openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
+# Phase 17: test-only RS256 signing for the mock IdP (already in the lock via sqlx-mysql).
+rsa = "0.9"
 
 [profile.release]
 opt-level = 3
