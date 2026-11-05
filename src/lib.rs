@@ -8,6 +8,7 @@ pub mod email;
 pub mod init;
 pub mod mcp;
 pub mod obsidian;
+pub mod oidc;
 pub mod server;
 pub mod session;
 pub mod sources;
