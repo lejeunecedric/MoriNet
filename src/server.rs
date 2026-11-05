@@ -9497,4 +9497,162 @@ mod tests {
             "uploads root must survive a `..` slug delete"
         );
     }
+
+    // ─── Phase 17 (D-08, SSO-06): password-login regression baseline ──────
+    // These tests lock the CURRENT password-login behavior — the exact
+    // cookie string, redirect, and 401 path of `login_submit`, plus
+    // bootstrap-admin availability — BEFORE any OIDC code exists, so every
+    // later wave can prove it did not disturb login. Green at introduction
+    // by design (baseline lock, not RED-first).
+    mod sso_password_regression {
+        use super::*;
+
+        #[tokio::test]
+        async fn sso_reg_password_login_mints_exact_session_cookie() {
+            let (app, state) = test_router().await;
+            let res = req(
+                app,
+                "POST",
+                "/login",
+                login_headers(),
+                Some(Body::from(
+                    "email=admin%40example.com&password=test-pass-9f3a",
+                )),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::SEE_OTHER);
+            assert_eq!(
+                res.headers()
+                    .get(axum::http::header::LOCATION)
+                    .expect("Location on success"),
+                "/"
+            );
+            let set_cookie = res
+                .headers()
+                .get(SET_COOKIE)
+                .expect("SET_COOKIE on successful login")
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                set_cookie.starts_with("morinet_session="),
+                "cookie must be named morinet_session: {set_cookie}"
+            );
+            assert!(
+                set_cookie.contains("HttpOnly; Path=/; SameSite=Lax"),
+                "cookie attributes must match login_submit verbatim: {set_cookie}"
+            );
+            let token = set_cookie["morinet_session=".len()..]
+                .split(';')
+                .next()
+                .unwrap();
+            let claims = state
+                .codec
+                .verify(token, unix_now())
+                .expect("minted token must verify via the session codec");
+            assert_eq!(claims.email, "admin@example.com");
+        }
+
+        #[tokio::test]
+        async fn sso_reg_password_login_wrong_password_401() {
+            let (app, _state) = test_router().await;
+            let res = req(
+                app,
+                "POST",
+                "/login",
+                login_headers(),
+                Some(Body::from(
+                    "email=admin%40example.com&password=wrong-password",
+                )),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+            assert!(
+                res.headers().get(SET_COOKIE).is_none(),
+                "failed login must never mint a cookie"
+            );
+            let body = to_bytes(res.into_body(), 65536).await.unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(
+                body.contains("Forgot your password?"),
+                "401 re-renders LOGIN_HTML: {body}"
+            );
+        }
+
+        #[tokio::test]
+        async fn sso_reg_bootstrap_admin_always_available() {
+            // SSO-06 / D-07: on an instance with NO admin (IdP outage,
+            // accidental demotion), the fallback `admin`/`admin` account is
+            // created at boot and can sign in with a password.
+            let cfg = test_config();
+            let store = Store::connect_memory().await.expect("memory store");
+            store.ensure_fallback_admin().await.unwrap();
+            let email: Arc<dyn EmailSender> = Arc::new(InMemorySender::new());
+            let state: SharedState = Arc::new(AppState {
+                codec: SessionCodec::new(cfg.cookie_secret.clone()),
+                cfg,
+                store,
+                email,
+                vault_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+                api_rate: std::sync::Mutex::new(std::collections::HashMap::new()),
+            });
+            let app = build_router_with_email(
+                state.cfg.clone(),
+                state.store.clone(),
+                state.email.clone(),
+            );
+            let res = req(
+                app,
+                "POST",
+                "/login",
+                login_headers(),
+                Some(Body::from("email=admin&password=admin")),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::SEE_OTHER);
+            assert!(
+                res.headers().get(SET_COOKIE).is_some(),
+                "bootstrap admin login must mint a session cookie"
+            );
+        }
+
+        #[tokio::test]
+        async fn sso_reg_password_login_works_for_reader() {
+            // Coexistence groundwork: ordinary reader accounts keep signing in
+            // with passwords exactly like the admin does.
+            let (app, state) = test_router().await;
+            state
+                .store
+                .create_user("reader@example.com", "reader-pass-1a2b", "reader")
+                .await
+                .unwrap();
+            let res = req(
+                app,
+                "POST",
+                "/login",
+                login_headers(),
+                Some(Body::from(
+                    "email=reader%40example.com&password=reader-pass-1a2b",
+                )),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::SEE_OTHER);
+            let set_cookie = res
+                .headers()
+                .get(SET_COOKIE)
+                .expect("SET_COOKIE on successful reader login")
+                .to_str()
+                .unwrap()
+                .to_string();
+            let token = set_cookie["morinet_session=".len()..]
+                .split(';')
+                .next()
+                .unwrap();
+            let claims = state
+                .codec
+                .verify(token, unix_now())
+                .expect("reader token verifies");
+            assert_eq!(claims.email, "reader@example.com");
+        }
+    }
 }
