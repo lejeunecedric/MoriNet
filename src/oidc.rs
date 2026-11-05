@@ -1144,4 +1144,67 @@ mod tests {
         assert_eq!(idp.last_verifier().as_deref(), Some(v.as_str()));
     }
 
+    async fn body_text(res: Response) -> String {
+        let bytes = axum::body::to_bytes(res.into_body(), 4_194_304)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_page_no_sso_ui_when_oidc_absent() {
+        let (app, _) = test_router_disabled().await;
+        let res = req(app, "GET", "/login", HeaderMap::new(), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(!body.contains("/sso/login"), "{body}");
+        assert_eq!(body, crate::server::LOGIN_HTML);
+    }
+
+    #[tokio::test]
+    async fn login_page_shows_sso_button_when_oidc_configured() {
+        let (app, _) = test_router_with_oidc("http://idp.invalid").await;
+        let res = req(app, "GET", "/login", HeaderMap::new(), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("href=\"/sso/login\""), "{body}");
+        assert!(body.contains("Se connecter via SSO"), "{body}");
+        assert!(body.contains("<p>ou</p>"), "{body}");
+        assert!(
+            body.find("href=\"/sso/login\"").unwrap() < body.find("<form").unwrap(),
+            "SSO button must appear before the password form"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_page_sso_label_configurable_and_escaped() {
+        let mut cfg = oidc_cfg("http://idp.invalid");
+        cfg.sso_label = "<script>x</script>".to_string();
+        let (app, _) = test_router_with_cfg(Some(cfg)).await;
+        let res = req(app, "GET", "/login", HeaderMap::new(), None).await;
+        let body = body_text(res).await;
+        assert!(!body.contains("<script>x</script>"), "{body}");
+        assert!(body.contains("&lt;script&gt;"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn login_submit_failure_page_keeps_sso_button() {
+        let (app, _) = test_router_with_oidc("http://idp.invalid").await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let res = req(
+            app,
+            "POST",
+            "/login",
+            headers,
+            Some(Body::from("email=admin%40example.com&password=wrong-pass")),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let body = body_text(res).await;
+        assert!(body.contains("href=\"/sso/login\""), "{body}");
+    }
 }

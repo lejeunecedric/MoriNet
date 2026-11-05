@@ -70,7 +70,7 @@ const STYLE_CSS: &str = include_str!("../assets/style.css");
 /// Public source repository, shown on the admin About page (REQ-ADMIN-007).
 const REPO_URL: &str = "https://github.com/lejeunecedric/MoriNet";
 
-const LOGIN_HTML: &str = r#"<!DOCTYPE html>
+pub(crate) const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>MoriNet — Sign in</title>
 <link rel="stylesheet" href="/assets/style.css"></head>
@@ -85,6 +85,24 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
   <p><a href="/reset">Forgot your password?</a></p>
 </body>
 </html>"#;
+
+/// Phase 17 (SSO-06): login page with a conditional SSO button. When `[oidc]`
+/// is absent this returns `LOGIN_HTML` byte-for-byte — existing gates untouched.
+/// When present, an SSO block is inserted immediately before the password form;
+/// `sso_label` is HTML-escaped (D-14 style: never trust config strings raw).
+pub(crate) fn login_html(state: &SharedState) -> String {
+    match state.cfg.oidc.as_ref() {
+        None => LOGIN_HTML.to_string(),
+        Some(cfg) => LOGIN_HTML.replacen(
+            "<form method=\"post\" action=\"/login\"",
+            &format!(
+                "<p><a class=\"button\" href=\"/sso/login\">Se connecter via {}</a></p><p>ou</p>\n  <form method=\"post\" action=\"/login\"",
+                html_escape(&cfg.sso_label)
+            ),
+            1,
+        ),
+    }
+}
 
 /// Render an app page with the embedded stylesheet + standard header/nav.
 /// Every handler-generated page MUST go through this — a raw `Html(body)`
@@ -424,8 +442,8 @@ async fn health() -> Json<&'static str> {
     Json("ok")
 }
 
-async fn login_form() -> Html<&'static str> {
-    Html(LOGIN_HTML)
+async fn login_form(State(state): State<SharedState>) -> Html<String> {
+    Html(login_html(&state))
 }
 
 #[derive(Debug, Deserialize)]
@@ -456,7 +474,7 @@ async fn login_submit(
             let headers: HeaderMap = HeaderMap::from_iter([(SET_COOKIE, cookie.parse().unwrap())]);
             (headers, Redirect::to("/")).into_response()
         }
-        None => (StatusCode::UNAUTHORIZED, Html(LOGIN_HTML)).into_response(),
+        None => (StatusCode::UNAUTHORIZED, Html(login_html(&state))).into_response(),
     }
 }
 
