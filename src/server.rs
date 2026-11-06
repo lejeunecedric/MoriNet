@@ -411,7 +411,7 @@ async fn require_admin(State(state): State<SharedState>, mut req: Request, next:
         .and_then(|v| v.to_str().ok())
         .and_then(parse_cookies)
         .and_then(|cookies| cookies.get(&state.cfg.cookie_name).cloned())
-        .and_then(|token| state.codec.verify(&token, unix_now()));
+        .and_then(|token| state.codec.verify_session(&token, unix_now()));
 
     let is_admin = match claims.as_ref() {
         Some(claims) => state
@@ -492,7 +492,7 @@ async fn require_session(
         .and_then(|v| v.to_str().ok())
         .and_then(parse_cookies)
         .and_then(|cookies| cookies.get(&state.cfg.cookie_name).cloned())
-        .and_then(|token| state.codec.verify(&token, unix_now()));
+        .and_then(|token| state.codec.verify_session(&token, unix_now()));
 
     match claims {
         Some(claims) => {

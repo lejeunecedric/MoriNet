@@ -48,6 +48,19 @@ impl SessionCodec {
         format!("{}.{}", payload, sig)
     }
 
+    /// Verify a SESSION token against `now`. Stricter than [`Self::verify`]:
+    /// the payload must be a bare email — other payloads signed with the same
+    /// codec (the SSO state trio, plan 17-05 A6) carry newlines and must
+    /// NEVER authenticate a session. Session emails never contain newlines,
+    /// so this never rejects a legitimate login token.
+    pub fn verify_session(&self, token: &str, now: u64) -> Option<Claims> {
+        let claims = self.verify(token, now)?;
+        if claims.email.contains('\n') {
+            return None;
+        }
+        Some(claims)
+    }
+
     /// Verify a token against `now`. Returns the claims on success, None on any
     /// tampering, bad encoding, expired token, or wrong signature.
     pub fn verify(&self, token: &str, now: u64) -> Option<Claims> {
@@ -99,6 +112,24 @@ mod tests {
         let claims = codec.verify(&token, NOW).expect("valid token verifies");
         assert_eq!(claims.email, "admin@treklair.fr");
         assert_eq!(claims.expires_at, NOW + DEFAULT_TTL_SECS);
+    }
+
+    #[test]
+    fn verify_session_rejects_multiline_payloads() {
+        // Plan 17-05 A6: the SSO state trio shares this codec; it must never
+        // authenticate a session. Session emails never contain newlines.
+        let codec = SessionCodec::new(SECRET);
+        let state_token = codec.sign("state\nnonce\nverifier", NOW, DEFAULT_TTL_SECS);
+        assert!(
+            codec.verify(&state_token, NOW).is_some(),
+            "plain verify still accepts it (state validation relies on it)"
+        );
+        assert!(
+            codec.verify_session(&state_token, NOW).is_none(),
+            "verify_session must refuse a non-email payload"
+        );
+        let session = codec.sign("admin@treklair.fr", NOW, DEFAULT_TTL_SECS);
+        assert!(codec.verify_session(&session, NOW).is_some());
     }
 
     #[test]
