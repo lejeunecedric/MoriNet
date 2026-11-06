@@ -3162,7 +3162,9 @@ async fn record_vault_changes(
 }
 
 /// Phase 18 (D-02): best-effort OKF conformance scan of the vault SOURCE dir
-/// (never the generated `.morinet-build/` book). Same error contract as
+/// (never the generated `.morinet-build/` book). Takes the vault's
+/// `book_path`, which may be a mdBook `book` dir or a source dir directly
+/// (uploads vaults) — `source_dir_of` resolves both. Same error contract as
 /// `record_vault_changes`: `anyhow::Result` up to the caller's `eprintln!`
 /// arm. `source_dir_of` never checks existence, so the `is_dir` guard is what
 /// makes the missing-source skip real. The single `set_vault_okf` write
@@ -3171,9 +3173,9 @@ async fn record_vault_changes(
 pub async fn record_okf_scan(
     store: &Store,
     slug: &str,
-    book_dir: &std::path::Path,
+    vault_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let Some(src) = webdav::source_dir_of(book_dir) else {
+    let Some(src) = webdav::source_dir_of(vault_dir) else {
         return Ok(());
     };
     if !src.is_dir() {
@@ -10111,6 +10113,87 @@ mod tests {
         let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
         let body = body_text(res).await;
         assert!(body.contains("OKF v0.2 — 42/45 concepts"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn home_page_shows_okf_badge_on_shared_rows() {
+        // DEBT-3: "Shared with me" rows render the badge through the same
+        // vault_row path as owned rows.
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("bob@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        state
+            .store
+            .share_vault("demo", "bob@example.com", "reader")
+            .await
+            .unwrap();
+        let json = serde_json::to_string(&okf_stats(Some("0.2"), 7, 8)).unwrap();
+        state.store.set_vault_okf("demo", &json).await.unwrap();
+        let cookie = login_as(&app, "bob@example.com", "pw").await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(body.contains("Demo vault"), "shared row present: {body}");
+        assert!(
+            body.contains("OKF v0.2 — 7/8 concepts"),
+            "shared row must show the badge: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn okf_scan_helper_fires_on_upload_update() {
+        // DEBT-4: the finish_upload_update arm re-scans and OVERWRITES
+        // okf_json when the tree changes (force=1 apply path).
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        seed_upload(
+            &app,
+            &cookie,
+            "Upd Book",
+            &[("Upd/a.md", b"---\ntype: concept\n---\n# a\n")],
+        )
+        .await;
+        let first: crate::okf::OkfStats = serde_json::from_str(
+            &state
+                .store
+                .vault_okf("upd-book")
+                .await
+                .unwrap()
+                .expect("register path scanned"),
+        )
+        .unwrap();
+        assert_eq!(first.concepts, 1);
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"Upd Book"),
+                ("files", Some("Upd/a.md"), b"---\ntype: concept\n---\n# a\n"),
+                ("files", Some("Upd/b.md"), b"---\ntype: concept\n---\n# b\n"),
+                ("force", None, b"1"),
+            ],
+        );
+        let res = req(
+            app,
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let second: crate::okf::OkfStats = serde_json::from_str(
+            &state
+                .store
+                .vault_okf("upd-book")
+                .await
+                .unwrap()
+                .expect("update path re-scanned"),
+        )
+        .unwrap();
+        assert_eq!(second.concepts, 2, "update arm must overwrite stats");
+        assert_eq!(second.total, 2);
     }
 
     #[tokio::test]
