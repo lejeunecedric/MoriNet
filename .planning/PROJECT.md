@@ -14,9 +14,15 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 
 **v1.2 "Team Access" shipped 2026-11-06** (released v1.2.0 → v1.3.0, live on holldemo): conflict-safe co-editing (CONF-01..05), read-only REST API on `/api/v1` (API-01..06), generic OIDC SSO (SSO-01..06). 17/17 requirements, milestone audit INTEGRATED (`.planning/v1.2-MILESTONE-AUDIT.md`). Archive: `.planning/milestones/v1.2-ROADMAP.md`.
 
+## Current Milestone: v1.3 OKF Bundle Support
+
+**Goal:** MoriNet hosts Open Knowledge Format (Google, 2026) bundles natively — conformance detection + badge, one-click bundle export (zip), and concept metadata on `/api/v1` + MCP filters. (GitHub issue #11; research: `.planning/research/OKF.md`)
+
+**Key context:** OKF formalizes the llm-wiki pattern MoriNet already serves; WebDAV + `/api/v1` already ship raw bundles with frontmatter intact. Phase 18 = detection/export/metadata; trust-aware rendering (needs Impeccable pass) and Attested Computation execution are deferred.
+
 ## Next Milestone Goals
 
-- v1.3 candidates: GitHub #10 (web + MCP statistics, incl. REST access logging — needs `access_log.source` CHECK widened), #11 (OKF format spike), G1-G3 composed E2E tests from the v1.2 audit (SSO→API token→read, group-revocation direct test, shared-vault coexistence), deferred human UATs (rclone/Obsidian WebDAV smoke, real-IdP SSO smoke)
+- After Phase 18: issue #10 (web + MCP statistics, incl. REST access logging — needs `access_log.source` CHECK widened), OKF-F01 trust-aware rendering, G1-G3 composed E2E tests from the v1.2 audit, deferred human UATs (rclone/Obsidian WebDAV smoke, real-IdP SSO smoke)
 - Backlog: API-F01 write endpoints, API-F02 scoped tokens, API-F03 webhooks
 
 ## Requirements

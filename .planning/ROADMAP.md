@@ -13,6 +13,7 @@
 - ✅ **v1.0** — Phases 00–11 (+10.1) — shipped 2026-10-25 (`v1.0.0`), hotfixes v1.0.1–v1.0.3 by 2026-10-28
 - ✅ **v1.1.0 demo hardening + vault options** — Phases 12–14 — shipped 2026-10-29 (`v1.1.0`, live on holldemo) → full phase details: [milestones/v1.1.0-ROADMAP.md](milestones/v1.1.0-ROADMAP.md)
 - ✅ **v1.2 Team Access** — Phases 15–17 — shipped 2026-11-06 (`v1.3.0`, live on holldemo) → full phase details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md)
+- 🚧 **v1.3 OKF Bundle Support** — Phase 18 — planned (GitHub issue #11)
 
 ## Phases
 
@@ -38,6 +39,7 @@
 - [x] **Phase 15: etag-conflict** - Strong ETags + If-Match/If-None-Match on WebDAV; upload conflict list + force-overwrite (v1.2) (completed 2026-10-30)
 - [x] **Phase 16: rest-api** - Read-only `/api/v1` (vaults/notes/read/search) on API tokens, ACL parity with MCP (v1.2) (completed 2026-11-01)
 - [x] **Phase 17: oidc-sso** - Generic OIDC SSO (auth-code + PKCE) coexisting with password login (v1.2) — **completed 2026-11-06**
+- [ ] **Phase 18: okf-bundle-support** - OKF detection + conformance badge, bundle export (zip), API/MCP frontmatter metadata (v1.3)
 
 <details>
 <summary>✅ v1.0 (Phases 00–11) — SHIPPED 2026-10-25 (v1.0.0; hotfixes v1.0.1–v1.0.3)</summary>
@@ -94,7 +96,26 @@
 | 16. rest-api | v1.2 | 5/5 | Complete    | 2026-11-01 |
 | 17. oidc-sso | v1.2 | 5/5 | Complete    | 2026-11-06 |
 
-**Next milestone:** not yet planned. Candidates: GitHub issue #10 (web + MCP statistics — includes REST access logging, needs `access_log.source` CHECK widened), issue #11 (OKF format spike), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
+**Next milestone:** v1.3 OKF Bundle Support — Phase 18 planning via `/gsd-plan-phase`. Later candidates: issue #10 (web + MCP statistics, incl. REST access logging — needs `access_log.source` CHECK widened), trust-aware OKF rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
+
+---
+
+## Milestone v1.3: OKF Bundle Support (Phases 18+)
+
+**Goal:** MoriNet hosts Open Knowledge Format bundles natively — detect and report OKF conformance of vaults, export any vault as a portable OKF bundle, and expose concept metadata (type/tags/status/trust tier) through the REST API and MCP so agents consume bundles as knowledge graphs, not raw files. (GitHub issue #11; research: `.planning/research/OKF.md`)
+
+### Phase 18: okf-bundle-support
+
+**Goal:** detect OKF conformance at refresh time with a vault-page badge, one-click "Export as OKF bundle" (zip), and frontmatter metadata surfaced on `/api/v1` + MCP filters.
+**Requirements:** OKF-01..OKF-04
+**Success criteria:**
+1. At refresh/register, vault sources are scanned for OKF conformance (per-file non-empty `type` frontmatter, reserved `index.md`/`log.md` shape, version guess v0.1 vs v0.2); stats persisted and shown on the vault page as a badge ("OKF v0.2 — N/M concepts" or "not an OKF bundle").
+2. "Export as OKF bundle" download streams a zip of the vault source (files byte-identical), synthesizing a root `index.md` with `okf_version: "0.2"` in-memory when absent; gated by vault read ACL.
+3. `/api/v1` note list/read expose parsed frontmatter metadata (`type`, `tags`, `status`, derived trust tier per OKF §5.3); MCP list/search accept optional `type`/`tags` filters; ACL semantics unchanged (404 on inaccessible).
+4. mdBook rendering pipeline unchanged: converter still strips frontmatter (rendered output identical to v1.3.0).
+5. At most ONE new runtime dependency (archive format only); `scripts/check.sh` green; existing suite green (baseline 493 passed).
+
+**Deferred (later phases):** trust-aware page rendering of OKF families (needs Impeccable design pass); Attested Computation execution (security non-starter — spec defers the runtime protocol).
 
 ## Out of scope (v1)
 
