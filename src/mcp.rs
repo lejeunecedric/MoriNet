@@ -117,6 +117,12 @@ pub struct ListNotesParams {
     /// Optional sub-folder inside the vault (defaults to the root).
     #[serde(default)]
     pub path: Option<String>,
+    /// Filter: keep only notes whose frontmatter `type` equals this value (exact match).
+    #[serde(default)]
+    pub r#type: Option<String>,
+    /// Filter: keep notes whose frontmatter `tags` contain ANY of these values.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -126,6 +132,12 @@ pub struct SearchParams {
     /// Restrict to one vault slug (defaults to every accessible vault).
     #[serde(default)]
     pub slug: Option<String>,
+    /// Filter: keep only notes whose frontmatter `type` equals this value (exact match).
+    #[serde(default)]
+    pub r#type: Option<String>,
+    /// Filter: keep notes whose frontmatter `tags` contain ANY of these values.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 /// One MCP server instance per request (stateless transport), bound to the
@@ -141,6 +153,37 @@ fn tool_error(msg: &str) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::error(vec![ContentBlock::text(
         msg.to_string(),
     )]))
+}
+
+/// Post-ACL frontmatter filter (D-08, T-18-15): `slug`/`path` MUST already
+/// come from an ACL-gated `crate::api` result — this helper only decides
+/// whether an already-accessible note matches `type`/`tags`. No filter ⇒
+/// always true; unreadable or frontmatter-less notes never match (T-18-17:
+/// `frontmatter_of` returns `None` on any parse failure, no unwrap here).
+/// Cost: one extra `read_note` per candidate, bounded by the search cap
+/// and per-vault list sizes (T-18-16).
+async fn note_matches(
+    store: &Store,
+    email: &str,
+    slug: &str,
+    path: &str,
+    type_f: Option<&str>,
+    tags: Option<&[String]>,
+) -> bool {
+    if type_f.is_none() && tags.is_none() {
+        return true;
+    }
+    let Ok(bytes) = crate::api::read_note(store, email, slug, path).await else {
+        return false;
+    };
+    let Some(fm) = crate::okf::frontmatter_of(&bytes) else {
+        return false;
+    };
+    type_f.is_none_or(|t| fm.page_type() == Some(t))
+        && tags.is_none_or(|want| {
+            let have = fm.list("tags");
+            want.iter().any(|w| have.contains(w))
+        })
 }
 
 #[tool_router]
@@ -189,6 +232,28 @@ impl MoriMcp {
         // Thin wrapper: all ACL + path logic lives in crate::api (D-04).
         match crate::api::list_notes(&self.store, &self.email, &p.slug, p.path.as_deref()).await {
             Ok(files) => {
+                // Post-ACL filter (D-08): only notes from accessible vaults
+                // are ever examined; no filter ⇒ the list passes through.
+                let files = if p.r#type.is_some() || p.tags.is_some() {
+                    let mut kept = Vec::new();
+                    for f in files {
+                        if note_matches(
+                            &self.store,
+                            &self.email,
+                            &p.slug,
+                            &f,
+                            p.r#type.as_deref(),
+                            p.tags.as_deref(),
+                        )
+                        .await
+                        {
+                            kept.push(f);
+                        }
+                    }
+                    kept
+                } else {
+                    files
+                };
                 self.log_access(&p.slug, p.path.as_deref().unwrap_or("-"));
                 Ok(CallToolResult::success(vec![ContentBlock::text(
                     serde_json::to_string(&files).unwrap_or_else(|_| "[]".into()),
@@ -228,6 +293,28 @@ impl MoriMcp {
         match crate::api::search_notes(&self.store, &self.email, &p.query, p.slug.as_deref()).await
         {
             Ok(hits) => {
+                // Post-ACL filter (D-08): hits already come from accessible
+                // vaults only; each hit carries its own slug for the check.
+                let hits = if p.r#type.is_some() || p.tags.is_some() {
+                    let mut kept = Vec::new();
+                    for h in hits {
+                        if note_matches(
+                            &self.store,
+                            &self.email,
+                            &h.slug,
+                            &h.path,
+                            p.r#type.as_deref(),
+                            p.tags.as_deref(),
+                        )
+                        .await
+                        {
+                            kept.push(h);
+                        }
+                    }
+                    kept
+                } else {
+                    hits
+                };
                 // Same logging as before: one row per searched vault.
                 match p.slug.as_deref() {
                     Some(slug) => self.log_access(slug, "-"),
@@ -337,6 +424,8 @@ mod tests {
             .list_notes(Parameters(ListNotesParams {
                 slug: "secret".into(),
                 path: None,
+                r#type: None,
+                tags: None,
             }))
             .await
             .unwrap();
@@ -450,6 +539,8 @@ mod tests {
         m.search_notes(Parameters(SearchParams {
             query: "needle".into(),
             slug: Some("ll".into()),
+            r#type: None,
+            tags: None,
         }))
         .await
         .unwrap();
@@ -536,6 +627,8 @@ mod tests {
                 .list_notes(Parameters(ListNotesParams {
                     slug: "sh1".into(),
                     path: None,
+                    r#type: None,
+                    tags: None,
                 }))
                 .await
                 .unwrap();
@@ -597,6 +690,8 @@ mod tests {
             .search_notes(Parameters(SearchParams {
                 query: "secret needle".into(),
                 slug: None,
+                r#type: None,
+                tags: None,
             }))
             .await
             .unwrap();
@@ -606,5 +701,236 @@ mod tests {
             body.contains("\"sh4\""),
             "global search hits the shared vault: {body}"
         );
+    }
+
+    // ---- type/tags filters, applied strictly post-ACL (plan 18-06, D-08) ----
+
+    /// Vault with three notes: `concept.md` (`type: concept`,
+    /// `tags: [music, history]`), `entity.md` (`type: entity`,
+    /// `tags: [music]`) and `plain.md` (no frontmatter). All three carry the
+    /// body text `shared needle` so a search query hits every one of them.
+    /// Returns the store; the caller's user is an admin (full access).
+    async fn filter_fixture(tag: &str, slug: &str, email: &str) -> Store {
+        let s = store().await;
+        s.ensure_admin(email, "pw").await.unwrap();
+        let src = tmpdir(tag);
+        std::fs::write(
+            src.join("concept.md"),
+            "---\ntype: concept\ntags: [music, history]\n---\nshared needle text\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("entity.md"),
+            "---\ntype: entity\ntags: [music]\n---\nshared needle text\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("plain.md"), "shared needle text\n").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        s.seed_vault(slug, "Filter vault", &src.join("book"))
+            .await
+            .unwrap();
+        s
+    }
+
+    /// Run `list_notes` and parse the JSON array of paths.
+    async fn listed(m: &MoriMcp, p: ListNotesParams) -> Vec<String> {
+        let res = m.list_notes(Parameters(p)).await.unwrap();
+        assert_ne!(res.is_error, Some(true), "expected success: {res:?}");
+        serde_json::from_str(&text(&res)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_notes_filter_by_type() {
+        let s = filter_fixture("okf-type", "ft", "flt1@mcp.test").await;
+        let m = MoriMcp::new(s, "flt1@mcp.test".into());
+        let got = listed(
+            &m,
+            ListNotesParams {
+                slug: "ft".into(),
+                path: None,
+                r#type: Some("concept".into()),
+                tags: None,
+            },
+        )
+        .await;
+        assert_eq!(got, vec!["concept.md".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_notes_filter_by_tags_any() {
+        let s = filter_fixture("okf-tags", "tg", "flt2@mcp.test").await;
+        let m = MoriMcp::new(s, "flt2@mcp.test".into());
+        let got = listed(
+            &m,
+            ListNotesParams {
+                slug: "tg".into(),
+                path: None,
+                r#type: None,
+                tags: Some(vec!["history".into()]),
+            },
+        )
+        .await;
+        assert_eq!(got, vec!["concept.md".to_string()], "ANY match");
+
+        let got = listed(
+            &m,
+            ListNotesParams {
+                slug: "tg".into(),
+                path: None,
+                r#type: None,
+                tags: Some(vec!["music".into()]),
+            },
+        )
+        .await;
+        assert_eq!(
+            got,
+            vec!["concept.md".to_string(), "entity.md".to_string()],
+            "music is on both frontmatter notes; plain.md has none"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_notes_filter_type_and_tags_and() {
+        let s = filter_fixture("okf-and", "an", "flt3@mcp.test").await;
+        let m = MoriMcp::new(s, "flt3@mcp.test".into());
+        let got = listed(
+            &m,
+            ListNotesParams {
+                slug: "an".into(),
+                path: None,
+                r#type: Some("entity".into()),
+                tags: Some(vec!["history".into()]),
+            },
+        )
+        .await;
+        assert!(got.is_empty(), "AND combination ⇒ empty, not error");
+    }
+
+    #[tokio::test]
+    async fn list_notes_no_filters_unchanged() {
+        // Regression: omitted filters ⇒ byte-identical to pre-filter behavior.
+        let s = filter_fixture("okf-none", "nn", "flt4@mcp.test").await;
+        let m = MoriMcp::new(s, "flt4@mcp.test".into());
+        let got = listed(
+            &m,
+            ListNotesParams {
+                slug: "nn".into(),
+                path: None,
+                r#type: None,
+                tags: None,
+            },
+        )
+        .await;
+        assert_eq!(
+            got,
+            vec![
+                "concept.md".to_string(),
+                "entity.md".to_string(),
+                "plain.md".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_notes_filter_by_type() {
+        let s = filter_fixture("okf-search", "sr", "flt5@mcp.test").await;
+        let m = MoriMcp::new(s, "flt5@mcp.test".into());
+        let res = m
+            .search_notes(Parameters(SearchParams {
+                query: "shared needle".into(),
+                slug: Some("sr".into()),
+                r#type: Some("entity".into()),
+                tags: None,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(res.is_error, Some(true), "{res:?}");
+        let hits: Vec<serde_json::Value> = serde_json::from_str(&text(&res)).unwrap();
+        assert_eq!(hits.len(), 1, "only entity.md survives: {hits:?}");
+        assert_eq!(hits[0]["path"], "entity.md");
+    }
+
+    #[tokio::test]
+    async fn mcp_filters_never_resurrect_inaccessible_vault() {
+        // T-18-15: a filter must not become an oracle on private vaults —
+        // the ACL error is identical with and without filters (D-08).
+        let s = filter_fixture("okf-acl", "fr", "owner-flt@mcp.test").await;
+        s.create_user("bob@mcp.test", "pw", "reader").await.unwrap();
+        let bob = MoriMcp::new(s, "bob@mcp.test".into());
+
+        let plain = bob
+            .list_notes(Parameters(ListNotesParams {
+                slug: "fr".into(),
+                path: None,
+                r#type: None,
+                tags: None,
+            }))
+            .await
+            .unwrap();
+        let filtered = bob
+            .list_notes(Parameters(ListNotesParams {
+                slug: "fr".into(),
+                path: None,
+                r#type: Some("concept".into()),
+                tags: Some(vec!["music".into()]),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(plain.is_error, Some(true));
+        assert_eq!(filtered.is_error, Some(true), "filter ⇒ still an error");
+        assert_eq!(
+            text(&plain),
+            text(&filtered),
+            "same tool_error message — no existence oracle"
+        );
+
+        let s_plain = bob
+            .search_notes(Parameters(SearchParams {
+                query: "shared needle".into(),
+                slug: Some("fr".into()),
+                r#type: None,
+                tags: None,
+            }))
+            .await
+            .unwrap();
+        let s_filtered = bob
+            .search_notes(Parameters(SearchParams {
+                query: "shared needle".into(),
+                slug: Some("fr".into()),
+                r#type: Some("concept".into()),
+                tags: Some(vec!["music".into()]),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(s_plain.is_error, Some(true));
+        assert_eq!(s_filtered.is_error, Some(true));
+        assert_eq!(text(&s_plain), text(&s_filtered));
+    }
+
+    #[tokio::test]
+    async fn mcp_filter_params_schema_exposes_type_and_tags() {
+        // The schemars path (rmcp #[tool]) must publish the new optional
+        // params so clients can discover them.
+        use schemars::schema_for;
+        for schema in [schema_for!(ListNotesParams), schema_for!(SearchParams)] {
+            let v = serde_json::to_value(&schema).unwrap();
+            let props = v["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("no properties: {v}"));
+            let ty = props
+                .get("type")
+                .unwrap_or_else(|| panic!("no `type` property: {v}"));
+            let tg = props
+                .get("tags")
+                .unwrap_or_else(|| panic!("no `tags` property: {v}"));
+            assert!(
+                serde_json::to_string(ty).unwrap().contains("string"),
+                "`type` is a string param: {ty}"
+            );
+            assert!(
+                serde_json::to_string(tg).unwrap().contains("array"),
+                "`tags` is an array param: {tg}"
+            );
+        }
     }
 }
