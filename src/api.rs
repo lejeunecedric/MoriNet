@@ -302,9 +302,9 @@ async fn api_not_found() -> Response {
 async fn api_index() -> Response {
     Json(serde_json::json!({
         "endpoints": {
-            "/api/v1/vaults": "List every vault you can access (slug, name, scope, role).",
-            "/api/v1/vaults/{slug}/notes": "List note paths in one vault, sorted, cursor-paginated.",
-            "/api/v1/vaults/{slug}/notes/{path}": "Read one note as raw markdown (ETag / If-None-Match).",
+            "/api/v1/vaults": "List every vault you can access (slug, name, scope, role; plus okf stats once scanned).",
+            "/api/v1/vaults/{slug}/notes": "List note paths in one vault, sorted, cursor-paginated. Add ?meta=1 for {path, frontmatter} objects.",
+            "/api/v1/vaults/{slug}/notes/{path}": "Read one note as raw markdown (ETag / If-None-Match). Add ?meta=1 for a {frontmatter, size, etag} JSON.",
             "/api/v1/search": "Search note contents across your vaults (?q=, optional &vault=).",
             "/api/v1/docs": "Human-readable API docs (public — served without a token)."
         },
@@ -320,11 +320,20 @@ async fn api_vaults(
     State(state): State<SharedState>,
     Extension(user): Extension<User>,
 ) -> Response {
-    let vaults: Vec<serde_json::Value> = accessible_vault_entries(&state.store, &user.email)
-        .await
-        .iter()
-        .map(vault_json)
-        .collect();
+    let entries = accessible_vault_entries(&state.store, &user.email).await;
+    let mut vaults: Vec<serde_json::Value> = Vec::with_capacity(entries.len());
+    for a in &entries {
+        let mut obj = vault_json(a);
+        // 18-05 (D-07b): additive `okf` stats ONLY when valid stats exist —
+        // never-scanned or unparseable JSON keeps the exact v1.2 object
+        // shape (no null-valued okf key, T-18-03 defensive parse).
+        if let Ok(Some(j)) = state.store.vault_okf(&a.vault.slug).await {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&j) {
+                obj["okf"] = v;
+            }
+        }
+        vaults.push(obj);
+    }
     Json(vaults).into_response()
 }
 
@@ -342,6 +351,16 @@ const NOTES_LIMIT_MAX: u32 = 200;
 pub(crate) struct ListQuery {
     pub(crate) limit: Option<String>,
     pub(crate) cursor: Option<String>,
+    /// 18-05 (D-07): raw string like `limit` — ONLY the exact value `"1"`
+    /// opts into the metadata shape; anything else is the default path.
+    pub(crate) meta: Option<String>,
+}
+
+/// Query DTO for note read (18-05): `meta` raw string, strict `== "1"`
+/// opt-in so every other value keeps the byte-identical v1.2 response.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct ReadQuery {
+    pub(crate) meta: Option<String>,
 }
 
 /// Query DTO for search: `q` required (validated in-handler so a missing
@@ -421,6 +440,30 @@ async fn api_list_notes(
     } else {
         None
     };
+    // 18-05 (D-07): `?meta=1` ONLY — entries become {path, frontmatter}
+    // objects inside the SAME envelope. Each entry re-reads through the
+    // same ACL-gated `read_note` helper (T-18-12: identical visibility);
+    // a path that became unreadable yields `frontmatter: null`, never an
+    // error-shape change. T-18-14: cost is bounded by the page size
+    // (limit default 50 / cap 200), not the whole vault.
+    if q.meta.as_deref() == Some("1") {
+        let mut entries: Vec<serde_json::Value> = Vec::with_capacity(page.len());
+        for p in page {
+            let fm = match read_note(&state.store, &user.email, &slug, p).await {
+                Ok(bytes) => crate::okf::frontmatter_of(&bytes)
+                    .map(|fm| crate::okf::note_meta(&fm))
+                    .unwrap_or(serde_json::Value::Null),
+                Err(_) => serde_json::Value::Null,
+            };
+            entries.push(serde_json::json!({ "path": p, "frontmatter": fm }));
+        }
+        return Json(serde_json::json!({
+            "notes": entries,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }))
+        .into_response();
+    }
     Json(serde_json::json!({
         "notes": page,
         "has_more": has_more,
@@ -464,11 +507,17 @@ async fn api_search(
 /// `read_note` helper's `safe_join` — no new join logic here.
 /// If-None-Match is parsed ONLY by `webdav::if_none_match_of`, fail-closed
 /// on Malformed before any body (D-12, PITFALLS C2).
+/// `?meta=1` (18-05, D-07) answers JSON `{frontmatter, size, etag}` instead
+/// of raw bytes — the SAME ACL-gated `read_note` runs first, so inaccessible
+/// vaults still collapse to the identical 404 before any parsing (T-18-12).
+/// If-None-Match/304 handling stays ONLY on the default raw path: meta
+/// responses are informational, not cache validators.
 async fn api_read_note(
     State(state): State<SharedState>,
     Extension(user): Extension<User>,
     AxumPath((slug, path)): AxumPath<(String, String)>,
     headers: HeaderMap,
+    Query(q): Query<ReadQuery>,
 ) -> Response {
     let bytes = match read_note(&state.store, &user.email, &slug, &path).await {
         Ok(b) => b,
@@ -491,6 +540,25 @@ async fn api_read_note(
     // ONE hash, quoted wire form compared directly — never re-hash-and-quote
     // separately (15-01-SUMMARY rule).
     let etag = crate::webdav::etag_of(&bytes);
+    // 18-05 (D-07): `?meta=1` ONLY — JSON {frontmatter, size, etag}. The
+    // 404 collapse above already ran, so nothing inaccessible reaches here.
+    if q.meta.as_deref() == Some("1") {
+        let fm = crate::okf::frontmatter_of(&bytes)
+            .map(|fm| crate::okf::note_meta(&fm))
+            .unwrap_or(serde_json::Value::Null);
+        return (
+            [(
+                ETAG,
+                HeaderValue::from_str(&etag).expect("quoted hex etag is a valid header value"),
+            )],
+            Json(serde_json::json!({
+                "frontmatter": fm,
+                "size": bytes.len(),
+                "etag": etag,
+            })),
+        )
+            .into_response();
+    }
     let not_modified = match crate::webdav::if_none_match_of(&headers) {
         crate::webdav::Precondition::Absent => false,
         // `*` matches: we just successfully read the file, it exists.
@@ -556,6 +624,15 @@ never accepted by the API — only API tokens.</p>
 at 200. Responses carry <code>has_more</code> and an opaque
 <code>next_cursor</code>; pass it back as <code>?cursor=</code> to fetch the
 next page.</p>
+</section>
+<section class="panel">
+<h2>Metadata opt-in</h2>
+<p>Add <code>?meta=1</code> to a note list or note read to get parsed
+frontmatter metadata (<code>type</code>, <code>tags</code>,
+<code>status</code>, derived <code>trust_tier</code>) instead of the default
+bare paths / raw markdown; the vaults list gains an <code>okf</code> stats
+object once a vault has been scanned. Defaults are unchanged without the
+parameter.</p>
 </section>
 <section class="panel">
 <h2>Errors</h2>
@@ -634,6 +711,7 @@ async fn read_note_route(
     Extension(user): Extension<User>,
     AxumPath((slug, path)): AxumPath<(String, String)>,
     headers: HeaderMap,
+    Query(q): Query<ReadQuery>,
 ) -> Response {
     if !is_get_or_head(&method) {
         return method_not_allowed();
@@ -643,6 +721,7 @@ async fn read_note_route(
         Extension(user),
         AxumPath((slug, path)),
         headers,
+        Query(q),
     )
     .await
 }
@@ -1909,5 +1988,239 @@ mod tests {
             Ok(()),
             "clock rewind must not panic"
         );
+    }
+
+    // ---- 18-05: ?meta=1 opt-in metadata + vaults okf field (D-07, OKF-04) ----
+
+    #[tokio::test]
+    async fn api_list_notes_default_shape_unchanged() {
+        let (app, s, _src) = seed_notes_app("meta-def", "mdef", &["a.md", "b.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/vaults/mdef/notes", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        // Re-pin the bare-array contract (:1149): default stays byte-identical.
+        assert_eq!(j["notes"], serde_json::json!(["a.md", "b.md"]));
+    }
+
+    #[tokio::test]
+    async fn api_list_notes_meta_objects() {
+        let (app, s, src) =
+            seed_notes_app("meta-obj", "mobj", &["plain.md", "notype.md", "typed.md"]).await;
+        std::fs::write(
+            src.join("typed.md"),
+            "---\ntype: concept\ntags: [x, y]\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("notype.md"), "---\ntitle: bare\n---\nbody\n").unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/vaults/mobj/notes?meta=1", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let j = body_json(res).await;
+        // Envelope keys unchanged (D-07: only the entry shape changes).
+        assert_eq!(j["has_more"], false);
+        assert!(j["next_cursor"].is_null());
+        let notes = j["notes"].as_array().expect("notes array");
+        assert_eq!(notes.len(), 3);
+        let by_path = |p: &str| {
+            notes
+                .iter()
+                .find(|e| e["path"] == serde_json::json!(p))
+                .expect("entry present")
+                .clone()
+        };
+        let typed = by_path("typed.md");
+        assert_eq!(typed["frontmatter"]["type"], "concept");
+        assert_eq!(
+            typed["frontmatter"]["tags"],
+            serde_json::json!(["x", "y"]),
+            "tags verbatim"
+        );
+        assert!(typed["frontmatter"]["status"].is_null());
+        assert_eq!(typed["frontmatter"]["trust_tier"], "unverified");
+        let notype = by_path("notype.md");
+        assert!(
+            notype["frontmatter"]["type"].is_null(),
+            "frontmatter present but no type ⇒ type null"
+        );
+        assert_eq!(notype["frontmatter"]["trust_tier"], "unverified");
+        assert!(
+            by_path("plain.md")["frontmatter"].is_null(),
+            "no frontmatter at all ⇒ frontmatter null (D-07)"
+        );
+        // Each entry object is EXACTLY {path, frontmatter}.
+        for e in notes {
+            let mut keys: Vec<&str> = e.as_object().unwrap().keys().map(String::as_str).collect();
+            keys.sort();
+            assert_eq!(keys, vec!["frontmatter", "path"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn api_read_note_default_raw_markdown() {
+        let (app, s, src) = seed_notes_app("meta-rdef", "mrdef", &["note.md"]).await;
+        let bytes = b"---\ntype: concept\n---\n# Real\n";
+        std::fs::write(src.join("note.md"), bytes).unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/vaults/mrdef/notes/note.md", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        // Default read is byte-identical to v1.2: raw text/markdown + ETag.
+        assert_eq!(res.headers()[CONTENT_TYPE], "text/markdown");
+        let etag = res.headers()[axum::http::header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(body_bytes(res).await, bytes.to_vec());
+        assert_eq!(etag, crate::webdav::etag_of(bytes));
+    }
+
+    #[tokio::test]
+    async fn api_read_note_meta_json() {
+        let (app, s, src) = seed_notes_app("meta-rjson", "mrjson", &["note.md"]).await;
+        let bytes = b"---\ntype: concept\nstatus: active\n---\n# Real\n";
+        std::fs::write(src.join("note.md"), bytes).unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(
+            app,
+            "/api/v1/vaults/mrjson/notes/note.md?meta=1",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()[CONTENT_TYPE], "application/json");
+        assert_eq!(
+            res.headers()[axum::http::header::ETAG].to_str().unwrap(),
+            crate::webdav::etag_of(bytes),
+            "ETag header still set on the meta response"
+        );
+        let j = body_json(res).await;
+        assert_eq!(j["size"], serde_json::json!(bytes.len()));
+        assert_eq!(j["etag"], crate::webdav::etag_of(bytes));
+        assert_eq!(j["frontmatter"]["type"], "concept");
+        assert_eq!(j["frontmatter"]["status"], "active");
+        assert_eq!(j["frontmatter"]["trust_tier"], "unverified");
+    }
+
+    #[tokio::test]
+    async fn api_meta_inaccessible_vault_404() {
+        // T-18-12: meta changes the SHAPE of the answer, never its visibility.
+        let (app, s) = share_app("meta-acl", "macl", "reader").await;
+        s.create_user("stranger@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        let tok = mint_token(&s, "stranger@api.test").await;
+        for uri in [
+            "/api/v1/vaults/macl/notes?meta=1",
+            "/api/v1/vaults/macl/notes/note.md?meta=1",
+        ] {
+            let res = get(app.clone(), uri, Some(&tok), None).await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert_eq!(res.headers()[CONTENT_TYPE], "application/problem+json");
+            assert_eq!(body_json(res).await["code"], "not_found");
+        }
+    }
+
+    #[tokio::test]
+    async fn api_meta_param_non_one_is_default() {
+        // Strict opt-in: only `meta=1` flips the shape (D-07 byte-identical).
+        let (app, s, _src) = seed_notes_app("meta-yes", "myes", &["a.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/myes/notes?meta=yes",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(
+            body_json(res).await["notes"],
+            serde_json::json!(["a.md"]),
+            "?meta=yes ⇒ default bare array"
+        );
+        let res = get(
+            app,
+            "/api/v1/vaults/myes/notes/a.md?meta=0",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(
+            res.headers()[CONTENT_TYPE],
+            "text/markdown",
+            "?meta=0 ⇒ default raw markdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_vaults_okf_field_when_scanned() {
+        let (app, s, _src) = seed_notes_app("okf-vscan", "ovs", &["a.md"]).await;
+        s.set_vault_okf(
+            "ovs",
+            r#"{"version":"0.2","concepts":3,"total":5,"has_index":true,"has_log":false,"scanned_at":123}"#,
+        )
+        .await
+        .unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/vaults", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let arr = body_json(res).await;
+        let entry = arr
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["slug"] == serde_json::json!("ovs"))
+            .expect("vault listed");
+        assert_eq!(entry["okf"]["version"], "0.2");
+        assert_eq!(entry["okf"]["concepts"], 3);
+        assert_eq!(entry["okf"]["total"], 5);
+        assert_eq!(entry["okf"]["has_index"], true);
+        assert_eq!(entry["okf"]["has_log"], false);
+        assert_eq!(entry["okf"]["scanned_at"], 123);
+        // v1.2 fields still present alongside the additive okf key.
+        assert_eq!(entry["name"], "Notes vault");
+        assert!(entry["scope"].is_string());
+        assert!(entry["role"].is_string());
+    }
+
+    #[tokio::test]
+    async fn api_vaults_no_okf_key_when_never_scanned() {
+        let (app, s, _src) = seed_notes_app("okf-vnever", "ovnever", &["a.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/vaults", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let arr = body_json(res).await;
+        let entry = arr
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["slug"] == serde_json::json!("ovnever"))
+            .expect("vault listed");
+        // Additive-only proof: EXACTLY the v1.2 key set, no null-valued okf.
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, vec!["name", "role", "scope", "slug"]);
+    }
+
+    #[tokio::test]
+    async fn api_vaults_okf_field_absent_on_corrupt_json() {
+        let (app, s, _src) = seed_notes_app("okf-vcorrupt", "ovc", &["a.md"]).await;
+        s.set_vault_okf("ovc", "garbage").await.unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/vaults", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK, "corrupt stats never 500");
+        let arr = body_json(res).await;
+        let entry = arr
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["slug"] == serde_json::json!("ovc"))
+            .expect("vault listed");
+        assert!(entry.get("okf").is_none(), "corrupt stats ⇒ key absent");
     }
 }
