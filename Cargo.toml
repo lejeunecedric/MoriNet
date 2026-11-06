@@ -41,9 +41,13 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 rmcp = { version = "3.7.0", features = ["server", "transport-streamable-http-server"] }
 schemars = "1"
 rpassword = "7"
-# Phase 17 (D-01): the ONLY new runtime dependency. default-features=false keeps
-# native-tls out; reqwest + rustls-tls route through the existing single rustls 0.23.
+# Phase 17 (D-01) and Phase 18 (D-06) are the ONLY new runtime dependencies of
+# v1.2 and v1.3 respectively. Phase 17: openidconnect, default-features=false
+# keeps native-tls out; reqwest + rustls-tls route through the existing single
+# rustls 0.23. Phase 18: zip, archive-only; default-features=false keeps
+# zstd/xz/bzip2/bzip3 out — deflate pulls pure-Rust flate2 + zopfli only.
 openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4"

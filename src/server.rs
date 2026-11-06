@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Extension, Form, Path, Query, Request, State};
-use axum::http::header::{COOKIE, SET_COOKIE};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -255,6 +255,7 @@ pub fn build_router_with_email(
         .route("/vault/{slug}/share/revoke", post(vault_share_revoke))
         .route("/vault/{slug}/share/hide", post(vault_share_hide))
         .route("/vault/{slug}/stats", get(vault_stats))
+        .route("/vault/{slug}/okf-export.zip", get(okf_export))
         .route("/vault", get(vault_root_redirect))
         .route("/vault/{slug}/", get(vault_index))
         .route("/vault/{slug}/{*rest}", get(vault_file))
@@ -2988,7 +2989,7 @@ async fn vault_stats(
   <dt>Pages</dt><dd>{pages}</dd>
   <dt>Disk size</dt><dd>{size}</dd>
   <dt>Last refresh</dt><dd>{lr}</dd>
-  <dt>Source</dt><dd>{src}</dd>
+  <dt>Source</dt><dd>{src} <a class="btn-ghost" href="/vault/{slug}/okf-export.zip">Export OKF bundle</a></dd>
 </dl>
 {okf_line}<h2>Activity by day</h2>
 <table><thead><tr><th>Day</th><th>Source</th><th>Hits</th></tr></thead><tbody>{day_rows}</tbody></table>
@@ -3002,12 +3003,72 @@ async fn vault_stats(
         size = size,
         lr = html_escape(&last_refresh),
         src = html_escape(&source),
+        slug = html_escape(&slug),
         okf_line = okf_line,
         day_rows = day_rows,
         top_rows = top_rows,
         changes_html = changes_html,
     );
     nav_page(&state, &claims, "Statistics", &body).await
+}
+
+/// `GET /vault/{slug}/okf-export.zip` (OKF-03, D-06): stream the vault
+/// source as an in-memory OKF zip bundle — byte-identical entries, virtual
+/// root `index.md` when absent (see `crate::okf::build_bundle_zip`).
+/// Deliberate divergence from `vault_stats`' 403 (PATTERNS §6): store error,
+/// unknown slug, no access, and missing source all collapse to ONE 404
+/// shape, so the route cannot be used to enumerate private slugs (T-18-09).
+async fn okf_export(
+    State(state): State<SharedState>,
+    Extension(claims): Extension<Claims>,
+    Path(slug): Path<String>,
+) -> Response {
+    let not_found = || (StatusCode::NOT_FOUND, "vault not found").into_response();
+    // Read gate via access_for; a store error is treated as invisible.
+    match state.store.access_for(&claims.email, &slug).await {
+        Ok(a) if a.can_read() => {}
+        _ => return not_found(),
+    }
+    // Book dir from the same accessible-vaults row the stats panel uses.
+    let book_path = state
+        .store
+        .accessible_vaults(&claims.email)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .find(|a| a.vault.slug == slug)
+        .map(|a| a.vault.book_path.clone());
+    let Some(src) = book_path
+        .as_deref()
+        .and_then(|p| webdav::source_dir_of(&PathBuf::from(p)))
+    else {
+        return not_found();
+    };
+    let bytes = match crate::okf::build_bundle_zip(&src) {
+        Ok(b) => b,
+        Err(e) => return error_page(&format!("export failed: {e}")),
+    };
+    // Slug is [a-z0-9-] by vault slug rules; sanitize defensively anyway so
+    // the download filename can never carry quotes or path separators.
+    let safe_slug: String = slug
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/zip")
+        .header(
+            CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{safe_slug}-okf.zip\""),
+        )
+        .body(axum::body::Body::from(bytes))
+        .unwrap()
 }
 
 /// HEAD oid of a clone dir; `None` if the dir is missing or unborn.
@@ -10027,5 +10088,91 @@ mod tests {
             !body.contains("OKF v0"),
             "no badge for a never-scanned vault"
         );
+    }
+
+    // ---------- Phase 18 (18-04): OKF bundle export (OKF-03, D-06) ----------
+
+    #[tokio::test]
+    async fn export_zip_requires_access() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("bob@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "bob@example.com", "pw").await;
+        let res = req(
+            app,
+            "GET",
+            "/vault/demo/okf-export.zip",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        // Phase 16 rule (D-06): invisible vault is 404, never 403.
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let body = body_text(res).await;
+        assert_eq!(body, "vault not found");
+    }
+
+    #[tokio::test]
+    async fn export_zip_unknown_vault_404() {
+        let (app, _state) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(
+            app,
+            "GET",
+            "/vault/no-such-vault/okf-export.zip",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        // Identical collapsed shape (T-18-09): no slug enumeration.
+        assert_eq!(body_text(res).await, "vault not found");
+    }
+
+    #[tokio::test]
+    async fn export_zip_streams_bundle() {
+        let (app, _state) = test_router().await;
+        // The fixture vault's source dir (book_path is not a `book` dir, so
+        // source_dir_of resolves to the dir itself).
+        let src = std::env::temp_dir().join(format!("morinet-vault-{}", std::process::id()));
+        std::fs::write(src.join("export-note.md"), "# Exported\n").unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(
+            app,
+            "GET",
+            "/vault/demo/okf-export.zip",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "application/zip"
+        );
+        assert_eq!(
+            res.headers()
+                .get(axum::http::header::CONTENT_DISPOSITION)
+                .unwrap(),
+            "attachment; filename=\"demo-okf.zip\""
+        );
+        let bytes = to_bytes(res.into_body(), 16 * 1024 * 1024).await.unwrap();
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+        let names: Vec<String> = (0..z.len())
+            .map(|i| z.by_index(i).unwrap().name().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"export-note.md".to_string()), "{names:?}");
+    }
+
+    #[tokio::test]
+    async fn export_link_in_stats_panel() {
+        let (app, _state) = test_router().await;
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(body_text(res).await.contains("okf-export.zip"));
     }
 }
