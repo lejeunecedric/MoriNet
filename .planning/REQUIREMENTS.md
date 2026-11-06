@@ -9,12 +9,12 @@ Requirements for milestone v1.2. Each maps to roadmap phases.
 
 ### SSO (OIDC)
 
-- [ ] **SSO-01**: Login page shows an SSO button when `[oidc]` is configured; the flow is OIDC authorization-code + PKCE against any OIDC-compliant IdP (Keycloak / Authentik / Authelia)
-- [ ] **SSO-02**: A user whose **verified** IdP email (`email_verified`) matches an existing local account signs in through SSO and links to that account — never auto-linked to an admin account
-- [ ] **SSO-03**: A first-time SSO user whose email is on an allowed domain (`allowed_email_domains`) gets an account auto-created with the `reader` role
-- [ ] **SSO-04**: A configurable OIDC groups claim maps to MoriNet groups at each login (claim name + mapping configurable); mapping to the `admin` group is opt-in and demotions are logged
-- [ ] **SSO-05**: `[oidc]` section in config.toml (issuer, client id/secret, allowed domains, claim mapping) with env overrides following the env-wins pattern; SSO can be disabled without affecting password login
-- [ ] **SSO-06**: Password login keeps working for every account (coexistence); the bootstrap admin always remains available (IdP-outage safety net)
+- [x] **SSO-01**: Login page shows an SSO button when `[oidc]` is configured; the flow is OIDC authorization-code + PKCE against any OIDC-compliant IdP (Keycloak / Authentik / Authelia)
+- [x] **SSO-02**: A user whose **verified** IdP email (`email_verified`) matches an existing local account signs in through SSO and links to that account — never auto-linked to an admin account
+- [x] **SSO-03**: A first-time SSO user whose email is on an allowed domain (`allowed_email_domains`) gets an account auto-created with the `reader` role
+- [x] **SSO-04**: A configurable OIDC groups claim maps to MoriNet groups at each login (claim name + mapping configurable); mapping to the `admin` group is opt-in and demotions are logged
+- [x] **SSO-05**: `[oidc]` section in config.toml (issuer, client id/secret, allowed domains, claim mapping) with env overrides following the env-wins pattern; SSO can be disabled without affecting password login
+- [x] **SSO-06**: Password login keeps working for every account (coexistence); the bootstrap admin always remains available (IdP-outage safety net)
 
 ### API (read-only REST)
 
@@ -69,12 +69,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SSO-01 | Phase 17 | Pending |
-| SSO-02 | Phase 17 | Pending |
-| SSO-03 | Phase 17 | Pending |
-| SSO-04 | Phase 17 | Pending |
-| SSO-05 | Phase 17 | Pending |
-| SSO-06 | Phase 17 | Pending |
+| SSO-01 | Phase 17 | Complete |
+| SSO-02 | Phase 17 | Complete |
+| SSO-03 | Phase 17 | Complete |
+| SSO-04 | Phase 17 | Complete |
+| SSO-05 | Phase 17 | Complete |
+| SSO-06 | Phase 17 | Complete |
 | API-01 | Phase 16 | Complete |
 | API-02 | Phase 16 | Complete |
 | API-03 | Phase 16 | Complete |

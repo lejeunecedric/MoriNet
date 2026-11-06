@@ -37,7 +37,7 @@
 - [x] **Phase 14: local-vault-upload** - "Local vault" button: client file picker → upload → register (v1.1.0) (completed 2026-10-29)
 - [x] **Phase 15: etag-conflict** - Strong ETags + If-Match/If-None-Match on WebDAV; upload conflict list + force-overwrite (v1.2) (completed 2026-10-30)
 - [x] **Phase 16: rest-api** - Read-only `/api/v1` (vaults/notes/read/search) on API tokens, ACL parity with MCP (v1.2) (completed 2026-11-01)
-- [ ] **Phase 17: oidc-sso** - Generic OIDC SSO (auth-code + PKCE) coexisting with password login (v1.2)
+- [x] **Phase 17: oidc-sso** - Generic OIDC SSO (auth-code + PKCE) coexisting with password login (v1.2) — **completed 2026-11-06**
 
 <details>
 <summary>✅ v1.0 (Phases 00–11) — SHIPPED 2026-10-25 (v1.0.0; hotfixes v1.0.1–v1.0.3)</summary>
@@ -133,7 +133,7 @@
 | 14. local-vault-upload | v1.1.0 | 1/1 | Complete | 2026-10-29 |
 | 15. etag-conflict | v1.2 | 5/5 | Complete    | 2026-10-30 |
 | 16. rest-api | v1.2 | 5/5 | Complete    | 2026-11-01 |
-| 17. oidc-sso | v1.2 | 0/TBD | Planned | - |
+| 17. oidc-sso | v1.2 | 5/5 | Complete    | 2026-11-06 |
 
 **Next milestone:** v1.2 Team Access — Phase 15 (etag-conflict) planning via `/gsd-plan-phase`.
 
