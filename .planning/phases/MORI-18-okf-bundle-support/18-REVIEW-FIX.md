@@ -34,8 +34,8 @@ status: complete
 - **M-03 rate-limit half**: no per-user export rate limit. Export is
   read-ACL-gated and caps-bounded (20k files / 256 MiB pre-buffer); repeated
   exports cost CPU but cannot exceed caps per call. Revisit if abuse seen.
-- **LOW `api_vaults` N+1 + arbitrary-JSON embed**: `okf` field only embeds
-  parsed `OkfStats`; N+1 bounded by per-user vault quota.
+- **LOW `api_vaults` N+1 + arbitrary-JSON embed**: `okf` field embeds the parsed stored JSON
+  (`serde_json::Value`, per plan); N+1 bounded by per-user vault quota.
 - **LOW MCP filter O(vault) reads**: bounded by page cap, same cost class as
   `?meta=1`.
 - **LOW `finish_upload_update` param doc**: passes source dir where doc says
