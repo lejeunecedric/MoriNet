@@ -16,6 +16,9 @@ MoriNet hosts one or more **llm-wiki / Obsidian vaults** — plain markdown with
 - 🔐 **Email + password auth** (HttpOnly signed cookies), `admin` / `reader` roles, invitations and password reset by email
 - 📡 **WebDAV** access — put a note, it goes live
 - 🤖 **MCP server** (StreamableHttp) with per-user **API tokens** — for AI agents
+- 🌐 **Read-only REST API** on `/api/v1` (same API tokens, ACL parity with MCP, ETag/304 caching, RFC 9457 errors) — browsable docs at `/api/v1/docs`
+- 🛡️ **Conflict-safe co-editing**: strong ETags + `If-Match`/`If-None-Match` on WebDAV, upload conflict detection with explicit force-overwrite (audited)
+- 🔑 **Generic OIDC SSO** (Keycloak / Authentik / Authelia): authorization-code + PKCE, verified-email account linking, domain-gated auto-provisioning, group-claim sync — coexists with password login
 - 🎛️ **Admin UI**: invite users, manage vaults, grants, and groups
 - 🏠 Built-in **docs vault** served out of the box
 
@@ -77,11 +80,13 @@ morinet serve --config ./config.toml
 
 ## Status
 
-**v1.1.0 stable.** Shipped: multi-vault hosting with groups and personal vaults (GitHub load + local folder upload), llm-wiki/Obsidian conversion, admin UI, email invites and reset, WebDAV, MCP server with API tokens, a built-in docs vault, per-vault display options (page numbers, theme), a wiki-changes log in Statistics, and locked-account guards. 1.0.1–1.0.3: global header on Share/Statistics/Edit pages, vault chrome (zoom + Close vault) on every served page — native mdBook vaults included — an "Exit Settings" link back to the main menu, and a clean sidebar with no duplicated chapter numbers.
+**v1.3.0 stable.** v1.2 "Team Access" shipped: conflict-safe co-editing (strong ETags, conditional WebDAV writes, upload conflict list + force-overwrite audit), a read-only REST API on `/api/v1` (Bearer API tokens, cursor pagination, search, ETag/304, per-token rate limiting), and generic OIDC SSO (auth-code + PKCE against any compliant IdP, verified-email linking, domain-gated reader auto-provisioning, replace-on-login group sync) — fully coexisting with password login, bootstrap admin always available as safety net.
+
+Earlier: v1.1.0 added per-vault display options, the wiki-changes log, and locked-account guards on top of v1.0: multi-vault hosting with groups and personal vaults (GitHub load + local folder upload), llm-wiki/Obsidian conversion, admin UI, email invites and reset, WebDAV, MCP server with API tokens, and a built-in docs vault.
 
 **Live demo**: [morinet.treklair.fr](https://morinet.treklair.fr) — public demo instance, no real data; credentials are not in this repo.
 
-Roadmap: [`.planning/ROADMAP.md`](.planning/ROADMAP.md) · Requirements catalog: [`.planning/REQUIREMENTS.md`](.planning/REQUIREMENTS.md)
+Roadmap: [`.planning/ROADMAP.md`](.planning/ROADMAP.md) · Shipped requirements: [`.planning/milestones/`](.planning/milestones/)
 
 ## License
 
