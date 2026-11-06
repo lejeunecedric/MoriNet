@@ -97,3 +97,12 @@ Resume file: None
 
 - v1.3 not yet scoped — candidates in PROJECT.md "Next Milestone Goals" (issues #10/#11, G1-G3 tests)
 - Run the two deferred human UATs when staging access is available (rclone/Obsidian + real IdP)
+
+## Deferred Items
+
+Items acknowledged and deferred at v1.3 milestone close 2026-11-06:
+
+| Category | Item | Status |
+|----------|------|--------|
+| uat | 15-HUMAN-UAT — real rclone/Obsidian WebDAV smoke test | partial (1 scenario open) |
+| uat | 17-HUMAN-UAT — real IdP smoke test (Keycloak/Authentik/Authelia) | pending |
