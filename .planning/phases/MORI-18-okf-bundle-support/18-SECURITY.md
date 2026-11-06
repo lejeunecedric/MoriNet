@@ -127,3 +127,10 @@ symlink-loop probe (scratch crate, scan_conformance on `concepts/loop -> ..`)
 **SECURED** — 15 CLOSED / 2 ACCEPTED / 0 OPEN. Follow-ups (non-blocking): correct the
 two inaccurate accepted-risk statements (N-18-01 concurrency memory, N-18-02 OkfStats
 embed), add a badge version-escape test, consider a per-user export semaphore.
+
+## Addendum (same day)
+
+**N-18-01 FIXED** (commit `9568cd3`): global `EXPORT_SEMAPHORE` (2 permits) in
+`src/server.rs` queues concurrent exports instead of buffering them in
+parallel; test `export_waits_for_semaphore_permit` proves queueing.
+Worst-case concurrent export memory now bounded at ~1 GiB.

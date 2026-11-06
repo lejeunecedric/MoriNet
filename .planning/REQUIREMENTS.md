@@ -8,10 +8,10 @@
 
 ### OKF Bundle Support (issue #11)
 
-- [ ] **OKF-01**: At refresh/register, vault sources are scanned for OKF conformance: per-file non-empty `type` frontmatter, reserved `index.md`/`log.md` shape, version guess (v0.1 vs v0.2); stats persisted per vault.
-- [ ] **OKF-02**: Vault page shows an OKF badge: "OKF v0.2 — N/M concepts" (or v0.1 / "not an OKF bundle") with conformance detail.
-- [ ] **OKF-03**: "Export as OKF bundle" streams a zip of the vault source (byte-identical files), synthesizing a root `index.md` with `okf_version: "0.2"` in-memory when absent; gated by vault read ACL.
-- [ ] **OKF-04**: `/api/v1` note list/read expose parsed frontmatter metadata (`type`, `tags`, `status`, derived trust tier per OKF §5.3); MCP list/search accept optional `type`/`tags` filters; ACL semantics unchanged (404 on inaccessible).
+- [x] **OKF-01**: At refresh/register, vault sources are scanned for OKF conformance: per-file non-empty `type` frontmatter, reserved `index.md`/`log.md` shape, version guess (v0.1 vs v0.2); stats persisted per vault.
+- [x] **OKF-02**: Vault page shows an OKF badge: "OKF v0.2 — N/M concepts" (or v0.1 / "not an OKF bundle") with conformance detail.
+- [x] **OKF-03**: "Export as OKF bundle" streams a zip of the vault source (byte-identical files), synthesizing a root `index.md` with `okf_version: "0.2"` in-memory when absent; gated by vault read ACL.
+- [x] **OKF-04**: `/api/v1` note list/read expose parsed frontmatter metadata (`type`, `tags`, `status`, derived trust tier per OKF §5.3); MCP list/search accept optional `type`/`tags` filters; ACL semantics unchanged (404 on inaccessible).
 
 ## Backlog / deferred candidates
 
@@ -25,10 +25,10 @@
 
 | REQ | Phase | Status |
 |-----|-------|--------|
-| OKF-01 | 18 | Planned |
-| OKF-02 | 18 | Planned |
-| OKF-03 | 18 | Planned |
-| OKF-04 | 18 | Planned |
+| OKF-01 | 18 | Complete |
+| OKF-02 | 18 | Complete |
+| OKF-03 | 18 | Complete |
+| OKF-04 | 18 | Complete |
 
 ---
 
