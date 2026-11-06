@@ -632,7 +632,7 @@ async fn sync_groups(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_identity, VerifiedIdentity};
+    use super::{resolve_identity, VerifiedIdentity, SSO_STATE_TTL_SECS};
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
     use rsa::pkcs1v15::SigningKey;
@@ -705,6 +705,10 @@ mod tests {
         /// access_token value served at /token (tests smuggle claims here to
         /// prove the verifier never consults it — D-15).
         access_token: Arc<Mutex<String>>,
+        /// When enabled, /token refuses a code it already exchanged — real
+        /// IdPs enforce single-use authorization codes (plan 17-05 matrix).
+        single_use: Arc<Mutex<bool>>,
+        used_codes: Arc<Mutex<std::collections::HashSet<String>>>,
     }
 
     impl MockIdp {
@@ -732,26 +736,50 @@ mod tests {
                 last_verifier: Arc::new(Mutex::new(None)),
                 sign_key: Arc::new(Mutex::new(TEST_KEY_PEM)),
                 access_token: Arc::new(Mutex::new("opaque".to_string())),
+                single_use: Arc::new(Mutex::new(false)),
+                used_codes: Arc::new(Mutex::new(std::collections::HashSet::new())),
             };
 
-            let (claims, challenge, last_verifier, sign_key, jwks, access_token) = (
+            let (
+                claims,
+                challenge,
+                last_verifier,
+                sign_key,
+                jwks,
+                access_token,
+                single_use,
+                used_codes,
+            ) = (
                 idp.claims.clone(),
                 idp.challenge.clone(),
                 idp.last_verifier.clone(),
                 idp.sign_key.clone(),
                 idp.jwks_json.clone(),
                 idp.access_token.clone(),
+                idp.single_use.clone(),
+                idp.used_codes.clone(),
             );
             tokio::spawn(async move {
                 loop {
                     let (mut stream, _) = listener.accept().await.unwrap();
-                    let (claims, challenge, last_verifier, sign_key, jwks, access_token) = (
+                    let (
+                        claims,
+                        challenge,
+                        last_verifier,
+                        sign_key,
+                        jwks,
+                        access_token,
+                        single_use,
+                        used_codes,
+                    ) = (
                         claims.clone(),
                         challenge.clone(),
                         last_verifier.clone(),
                         sign_key.clone(),
                         jwks.clone(),
                         access_token.clone(),
+                        single_use.clone(),
+                        used_codes.clone(),
                     );
                     tokio::spawn(async move {
                         let _ = serve(
@@ -762,6 +790,8 @@ mod tests {
                             last_verifier,
                             sign_key,
                             access_token,
+                            single_use,
+                            used_codes,
                         )
                         .await;
                     });
@@ -790,6 +820,13 @@ mod tests {
         fn sign_with_foreign_key(&self) {
             *self.sign_key.lock().unwrap() = WRONG_KEY_PEM;
         }
+
+        /// Make /token refuse a code it has already exchanged. Real IdPs
+        /// enforce single-use authorization codes; the matrix replay test
+        /// opts in so a replayed callback URL hits the IdP-side refusal.
+        fn enforce_code_single_use(&self) {
+            *self.single_use.lock().unwrap() = true;
+        }
     }
 
     async fn respond(stream: &mut TcpStream, status: &str, body: &str) {
@@ -808,6 +845,8 @@ mod tests {
         last_verifier: Arc<Mutex<Option<String>>>,
         sign_key: Arc<Mutex<&'static str>>,
         access_token: Arc<Mutex<String>>,
+        single_use: Arc<Mutex<bool>>,
+        used_codes: Arc<Mutex<std::collections::HashSet<String>>>,
     ) -> std::io::Result<()> {
         // Read request head + headers (minimal HTTP parse, no deps).
         let mut buf = Vec::new();
@@ -898,6 +937,19 @@ mod tests {
                             stream,
                             "400 Bad Request",
                             r#"{"error":"invalid_grant","error_description":"pkce failure"}"#,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                }
+                // Single-use code gate (opt-in): mirrors real IdPs refusing a
+                // replayed authorization code even with a valid PKCE verifier.
+                if let Some(code) = get("code") {
+                    if *single_use.lock().unwrap() && !used_codes.lock().unwrap().insert(code) {
+                        respond(
+                            stream,
+                            "400 Bad Request",
+                            r#"{"error":"invalid_grant","error_description":"code_replay"}"#,
                         )
                         .await;
                         return Ok(());
@@ -2530,6 +2582,668 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+    }
+
+    // ---------- plan 17-05: end-to-end security matrix (A1/A2/A5/A6/A7) ----------
+    //
+    // Each family drives the REAL router + mock IdP through one ROADMAP
+    // "Avoids" entry. Every refusal asserts BOTH the HTTP status AND its
+    // auth_events row (kind + detail) — D-05 ("every link/deny is logged")
+    // made mechanically checkable across families.
+
+    /// Bare `name=value` of the minted session cookie, ready for a Cookie header.
+    fn minted_session_cookie(res: &Response) -> Option<String> {
+        let c = find_cookie(&set_cookie_headers(res), "morinet_session")?;
+        Some(c.split(';').next().unwrap().to_string())
+    }
+
+    async fn get_with_cookie(app: &axum::Router, uri: &str, cookie: &str) -> Response {
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, cookie.parse().unwrap());
+        req(app.clone(), "GET", uri, headers, None).await
+    }
+
+    async fn post_login(app: &axum::Router, email: &str, password: &str) -> Response {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        req(
+            app.clone(),
+            "POST",
+            "/login",
+            headers,
+            Some(Body::from(format!("email={email}&password={password}"))),
+        )
+        .await
+    }
+
+    // ----- A1: email-takeover attempts (D-03/D-05/D-12) -----
+
+    /// An IdP account presenting the ADMIN's verified email is refused: no
+    /// auto-link, no sign-in, refusal audited (D-05, A1).
+    #[tokio::test]
+    async fn matrix_a1_admin_never_linked() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "attacker-sub",
+            Some("admin@example.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(
+            find_cookie(&set_cookie_headers(&res), "morinet_session").is_none(),
+            "refusal must never carry a session cookie"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "admin_match")
+                .await
+                .unwrap(),
+            1,
+            "admin-match refusal is audited"
+        );
+        let uid = state
+            .store
+            .user_id_for("admin@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            state.store.identity_for_user(uid).await.unwrap().is_none(),
+            "admin account gained no SSO identity"
+        );
+    }
+
+    /// After the first link the email claim is INERT: sub-A stays pinned to the
+    /// victim even when the token carries an attacker email (D-03, A1).
+    #[tokio::test]
+    async fn matrix_a1_relinked_identity_ignores_email() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "victim@corp.example", &idp.issuer, "sub-A").await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "sub-A",
+            Some("attacker@evil.test"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            session_email(&state, &res).as_deref(),
+            Some("victim@corp.example"),
+            "session follows the (iss,sub) link, never the claim email"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("link", "auto_link")
+                .await
+                .unwrap(),
+            0,
+            "returning path never re-links on email"
+        );
+        assert!(
+            state
+                .store
+                .user_id_for("attacker@evil.test")
+                .await
+                .unwrap()
+                .is_none(),
+            "the attacker email must not gain an account"
+        );
+    }
+
+    /// The IdP changing a user's email never moves the identity: same sub →
+    /// same local user, no new account, no re-link audit (D-03, A1).
+    #[tokio::test]
+    async fn matrix_a1_email_change_at_idp_does_not_move_identity() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "user-a@corp.example", &idp.issuer, "sub-A").await;
+        let first = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "sub-A",
+            Some("user-a@corp.example"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(
+            session_email(&state, &first).as_deref(),
+            Some("user-a@corp.example")
+        );
+        // Later login: same sub, DIFFERENT email claim.
+        let later = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "sub-A",
+            Some("someone-else@nowhere.test"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(later.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            session_email(&state, &later).as_deref(),
+            Some("user-a@corp.example"),
+            "identity stays pinned to the linked user"
+        );
+        assert!(
+            state
+                .store
+                .user_id_for("someone-else@nowhere.test")
+                .await
+                .unwrap()
+                .is_none(),
+            "a changed claim email must not provision a new account"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("link", "auto_link")
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("provision", "auto_provision")
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    // ----- A2: state / nonce / PKCE / code replay -----
+
+    /// Callback without the state cookie: 403, audited `state_invalid`.
+    #[tokio::test]
+    async fn matrix_a2_missing_state() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        let res = callback(&app, "code=test-code&state=whatever", None).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(find_cookie(&set_cookie_headers(&res), "morinet_session").is_none());
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "state_invalid")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// State cookie signed with a foreign secret: codec rejects it, audited.
+    #[tokio::test]
+    async fn matrix_a2_forged_state() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        let (_loc, cookie_value) = drive_sso_login(&app).await;
+        let (s, n, v) = decode_state_cookie(&state, &cookie_value);
+        let rogue = crate::session::SessionCodec::new(b"attacker-secret-0123456789ab");
+        let forged = rogue.sign(
+            &format!("{s}\n{n}\n{v}"),
+            crate::server::unix_now(),
+            SSO_STATE_TTL_SECS,
+        );
+        let res = callback(&app, &format!("code=test-code&state={s}"), Some(&forged)).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(find_cookie(&set_cookie_headers(&res), "morinet_session").is_none());
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "state_invalid")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// State cookie past its 600 s TTL (signed with a far-past `now`): the
+    /// codec expiry rejects it, audited `state_invalid`.
+    #[tokio::test]
+    async fn matrix_a2_expired_state() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        let (_loc, cookie_value) = drive_sso_login(&app).await;
+        let (s, n, v) = decode_state_cookie(&state, &cookie_value);
+        let stale = state.codec.sign(
+            &format!("{s}\n{n}\n{v}"),
+            crate::server::unix_now() - (SSO_STATE_TTL_SECS + 60),
+            SSO_STATE_TTL_SECS,
+        );
+        let res = callback(&app, &format!("code=test-code&state={s}"), Some(&stale)).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(find_cookie(&set_cookie_headers(&res), "morinet_session").is_none());
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "state_invalid")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// ID token carrying the wrong nonce: exchange fails closed, audited.
+    #[tokio::test]
+    async fn matrix_a2_nonce_mismatch() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "sso-user@example.com", &idp.issuer, "sso-user-1").await;
+        let (loc, cookie_value) = drive_sso_login(&app).await;
+        let (s, _n, _v) = happy_setup(&idp, &state, &loc, &cookie_value, "sso-user-1").await;
+        let now = crate::server::unix_now();
+        idp.set_claims(json!({
+            "iss": idp.issuer, "aud": [TEST_CLIENT_ID], "sub": "sso-user-1",
+            "nonce": "attacker-nonce", "iat": now, "exp": now + 300,
+        }));
+        let res = callback(
+            &app,
+            &format!("code=test-code&state={s}"),
+            Some(&cookie_value),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(find_cookie(&set_cookie_headers(&res), "morinet_session").is_none());
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "nonce_mismatch")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// Same callback URL replayed twice (attacker ignores the state-cookie
+    /// clear): the IdP's single-use code gate refuses the second exchange —
+    /// 403, audited `token_invalid`, no session on the replay.
+    #[tokio::test]
+    async fn matrix_a2_code_replay() {
+        let idp = MockIdp::start().await;
+        idp.enforce_code_single_use();
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "sso-user@example.com", &idp.issuer, "sso-user-1").await;
+        let (loc, cookie_value) = drive_sso_login(&app).await;
+        let (s, _n, _v) = happy_setup(&idp, &state, &loc, &cookie_value, "sso-user-1").await;
+        let query = format!("code=test-code&state={s}");
+        let first = callback(&app, &query, Some(&cookie_value)).await;
+        assert_eq!(first.status(), StatusCode::SEE_OTHER);
+        let replay = callback(&app, &query, Some(&cookie_value)).await;
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        assert!(
+            find_cookie(&set_cookie_headers(&replay), "morinet_session").is_none(),
+            "replay must not mint a session"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "token_invalid")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// PKCE gate: the verifier must hash to the challenge the IdP stored —
+    /// a mismatched challenge kills the exchange, audited `token_invalid`.
+    #[tokio::test]
+    async fn matrix_a2_pkce_verifier_required() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "sso-user@example.com", &idp.issuer, "sso-user-1").await;
+        let (loc, cookie_value) = drive_sso_login(&app).await;
+        let (s, _n, v) = happy_setup(&idp, &state, &loc, &cookie_value, "sso-user-1").await;
+        // IdP now expects a DIFFERENT challenge: our verifier no longer matches.
+        idp.set_challenge("bogus-challenge-not-matching-verifier");
+        let res = callback(
+            &app,
+            &format!("code=test-code&state={s}"),
+            Some(&cookie_value),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(find_cookie(&set_cookie_headers(&res), "morinet_session").is_none());
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "token_invalid")
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            idp.last_verifier().as_deref(),
+            Some(v.as_str()),
+            "the verifier reached the IdP and was checked"
+        );
+    }
+
+    // ----- A5: groups-claim escalation (D-09/D-10/D-15) -----
+
+    /// A groups claim naming "admin" with NO mapping entry can never grant
+    /// admin: the group is not in the managed set, and the /admin gate stays
+    /// shut for the signed-in reader (T-17-16).
+    #[tokio::test]
+    async fn matrix_a5_no_admin_claim_without_mapping() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_linked_user(&state, "sync@example.com", &idp.issuer, "sync-sub").await;
+        let admin = state.store.create_group("admin").await.unwrap();
+        let res = callback_with_groups(
+            &app,
+            &state,
+            &idp,
+            "sync-sub",
+            Some(json!(["admins", "admin"])),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(
+            state.store.group_members(admin).await.unwrap().is_empty(),
+            "claim cannot self-serve admin without an explicit mapping"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("group_sync", "added:admin")
+                .await
+                .unwrap(),
+            0
+        );
+        let cookie = minted_session_cookie(&res).expect("session minted");
+        let gate = get_with_cookie(&app, "/admin", &cookie).await;
+        assert_eq!(gate.status(), StatusCode::FORBIDDEN, "role stays reader");
+    }
+
+    /// The same claim smuggled into the ACCESS token changes nothing: only the
+    /// signature-verified ID token is consulted (D-15).
+    #[tokio::test]
+    async fn matrix_a5_access_token_claim_ignored() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_linked_user(&state, "sync@example.com", &idp.issuer, "sync-sub").await;
+        let writers = state.store.create_group("writers").await.unwrap();
+        idp.set_access_token(&sign_rs256(
+            TEST_KEY_PEM,
+            &json!({ "sub": "sync-sub", "groups": ["dev"] }),
+        ));
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", None).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(
+            state.store.group_members(writers).await.unwrap().is_empty(),
+            "access-token claims are never consulted"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("group_sync", "added:writers")
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    /// ID token signed with a foreign key (JWKS advertises the real one):
+    /// verification fails closed, audited `token_invalid`.
+    #[tokio::test]
+    async fn matrix_a5_forged_key_rejected() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "sso-user@example.com", &idp.issuer, "sso-user-1").await;
+        let (loc, cookie_value) = drive_sso_login(&app).await;
+        let (s, _n, _v) = happy_setup(&idp, &state, &loc, &cookie_value, "sso-user-1").await;
+        idp.sign_with_foreign_key();
+        let res = callback(
+            &app,
+            &format!("code=test-code&state={s}"),
+            Some(&cookie_value),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(find_cookie(&set_cookie_headers(&res), "morinet_session").is_none());
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "token_invalid")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    // ----- A6: session fixation -----
+
+    /// A hostile pre-set `morinet_session` cookie is REPLACED by the fresh
+    /// mint on callback success, and never authenticates on its own (T-17-22).
+    #[tokio::test]
+    async fn matrix_a6_fresh_cookie_on_sso_login() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "victim@corp.example", &idp.issuer, "sub-A").await;
+        let (loc, cookie_value) = drive_sso_login(&app).await;
+        let (s, _n, _v) = happy_setup(&idp, &state, &loc, &cookie_value, "sub-A").await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            format!("morinet_session=attacker-forged-token; morinet_sso_state={cookie_value}")
+                .parse()
+                .unwrap(),
+        );
+        let res = req(
+            app.clone(),
+            "GET",
+            &format!("/sso/callback?code=test-code&state={s}"),
+            headers,
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            session_email(&state, &res).as_deref(),
+            Some("victim@corp.example"),
+            "callback mints a FRESH session replacing any pre-set cookie"
+        );
+        // The hostile cookie alone never authenticates.
+        let hostile = get_with_cookie(&app, "/", "morinet_session=attacker-forged-token").await;
+        assert_eq!(hostile.status(), StatusCode::SEE_OTHER);
+        assert_eq!(hostile.headers().get(LOCATION).unwrap(), "/login");
+    }
+
+    /// Nothing handed out by /sso/login is accepted as a session identifier:
+    /// the state token shares the session codec, so it must NEVER verify as a
+    /// session cookie (A6 — this test drove the `verify_session` fix).
+    #[tokio::test]
+    async fn matrix_a6_no_preauth_identifier() {
+        let idp = MockIdp::start().await;
+        let (app, _state) = test_router_with_oidc(&idp.issuer).await;
+        let (_loc, state_value) = drive_sso_login(&app).await;
+        let res = get_with_cookie(&app, "/", &format!("morinet_session={state_value}")).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.headers().get(LOCATION).unwrap(),
+            "/login",
+            "the SSO state token must not authenticate a session"
+        );
+        let gate = get_with_cookie(&app, "/admin", &format!("morinet_session={state_value}")).await;
+        assert_eq!(gate.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- A7: gate bypass via auto-provision (D-04) -----
+
+    /// An auto-provisioned SSO reader hits the SAME gates as any reader:
+    /// / allowed, /admin refused; provisioning is audited.
+    #[tokio::test]
+    async fn matrix_a7_provisioned_reader_blocked_from_admin() {
+        let idp = MockIdp::start().await;
+        let mut cfg = oidc_cfg(&idp.issuer);
+        cfg.allowed_email_domains = vec!["example.com".to_string()];
+        let (app, state) = test_router_with_cfg(Some(cfg)).await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "fresh-sub",
+            Some("fresh@example.com"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("provision", "auto_provision")
+                .await
+                .unwrap(),
+            1
+        );
+        let cookie = minted_session_cookie(&res).expect("session minted");
+        let home = get_with_cookie(&app, "/", &cookie).await;
+        assert_eq!(home.status(), StatusCode::OK);
+        let admin = get_with_cookie(&app, "/admin", &cookie).await;
+        assert_eq!(
+            admin.status(),
+            StatusCode::FORBIDDEN,
+            "provisioned reader never reaches admin"
+        );
+    }
+
+    /// Unmatched domain: 403 with NO session cookie anywhere in the response,
+    /// audited `domain_not_allowed` (fail-closed provisioning).
+    #[tokio::test]
+    async fn matrix_a7_unmatched_email_gets_no_cookie() {
+        let idp = MockIdp::start().await;
+        let mut cfg = oidc_cfg(&idp.issuer);
+        cfg.allowed_email_domains = vec!["example.com".to_string()];
+        let (app, state) = test_router_with_cfg(Some(cfg)).await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "x-sub",
+            Some("nope@evil.test"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(
+            set_cookie_headers(&res)
+                .iter()
+                .all(|c| !c.starts_with("morinet_session=")),
+            "403 must not leak a session cookie: {:?}",
+            set_cookie_headers(&res)
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "domain_not_allowed")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// With `[oidc]` absent both SSO routes answer 404 and the login page is
+    /// byte-identical to pre-Phase-17 LOGIN_HTML — SSO is fully removable
+    /// (SSO-05).
+    #[tokio::test]
+    async fn matrix_a7_sso_disabled_routes_404() {
+        let (app, _state) = test_router_disabled().await;
+        let login = req(app.clone(), "GET", "/sso/login", HeaderMap::new(), None).await;
+        assert_eq!(login.status(), StatusCode::NOT_FOUND);
+        let cb = req(
+            app.clone(),
+            "GET",
+            "/sso/callback?code=a&state=b",
+            HeaderMap::new(),
+            None,
+        )
+        .await;
+        assert_eq!(cb.status(), StatusCode::NOT_FOUND);
+        let page = req(app, "GET", "/login", HeaderMap::new(), None).await;
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(page).await,
+            crate::server::LOGIN_HTML,
+            "login page byte-identical when SSO is absent"
+        );
+    }
+
+    // ----- Coexistence (SSO-06) -----
+
+    /// With `[oidc]` fully configured, password login for admin AND reader AND
+    /// the bootstrap fallback admin still works end-to-end, and an SSO reader
+    /// hits the same gates as a password reader — SSO coexists, never replaces.
+    #[tokio::test]
+    async fn matrix_coexist_password_and_sso_side_by_side() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        seed_linked_user(&state, "sso-user@example.com", &idp.issuer, "sso-user-1").await;
+        // 1. Bootstrap admin password login (SSO-06 safety net).
+        let res = post_login(&app, "admin%40example.com", "test-pass-9f3a").await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let admin_cookie = minted_session_cookie(&res).expect("admin session");
+        assert_eq!(
+            get_with_cookie(&app, "/admin", &admin_cookie)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        // 2. Password reader coexists with identical gates.
+        state
+            .store
+            .create_user("pw-reader@example.com", "pw-reader-9f3a", "reader")
+            .await
+            .unwrap();
+        let res = post_login(&app, "pw-reader%40example.com", "pw-reader-9f3a").await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let reader_cookie = minted_session_cookie(&res).expect("reader session");
+        assert_eq!(
+            get_with_cookie(&app, "/", &reader_cookie).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            get_with_cookie(&app, "/admin", &reader_cookie)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        // 3. SSO login side by side, same gate behaviour as the password reader.
+        let res = callback_with_email(&app, &state, &idp, "sso-user-1", None, None).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let sso_cookie = minted_session_cookie(&res).expect("sso session");
+        assert_eq!(
+            get_with_cookie(&app, "/", &sso_cookie).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            get_with_cookie(&app, "/admin", &sso_cookie).await.status(),
+            StatusCode::FORBIDDEN
+        );
+        // 4. Admin password login STILL works after SSO activity.
+        assert_eq!(
+            post_login(&app, "admin%40example.com", "test-pass-9f3a")
+                .await
+                .status(),
+            StatusCode::SEE_OTHER
         );
     }
 }
