@@ -9,6 +9,8 @@ Style reference: `MORI-17-.../17-PATTERNS.md` (not duplicated here).
 
 The Phase 13 change-capture lives in **server.rs**, best-effort after a successful `seed_vault`. Three register/refresh call sites matter:
 
+> **Checker note (2026-11-06, plan-check iteration 2):** the OKF scan must fire at SIX arms — the three below PLUS upload-register server.rs:3465-3468, finish_upload_update success tail :3516+, and the background GitHub sync arm main.rs:223 (store handle `bg_store`).
+
 **a) Git refresh — `refresh_my_vault`, src/server.rs:3027-3041:**
 ```rust
     match state.store.seed_vault(&slug, &name, &book_dir).await {
