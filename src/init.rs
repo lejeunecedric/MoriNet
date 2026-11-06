@@ -84,6 +84,23 @@ password = {password}
 # name = "Demo vault"
 # kind = "local"
 # path = "./data/vaults/demo/src"
+
+# [oidc]
+# # Single sign-on via a generic OIDC IdP. Disabled unless issuer, client_id
+# # and client_secret are ALL set; password login is never affected.
+# # Secrets can come from env instead: MORINET_OIDC_ISSUER,
+# # MORINET_OIDC_CLIENT_ID, MORINET_OIDC_CLIENT_SECRET,
+# # MORINET_OIDC_ALLOWED_DOMAINS (env wins; blank = unset).
+# issuer = "https://id.example.com"
+# client_id = "morinet"
+# client_secret = "change-me"
+# # Exact domains auto-provisioned on first SSO login ([] = provisioning off).
+# allowed_email_domains = ["corp.example"]
+# # ID-token groups claim (default "groups") mapped to local groups;
+# # only mapped groups are managed. See docs config-reference [oidc].
+# groups_claim = "groups"
+# [oidc.group_map]
+# # dev = "writers"
 "#,
         bind_addr = toml_str(&format!("127.0.0.1:{port}")),
         base_url = toml_str(&format!("http://localhost:{port}")),
