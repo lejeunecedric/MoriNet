@@ -13,16 +13,65 @@ use axum::extract::{Query, State};
 use axum::http::header::{COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
-use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType};
+use openidconnect::core::{
+    CoreAuthDisplay, CoreAuthPrompt, CoreClient, CoreErrorResponseType, CoreGenderClaim,
+    CoreJsonWebKey, CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm,
+    CoreProviderMetadata, CoreResponseType, CoreRevocableToken, CoreRevocationErrorResponse,
+    CoreTokenIntrospectionResponse,
+};
 use openidconnect::{
-    AuthenticationFlow, AuthorizationCode, ClaimsVerificationError, ClientId, ClientSecret,
-    CsrfToken, IssuerUrl, Nonce, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
+    AdditionalClaims, AuthenticationFlow, AuthorizationCode, ClaimsVerificationError, ClientId,
+    ClientSecret, CsrfToken, EmptyExtraTokenFields, IssuerUrl, Nonce, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, Scope, StandardErrorResponse, StandardTokenResponse,
     TokenResponse,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use crate::server::{error_page, parse_cookies, unix_now, SharedState};
+
+/// Unregistered ID-token claims captured DURING signature verification
+/// (D-15): the flatten map receives every claim the Core types do not
+/// consume — the groups claim lives here and nowhere else. The access token
+/// and userinfo are never parsed, so a claim smuggled outside the verified
+/// ID token cannot influence group sync (T-17-16).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(crate) struct OidcExtraClaims {
+    #[serde(flatten)]
+    map: std::collections::HashMap<String, serde_json::Value>,
+}
+impl AdditionalClaims for OidcExtraClaims {}
+
+/// Token response whose ID token carries [`OidcExtraClaims`] (Core crypto
+/// unchanged — only the additional-claims type parameter differs).
+type OidcIdTokenFields = openidconnect::IdTokenFields<
+    OidcExtraClaims,
+    EmptyExtraTokenFields,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJwsSigningAlgorithm,
+>;
+type OidcTokenResponse =
+    StandardTokenResponse<OidcIdTokenFields, openidconnect::core::CoreTokenType>;
+type OidcClient = openidconnect::Client<
+    OidcExtraClaims,
+    CoreAuthDisplay,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJsonWebKey,
+    CoreAuthPrompt,
+    StandardErrorResponse<CoreErrorResponseType>,
+    OidcTokenResponse,
+    CoreTokenIntrospectionResponse,
+    CoreRevocableToken,
+    CoreRevocationErrorResponse,
+    openidconnect::EndpointSet,
+    openidconnect::EndpointNotSet,
+    openidconnect::EndpointNotSet,
+    openidconnect::EndpointNotSet,
+    openidconnect::EndpointMaybeSet,
+    openidconnect::EndpointMaybeSet,
+>;
 
 /// Short-lived cookie carrying `state\nnonce\ncode_verifier` (signed SessionCodec payload).
 const SSO_STATE_COOKIE: &str = "morinet_sso_state";
@@ -185,9 +234,9 @@ pub(crate) async fn sso_callback(
     };
 
     // Token exchange + ID-token validation (discovery + JWKS, iss/aud/nonce/exp).
-    let claims =
+    let (claims, extra) =
         match exchange_and_verify(&state, oidc, &code, &expected_verifier, &expected_nonce).await {
-            Ok(claims) => claims,
+            Ok(pair) => pair,
             Err(detail) => {
                 let mut r = deny(&state, &iss, "", &detail).await;
                 r.headers_mut()
@@ -216,6 +265,14 @@ pub(crate) async fn sso_callback(
                 .append(SET_COOKIE, session_cookie.parse().unwrap());
             resp.headers_mut()
                 .append(SET_COOKIE, clear_state_cookie().parse().unwrap());
+            // Group sync (D-09/D-10/D-15): best-effort AFTER the mint, before
+            // the response — a sync failure never blocks sign-in (D-04
+            // precedent), and every applied change is audited inside.
+            if let Some(uid) = state.store.user_id_for(&email).await.ok().flatten() {
+                if let Err(e) = sync_groups(&state, &email, uid, &iss, &claims.sub, &extra).await {
+                    eprintln!("oidc: group sync failed for {email}: {e}");
+                }
+            }
             resp
         }
         Err(refusal) => {
@@ -401,22 +458,29 @@ async fn resolve_identity(
 
 /// Exchange the code (PKCE verifier + Basic client auth) and validate the
 /// JWKS-signed ID token. Returns the authenticated `sub` plus the `email` /
-/// `email_verified` claims — all read ONLY from the signature-validated ID
-/// token (D-15); the access token is never consulted for identity.
+/// `email_verified` claims, and the unregistered claims captured during the
+/// same signature-verified parse — all read ONLY from the signature-validated
+/// ID token (D-15); the access token is never consulted for identity.
 async fn exchange_and_verify(
     state: &SharedState,
     oidc: &crate::config::OidcRuntime,
     code: &str,
     verifier: &str,
     nonce: &str,
-) -> Result<VerifiedIdentity, String> {
+) -> Result<
+    (
+        VerifiedIdentity,
+        std::collections::HashMap<String, serde_json::Value>,
+    ),
+    String,
+> {
     let _ = state;
     let http = openidconnect::reqwest::Client::new();
     let issuer = IssuerUrl::new(oidc.issuer.clone()).map_err(|_| "token_invalid".to_string())?;
     let provider = CoreProviderMetadata::discover_async(issuer.clone(), &http)
         .await
         .map_err(|_| "token_invalid".to_string())?;
-    let client = CoreClient::from_provider_metadata(
+    let client = OidcClient::from_provider_metadata(
         provider,
         ClientId::new(oidc.client_id.clone()),
         Some(ClientSecret::new(oidc.client_secret.clone())),
@@ -444,11 +508,126 @@ async fn exchange_and_verify(
     // (token_invalid) — fail-closed either way (plan 17-03 strictness).
     let email = claims.email().map(|e| e.as_str().to_string());
     let email_verified = claims.email_verified();
-    Ok(VerifiedIdentity {
-        sub,
-        email,
-        email_verified,
-    })
+    // Unregistered claims captured by the SAME signature-verified parse
+    // (D-15): only claims bound to this verified token exist here.
+    let extra = claims.additional_claims().map.clone();
+    Ok((
+        VerifiedIdentity {
+            sub,
+            email,
+            email_verified,
+        },
+        extra,
+    ))
+}
+
+/// D-09/D-10/D-15 replace-on-login group sync, run best-effort after every
+/// successful SSO sign-in. Locked diff algorithm (plan 17-04):
+///
+/// * claim ABSENT -> keep everything (early return, no audit rows);
+/// * claim PRESENT-but-empty -> remove ALL managed memberships;
+/// * managed set = `group_map` VALUES only — unmanaged groups are never
+///   touched, unknown targets are skipped + deny-logged (never auto-created);
+/// * wrong-shape claim -> skip sync + deny `groups_claim_invalid` (fail-closed);
+/// * removals that would empty the `admin` group are refused (`last_admin_kept`);
+/// * adds log `group_sync`/`added:{group}`, removals log `demote`/`removed:{group}`.
+async fn sync_groups(
+    state: &SharedState,
+    user_email: &str,
+    user_id: i64,
+    iss: &str,
+    sub: &str,
+    extra: &std::collections::HashMap<String, serde_json::Value>,
+) -> anyhow::Result<()> {
+    use std::collections::{HashMap, HashSet};
+    let Some(oidc) = &state.cfg.oidc else {
+        return Ok(());
+    };
+    // Claim source: ONLY the verified ID token's unregistered claims (D-15),
+    // keyed by the configurable claim name (never a hardcoded literal here).
+    let claim: Vec<&str> = match extra.get(&oidc.groups_claim) {
+        None => return Ok(()), // absent -> managed memberships untouched (D-09)
+        Some(serde_json::Value::Array(items)) => items.iter().filter_map(|v| v.as_str()).collect(),
+        Some(_) => {
+            // Present but not an array: never act on garbage (T-17-16).
+            state
+                .store
+                .log_auth_event("deny", user_email, iss, sub, "groups_claim_invalid")
+                .await?;
+            return Ok(());
+        }
+    };
+    // Managed set = mapping VALUES resolved to existing groups (D-10).
+    // A typo'd target is skipped + deny-logged; sync never creates groups.
+    let mut managed: HashMap<String, i64> = HashMap::new();
+    for name in oidc.group_map.values() {
+        if managed.contains_key(name.as_str()) {
+            continue; // dedup: several claim values may map to one group
+        }
+        match state.store.group_id_for_name(name).await? {
+            Some(id) => {
+                managed.insert(name.clone(), id);
+            }
+            None => {
+                state
+                    .store
+                    .log_auth_event("deny", user_email, iss, sub, "unknown_group_target")
+                    .await?;
+            }
+        }
+    }
+    // desired = mapped targets whose claim value is present in the claim.
+    let mut desired: HashSet<i64> = HashSet::new();
+    for (claim_value, target) in &oidc.group_map {
+        if claim.contains(&claim_value.as_str()) {
+            if let Some(id) = managed.get(target.as_str()) {
+                desired.insert(*id);
+            }
+        }
+    }
+    // current = user's memberships intersected with the managed ids.
+    let current_managed: Vec<(i64, String)> = state
+        .store
+        .group_memberships_for_user(user_id)
+        .await?
+        .into_iter()
+        .filter(|(id, name)| managed.get(name.as_str()) == Some(id))
+        .collect();
+    let current_ids: HashSet<i64> = current_managed.iter().map(|(id, _)| *id).collect();
+    for id in &desired {
+        if current_ids.contains(id) {
+            continue;
+        }
+        let name = managed
+            .iter()
+            .find(|(_, v)| *v == id)
+            .map(|(k, _)| k.as_str())
+            .unwrap_or("");
+        state.store.add_group_member(*id, user_email).await?;
+        state
+            .store
+            .log_auth_event("group_sync", user_email, iss, sub, &format!("added:{name}"))
+            .await?;
+    }
+    for (id, name) in &current_managed {
+        if desired.contains(id) {
+            continue;
+        }
+        // Anti-lockout (D-07 spirit): never empty the admin group via sync.
+        if name == "admin" && state.store.group_members(*id).await?.len() <= 1 {
+            state
+                .store
+                .log_auth_event("deny", user_email, iss, sub, "last_admin_kept")
+                .await?;
+            continue;
+        }
+        state.store.remove_group_member(*id, user_email).await?;
+        state
+            .store
+            .log_auth_event("demote", user_email, iss, sub, &format!("removed:{name}"))
+            .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -523,6 +702,9 @@ mod tests {
         last_verifier: Arc<Mutex<Option<String>>>,
         /// Which key /token signs with (switch to WRONG_KEY_PEM for forged-token tests).
         sign_key: Arc<Mutex<&'static str>>,
+        /// access_token value served at /token (tests smuggle claims here to
+        /// prove the verifier never consults it — D-15).
+        access_token: Arc<Mutex<String>>,
     }
 
     impl MockIdp {
@@ -549,24 +731,27 @@ mod tests {
                 challenge: Arc::new(Mutex::new(None)),
                 last_verifier: Arc::new(Mutex::new(None)),
                 sign_key: Arc::new(Mutex::new(TEST_KEY_PEM)),
+                access_token: Arc::new(Mutex::new("opaque".to_string())),
             };
 
-            let (claims, challenge, last_verifier, sign_key, jwks) = (
+            let (claims, challenge, last_verifier, sign_key, jwks, access_token) = (
                 idp.claims.clone(),
                 idp.challenge.clone(),
                 idp.last_verifier.clone(),
                 idp.sign_key.clone(),
                 idp.jwks_json.clone(),
+                idp.access_token.clone(),
             );
             tokio::spawn(async move {
                 loop {
                     let (mut stream, _) = listener.accept().await.unwrap();
-                    let (claims, challenge, last_verifier, sign_key, jwks) = (
+                    let (claims, challenge, last_verifier, sign_key, jwks, access_token) = (
                         claims.clone(),
                         challenge.clone(),
                         last_verifier.clone(),
                         sign_key.clone(),
                         jwks.clone(),
+                        access_token.clone(),
                     );
                     tokio::spawn(async move {
                         let _ = serve(
@@ -576,6 +761,7 @@ mod tests {
                             challenge,
                             last_verifier,
                             sign_key,
+                            access_token,
                         )
                         .await;
                     });
@@ -590,6 +776,10 @@ mod tests {
 
         fn set_challenge(&self, challenge: &str) {
             *self.challenge.lock().unwrap() = Some(challenge.to_string());
+        }
+
+        fn set_access_token(&self, token: &str) {
+            *self.access_token.lock().unwrap() = token.to_string();
         }
 
         fn last_verifier(&self) -> Option<String> {
@@ -617,6 +807,7 @@ mod tests {
         challenge: Arc<Mutex<Option<String>>>,
         last_verifier: Arc<Mutex<Option<String>>>,
         sign_key: Arc<Mutex<&'static str>>,
+        access_token: Arc<Mutex<String>>,
     ) -> std::io::Result<()> {
         // Read request head + headers (minimal HTTP parse, no deps).
         let mut buf = Vec::new();
@@ -715,7 +906,7 @@ mod tests {
                 let id_token =
                     sign_rs256(*sign_key.lock().unwrap(), &claims.lock().unwrap().clone());
                 let tok = json!({
-                    "access_token": "opaque",
+                    "access_token": *access_token.lock().unwrap(),
                     "token_type": "Bearer",
                     "expires_in": 3600,
                     "id_token": id_token,
@@ -1994,6 +2185,351 @@ mod tests {
         assert!(
             body.contains("Linked via SSO (https://idp.example/)"),
             "the create_account_token re-render keeps the row: {body}"
+        );
+    }
+
+    // ---------- Group sync: replace-on-login (plan 17-04, D-09/D-10/D-15) ----------
+
+    /// `oidc_cfg` with a non-empty claim->group mapping (managed set = values).
+    fn oidc_cfg_mapped(issuer: &str, map: &[(&str, &str)]) -> crate::config::OidcRuntime {
+        let mut cfg = oidc_cfg(issuer);
+        cfg.group_map = map
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        cfg
+    }
+
+    /// Full callback whose ID-token claims carry an optional `groups` claim
+    /// (`None` = claim absent entirely).
+    async fn callback_with_groups(
+        app: &axum::Router,
+        state: &crate::server::SharedState,
+        idp: &MockIdp,
+        sub: &str,
+        groups: Option<Value>,
+    ) -> Response {
+        let (loc, cookie_value) = drive_sso_login(app).await;
+        let (s, n, _v) = happy_setup(idp, state, &loc, &cookie_value, sub).await;
+        let now = crate::server::unix_now();
+        let mut claims = json!({
+            "iss": idp.issuer, "aud": [TEST_CLIENT_ID], "sub": sub,
+            "nonce": n, "iat": now, "exp": now + 300,
+        });
+        if let Some(g) = groups {
+            claims["groups"] = g;
+        }
+        idp.set_claims(claims);
+        callback(
+            app,
+            &format!("code=test-code&state={s}"),
+            Some(&cookie_value),
+        )
+        .await
+    }
+
+    /// Linked SSO reader used by every group_sync test.
+    async fn seed_sync_user(state: &crate::server::SharedState, idp: &MockIdp) {
+        seed_linked_user(state, "sync@example.com", &idp.issuer, "sync-sub").await;
+    }
+
+    /// D-09: claim ABSENT -> managed memberships untouched, no audit rows.
+    #[tokio::test]
+    async fn group_sync_claim_absent_keeps_memberships() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let writers = state.store.create_group("writers").await.unwrap();
+        state
+            .store
+            .add_group_member(writers, "sync@example.com")
+            .await
+            .unwrap();
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", None).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state.store.group_members(writers).await.unwrap(),
+            vec!["sync@example.com"],
+            "absent claim must never touch managed memberships (D-09)"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("group_sync", "added:writers")
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("demote", "removed:writers")
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    /// D-09: claim PRESENT but empty -> ALL managed memberships removed, and
+    /// every removal is audited as a `demote` row (T-17-18).
+    #[tokio::test]
+    async fn group_sync_claim_present_empty_removes_managed() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let writers = state.store.create_group("writers").await.unwrap();
+        state
+            .store
+            .add_group_member(writers, "sync@example.com")
+            .await
+            .unwrap();
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!([]))).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(state.store.group_members(writers).await.unwrap().is_empty());
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("demote", "removed:writers")
+                .await
+                .unwrap(),
+            1,
+            "demotions are logged (D-09)"
+        );
+    }
+
+    /// Mapped claim value -> membership added + `group_sync` audit row.
+    #[tokio::test]
+    async fn group_sync_adds_mapped_groups() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let writers = state.store.create_group("writers").await.unwrap();
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!(["dev"]))).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state.store.group_members(writers).await.unwrap(),
+            vec!["sync@example.com"]
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("group_sync", "added:writers")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// D-10: groups never named as mapping targets are NEVER touched —
+    /// manually-granted memberships survive an emptied claim.
+    #[tokio::test]
+    async fn group_sync_never_touches_unmanaged_groups() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let manual = state.store.create_group("manual").await.unwrap();
+        state
+            .store
+            .add_group_member(manual, "sync@example.com")
+            .await
+            .unwrap();
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!([]))).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state.store.group_members(manual).await.unwrap(),
+            vec!["sync@example.com"],
+            "unmanaged group survives sync (D-10)"
+        );
+    }
+
+    /// A5 core: with NO mapping value naming `admin`, a claim value can never
+    /// add admin membership — the group is not even in the managed set.
+    #[tokio::test]
+    async fn group_sync_admin_mapping_absent_blocks_admin() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let admin = state.store.create_group("admin").await.unwrap();
+        let res =
+            callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!(["admins"]))).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(
+            state.store.group_members(admin).await.unwrap().is_empty(),
+            "claim cannot self-serve admin without an explicit mapping (T-17-16)"
+        );
+    }
+
+    /// Admin mapping IS opt-in: configured mapping adds admin membership;
+    /// a later login with the claim ABSENT keeps it (absent != empty, D-09).
+    #[tokio::test]
+    async fn group_sync_admin_mapping_present_adds_and_absent_keeps() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("admins", "admin")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let admin = state.store.create_group("admin").await.unwrap();
+        let res =
+            callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!(["admins"]))).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state.store.group_members(admin).await.unwrap(),
+            vec!["sync@example.com"],
+            "explicit mapping grants admin (opt-in)"
+        );
+        // Second login, claim absent: admin membership must be KEPT, never
+        // silently stripped (D-09/D-10).
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", None).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state.store.group_members(admin).await.unwrap(),
+            vec!["sync@example.com"],
+            "absent claim never demotes (D-09)"
+        );
+    }
+
+    /// Anti-lockout (D-07 spirit): removing the LAST admin via sync is
+    /// refused and logged `last_admin_kept`.
+    #[tokio::test]
+    async fn group_sync_last_admin_kept() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "admin")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let admin = state.store.create_group("admin").await.unwrap();
+        state
+            .store
+            .add_group_member(admin, "sync@example.com")
+            .await
+            .unwrap();
+        // Sole member of `admin`, claim empty -> removal would lock the instance out.
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!([]))).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state.store.group_members(admin).await.unwrap(),
+            vec!["sync@example.com"],
+            "last admin is never removed (T-17-19)"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "last_admin_kept")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// Wrong-shape claim (string, not array) -> skip sync entirely + deny
+    /// `groups_claim_invalid` (fail-closed, T-17-16).
+    #[tokio::test]
+    async fn group_sync_claim_wrong_shape_skips_and_logs() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let writers = state.store.create_group("writers").await.unwrap();
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!("dev"))).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::SEE_OTHER,
+            "sign-in still succeeds"
+        );
+        assert!(
+            state.store.group_members(writers).await.unwrap().is_empty(),
+            "garbage claim never acts on memberships"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "groups_claim_invalid")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// Unknown mapping target: that entry is skipped + deny
+    /// `unknown_group_target`; other entries still apply; no group is created.
+    #[tokio::test]
+    async fn group_sync_unknown_target_group_skipped() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_cfg(Some(oidc_cfg_mapped(
+            &idp.issuer,
+            &[("dev", "ghost"), ("dev2", "writers")],
+        )))
+        .await;
+        seed_sync_user(&state, &idp).await;
+        let writers = state.store.create_group("writers").await.unwrap();
+        let res =
+            callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!(["dev", "dev2"])))
+                .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state.store.group_members(writers).await.unwrap(),
+            vec!["sync@example.com"],
+            "valid entries still apply"
+        );
+        assert_eq!(state.store.group_id_for_name("ghost").await.unwrap(), None);
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "unknown_group_target")
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// Non-string array entries are ignored; string entries still apply.
+    #[tokio::test]
+    async fn group_sync_nonstring_entries_ignored() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let writers = state.store.create_group("writers").await.unwrap();
+        let res =
+            callback_with_groups(&app, &state, &idp, "sync-sub", Some(json!(["dev", 42]))).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            state.store.group_members(writers).await.unwrap(),
+            vec!["sync@example.com"],
+            "42 ignored, dev applied"
+        );
+    }
+
+    /// D-15: groups are read ONLY from the signature-verified ID token —
+    /// the same claim smuggled into the access token changes nothing.
+    #[tokio::test]
+    async fn group_sync_reads_only_id_token() {
+        let idp = MockIdp::start().await;
+        let (app, state) =
+            test_router_with_cfg(Some(oidc_cfg_mapped(&idp.issuer, &[("dev", "writers")]))).await;
+        seed_sync_user(&state, &idp).await;
+        let writers = state.store.create_group("writers").await.unwrap();
+        // groups live ONLY in the access-token payload (unsigned by policy).
+        idp.set_access_token(&sign_rs256(
+            TEST_KEY_PEM,
+            &json!({ "sub": "sync-sub", "groups": ["dev"] }),
+        ));
+        let res = callback_with_groups(&app, &state, &idp, "sync-sub", None).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(
+            state.store.group_members(writers).await.unwrap().is_empty(),
+            "access-token claims are never consulted (D-15)"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("group_sync", "added:writers")
+                .await
+                .unwrap(),
+            0
         );
     }
 }
