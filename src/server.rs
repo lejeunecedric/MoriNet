@@ -10239,6 +10239,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn export_zip_build_failure_is_bare_500() {
+        // DEBT-2: builder failure (unreadable file → read error) answers a
+        // bare 500 with no filesystem path in the body (REV-18 M-01).
+        use std::os::unix::fs::PermissionsExt;
+        let (app, _state) = test_router().await;
+        let src = std::env::temp_dir().join(format!("morinet-vault-{}", std::process::id()));
+        let locked = src.join("locked.md");
+        std::fs::write(&locked, "# locked\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(
+            app,
+            "GET",
+            "/vault/demo/okf-export.zip",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        // Restore permissions before asserting so a failure cannot poison
+        // the shared fixture dir for sibling export tests.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body_text(res).await;
+        assert!(
+            !body.contains("morinet-vault") && !body.contains("locked.md"),
+            "error body must not leak paths: {body}"
+        );
+        std::fs::remove_file(&locked).ok();
+    }
+
+    #[tokio::test]
     async fn export_link_in_stats_panel() {
         let (app, _state) = test_router().await;
         let cookie = login_cookie(&app).await;
