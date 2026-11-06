@@ -1282,9 +1282,9 @@ fn fmt_date(unix: i64) -> String {
     let era = (if z >= 0 { z } else { z - 146_097 + 1 }) / 146_097;
     let doe = (z - era * 146_097) as u64;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 146);
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
-    let d = doe - (153 * mp + 2) / 5 + 1;
+    let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe as i64 + era * 400;
     let y = if m <= 2 { y + 1 } else { y };
@@ -10083,6 +10083,17 @@ mod tests {
     fn okf_badge_html_unparseable_is_empty() {
         // T-18-03: hostile/corrupted okf_json renders nothing, never HTML.
         assert_eq!(okf_badge_html(Some("garbage")), "");
+    }
+
+    #[test]
+    fn fmt_date_formats() {
+        // DEBT-1 regression: day-of-month must come from day-of-year, not
+        // day-of-era (Hinnant civil_from_days). Pinned against UTC dates.
+        assert_eq!(fmt_date(0), "1970-01-01");
+        assert_eq!(fmt_date(1_762_400_000), "2025-11-06");
+        assert_eq!(fmt_date(951_782_400), "2000-02-29");
+        assert_eq!(fmt_date(1_709_164_800), "2024-02-29");
+        assert_eq!(fmt_date(2_147_483_647), "2038-01-19");
     }
 
     #[test]
