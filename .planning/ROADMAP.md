@@ -126,3 +126,13 @@
 - Encryption at rest (rely on the server's FS)
 
 > These items can move into a phase if a strong request emerges.
+
+### Phase 18.1: tech-debt-cleanup fmt_date fix and phase-18 low test gaps (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 18
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 18.1 to break down)

@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: OKF Bundle Support
-status: phase_complete
-stopped_at: Phase 18 complete — awaiting release
-last_updated: "2026-11-06T21:05:00.000Z"
+status: Ready to release (v1.4.0)
+stopped_at: Phase 16 context gathered
+last_updated: "2026-11-06T21:53:27.917Z"
 last_activity: 2026-11-06 -- Phase 18 executed, verified, reviewed, secured
 progress:
-  total_phases: 1
+  total_phases: 2
   completed_phases: 1
   total_plans: 6
   completed_plans: 6
-  percent: 100
+  percent: 50
 ---
 
 # Project State
@@ -52,6 +52,7 @@ Last activity: 2026-11-06 -- Phase 18 executed, verified, reviewed, secured
 - Phase 10.1 inserted after Phase 10: Home UX: vault actions, share by email, statistics (URGENT)
 - 2026-10-28: v1.1.0 milestone opened — Phase 12 (demo lock + per-vault page-numbers toggle + mdBook theme), Phase 13 (wiki-changes log in Statistics), Phase 14 (local vault upload). Driven by user feedback on the live demo (issues #7/#8/#9 + new requests).
 - 2026-10-30: v1.2 Team Access roadmap created — Phase 15 (etag-conflict), Phase 16 (rest-api), Phase 17 (oidc-sso). Order per research consensus (`.planning/research/SUMMARY.md`): ETag → REST → OIDC; numbering continues from 14.
+- Phase 18.1 inserted after Phase 18: Tech debt cleanup: fmt_date fix + phase-18 LOW test gaps (from v1.3 milestone audit) (URGENT)
 
 ### Decisions
 
