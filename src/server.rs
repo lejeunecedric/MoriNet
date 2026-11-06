@@ -522,9 +522,51 @@ async fn logout(State(state): State<SharedState>) -> Response {
 /// "My vaults" and "Shared with me" rows are structurally identical by
 /// construction (10.1-02 Task 1: parity is impossible to break).
 ///
+/// Phase 18 (D-05): OKF badge pill for vault cards. Defensive serde
+/// (T-18-03): unparseable `okf_json` renders nothing; only typed integers
+/// and the html-escaped version reach HTML (T-18-06). Zero new CSS — reuses
+/// the `.menu-btn` pill + `<small>` precedent (D-05).
+fn okf_badge_html(json: Option<&str>) -> String {
+    let Some(j) = json else {
+        return String::new();
+    };
+    let Ok(stats) = serde_json::from_str::<crate::okf::OkfStats>(j) else {
+        return String::new();
+    };
+    match stats.version {
+        None => r#"<small class="menu-btn">not an OKF bundle</small>"#.to_string(),
+        Some(v) => format!(
+            r#"<small class="menu-btn">OKF v{v} — {}/{total} concepts</small>"#,
+            stats.concepts,
+            v = html_escape(&v),
+            total = stats.total,
+        ),
+    }
+}
+
+/// Epoch seconds → `YYYY-MM-DD` UTC (civil-from-days reference algorithm;
+/// no chrono dependency, D-10). Deliberately standalone: the existing
+/// `fmt_date` has a latent doy/doe mix-up for day-of-month (18-03 notes).
+fn epoch_secs_to_utc_date(secs: u64) -> String {
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // era floor-divide keeps doe in [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 {
+        yoe + era * 400 + 1
+    } else {
+        yoe + era * 400
+    };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// `can_share` is computed by the caller via `store.can_share` — it only
 /// matters for shared rows; owner rows always render the full action set.
-fn vault_row(a: &AccessibleVault, can_share: bool) -> String {
+fn vault_row(a: &AccessibleVault, can_share: bool, okf_badge: &str) -> String {
     let slug = html_escape(&a.vault.slug);
     let name = html_escape(&a.vault.name);
     // Shared rows carry no role tag — the action set already encodes the
@@ -572,10 +614,11 @@ fn vault_row(a: &AccessibleVault, can_share: bool) -> String {
         }
     }
     format!(
-        r#"<li><a class="vault-name" href="/vault/{s}/">{n}</a>{t}<span class="vault-actions">{acts}</span></li>"#,
+        r#"<li><a class="vault-name" href="/vault/{s}/">{n}</a>{t}{b}<span class="vault-actions">{acts}</span></li>"#,
         s = slug,
         n = name,
         t = tag,
+        b = okf_badge,
         acts = actions,
     )
 }
@@ -594,7 +637,16 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
     let mut shared_items = String::new();
     for a in &accessible {
         if a.personal {
-            own_items.push_str(&vault_row(a, false));
+            let badge = okf_badge_html(
+                state
+                    .store
+                    .vault_okf(&a.vault.slug)
+                    .await
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            );
+            own_items.push_str(&vault_row(a, false, &badge));
             own_items.push('\n');
         } else {
             // Per-row gate for the Share button (owner | admin | sharee with
@@ -604,7 +656,16 @@ async fn index(State(state): State<SharedState>, Extension(claims): Extension<Cl
                 .can_share(&claims.email, &a.vault.slug)
                 .await
                 .unwrap_or(false);
-            shared_items.push_str(&vault_row(a, can_share));
+            let badge = okf_badge_html(
+                state
+                    .store
+                    .vault_okf(&a.vault.slug)
+                    .await
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            );
+            shared_items.push_str(&vault_row(a, can_share, &badge));
             shared_items.push('\n');
         }
     }
@@ -2817,6 +2878,34 @@ async fn vault_stats(
         .ok()
         .flatten()
         .unwrap_or_default();
+    // OKF conformance line (D-05): owner panel only; defensive serde —
+    // unparseable stats render nothing (T-18-03).
+    let okf_line = state
+        .store
+        .vault_okf(&slug)
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<crate::okf::OkfStats>(j).ok())
+        .map(|stats| {
+            let text = match &stats.version {
+                Some(v) => format!(
+                    "OKF v{} — {}/{} concepts",
+                    html_escape(v),
+                    stats.concepts,
+                    stats.total
+                ),
+                None => "not an OKF bundle".to_string(),
+            };
+            format!(
+                "<p><strong>OKF conformance:</strong> {text} (index.md: {idx}, log.md: {log}, scanned {date}).</p>",
+                idx = if stats.has_index { "yes" } else { "no" },
+                log = if stats.has_log { "yes" } else { "no" },
+                date = epoch_secs_to_utc_date(stats.scanned_at),
+            )
+        })
+        .unwrap_or_default();
     // Paths in the tables come from the request URL (attacker-controlled) —
     // escape them like every other interpolated string (T-10.1-09).
     let day_rows: String = state
@@ -2901,7 +2990,7 @@ async fn vault_stats(
   <dt>Last refresh</dt><dd>{lr}</dd>
   <dt>Source</dt><dd>{src}</dd>
 </dl>
-<h2>Activity by day</h2>
+{okf_line}<h2>Activity by day</h2>
 <table><thead><tr><th>Day</th><th>Source</th><th>Hits</th></tr></thead><tbody>{day_rows}</tbody></table>
 <h2>Top pages</h2>
 <table><thead><tr><th>Page</th><th>Hits</th></tr></thead><tbody>{top_rows}</tbody></table>
@@ -2913,6 +3002,7 @@ async fn vault_stats(
         size = size,
         lr = html_escape(&last_refresh),
         src = html_escape(&source),
+        okf_line = okf_line,
         day_rows = day_rows,
         top_rows = top_rows,
         changes_html = changes_html,
@@ -9812,12 +9902,7 @@ mod tests {
         record_okf_scan(&state.store, "okfmiss", &missing)
             .await
             .unwrap();
-        assert!(state
-            .store
-            .vault_okf("okfmiss")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(state.store.vault_okf("okfmiss").await.unwrap().is_none());
         let _ = std::fs::remove_dir_all(&src);
     }
 
@@ -9874,20 +9959,73 @@ mod tests {
             .await
             .unwrap();
         // A v0.2 marker key (D-03) on a new concept page flips the version.
-        okf_page(&src, "b.md", "---\ntype: concept\nstatus: draft\n---\n# b\n");
+        okf_page(
+            &src,
+            "b.md",
+            "---\ntype: concept\nstatus: draft\n---\n# b\n",
+        );
         record_okf_scan(&state.store, "okfrerun", &book)
             .await
             .unwrap();
-        let json = state
-            .store
-            .vault_okf("okfrerun")
-            .await
-            .unwrap()
-            .unwrap();
+        let json = state.store.vault_okf("okfrerun").await.unwrap().unwrap();
         let stats: crate::okf::OkfStats = serde_json::from_str(&json).unwrap();
         assert_eq!(stats.version.as_deref(), Some("0.2"));
         assert_eq!(stats.concepts, 2);
         let _ = std::fs::remove_dir_all(&src);
     }
 
+    #[test]
+    fn okf_badge_html_none_when_unscanned() {
+        assert_eq!(okf_badge_html(None), "");
+    }
+
+    #[test]
+    fn okf_badge_html_v02_string_exact() {
+        let json = serde_json::to_string(&okf_stats(Some("0.2"), 42, 45)).unwrap();
+        let html = okf_badge_html(Some(&json));
+        assert!(html.contains("OKF v0.2 — 42/45 concepts"), "{html}");
+        assert!(html.contains(r#"class="menu-btn""#), "{html}");
+    }
+
+    #[test]
+    fn okf_badge_html_not_a_bundle() {
+        let json = serde_json::to_string(&okf_stats(None, 0, 3)).unwrap();
+        assert!(okf_badge_html(Some(&json)).contains("not an OKF bundle"));
+    }
+
+    #[test]
+    fn okf_badge_html_unparseable_is_empty() {
+        // T-18-03: hostile/corrupted okf_json renders nothing, never HTML.
+        assert_eq!(okf_badge_html(Some("garbage")), "");
+    }
+
+    #[test]
+    fn epoch_secs_to_utc_date_formats() {
+        assert_eq!(epoch_secs_to_utc_date(1762400000), "2025-11-06");
+        assert_eq!(epoch_secs_to_utc_date(0), "1970-01-01");
+    }
+
+    #[tokio::test]
+    async fn home_page_shows_okf_badge() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let json = serde_json::to_string(&okf_stats(Some("0.2"), 42, 45)).unwrap();
+        state.store.set_vault_okf("demo", &json).await.unwrap();
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(body.contains("OKF v0.2 — 42/45 concepts"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn home_page_no_badge_when_never_scanned() {
+        let (app, _state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let res = req(app, "GET", "/", cookie_hdr(&cookie), None).await;
+        let body = body_text(res).await;
+        assert!(body.contains("Demo vault"));
+        assert!(
+            !body.contains("OKF v0"),
+            "no badge for a never-scanned vault"
+        );
+    }
 }
