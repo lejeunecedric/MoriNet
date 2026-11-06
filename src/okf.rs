@@ -173,24 +173,41 @@ pub fn build_bundle_zip(src: &std::path::Path) -> anyhow::Result<Vec<u8>> {
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {
-            let path = entry?.path();
+            let entry = entry?;
+            let path = entry.path();
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            if path.is_dir() {
-                if !name.starts_with('.') {
-                    stack.push(path);
-                }
+            // Dot-files and dot-dirs never ship (REV-18 M-02: a committed
+            // `.env` must not reach every reader).
+            if name.starts_with('.') {
                 continue;
             }
-            // Traversal guard (T-18-08): resolve symlinks, refuse escapes.
+            // lstat semantics: never follow symlinks at all (REV-18 M-04 +
+            // LOW dup-entries) — an escaping symlink is a traversal attempt
+            // (T-18-08) and an internal one would duplicate its target entry.
+            // One bad link must not break export for everyone: skip + log.
+            let ftype = entry.file_type()?;
+            if ftype.is_symlink() {
+                eprintln!("okf-export: skipping symlink: {}", path.display());
+                continue;
+            }
+            if ftype.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !ftype.is_file() {
+                continue; // fifos, sockets, devices: never bundle.
+            }
+            // Defense in depth (T-18-08): canonicalize and stay under root.
             let canon = path.canonicalize()?;
             if !canon.starts_with(&root) {
-                anyhow::bail!(
-                    "refusing to export path outside vault source: {}",
+                eprintln!(
+                    "okf-export: skipping path outside source: {}",
                     path.display()
                 );
+                continue;
             }
             let rel = canon
                 .strip_prefix(&root)?
@@ -478,13 +495,42 @@ mod tests {
     }
 
     #[test]
-    fn bundle_zip_rejects_symlink_escape() {
+    fn bundle_zip_skips_symlink_escape() {
+        // REV-18 M-04: an escaping symlink must NOT break the whole bundle —
+        // it is skipped (and never followed), the rest still exports.
         let outside = tmpdir("zip-outside");
         std::fs::write(outside.join("secret.md"), "outside secret\n").unwrap();
         let d = tmpdir("zip-symlink");
         page(&d, "a.md", "# A\n");
         std::os::unix::fs::symlink(outside.join("secret.md"), d.join("link.md")).unwrap();
-        assert!(build_bundle_zip(&d).is_err());
+        let bytes = build_bundle_zip(&d).expect("bundle builds despite escaping symlink");
+        let z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = z
+            .file_names()
+            .filter_map(|n| n.ok().map(|s| s.into_owned()))
+            .collect();
+        assert!(names.contains(&"a.md".to_string()));
+        assert!(!names.iter().any(|n| n.contains("secret")));
+    }
+
+    #[test]
+    fn bundle_zip_skips_dotfiles_and_dotdirs() {
+        // REV-18 M-02: a committed `.env` must never reach readers.
+        let d = tmpdir("zip-dotfiles");
+        page(&d, "a.md", "# A\n");
+        std::fs::write(d.join(".env"), "TOKEN=s3cr3t\n").unwrap();
+        std::fs::create_dir_all(d.join(".git")).unwrap();
+        std::fs::write(d.join(".git/config"), "[core]\n").unwrap();
+        let bytes = build_bundle_zip(&d).unwrap();
+        let z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = z
+            .file_names()
+            .filter_map(|n| n.ok().map(|s| s.into_owned()))
+            .collect();
+        assert!(names.contains(&"a.md".to_string()));
+        assert!(!names
+            .iter()
+            .any(|n| n.contains(".env") || n.contains(".git")));
     }
 
     #[test]

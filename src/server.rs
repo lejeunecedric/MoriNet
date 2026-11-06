@@ -3044,9 +3044,21 @@ async fn okf_export(
     else {
         return not_found();
     };
-    let bytes = match crate::okf::build_bundle_zip(&src) {
-        Ok(b) => b,
-        Err(e) => return error_page(&format!("export failed: {e}")),
+    // Missing source dir is invisible, same 404 collapse (T-18-09, REV-18 M-01).
+    if !src.is_dir() {
+        return not_found();
+    }
+    // Sync FS walk + deflate off the async worker (REV-18 M-03); failures
+    // log detail server-side and answer a bare 500 (REV-18 M-01: no paths
+    // in user-facing errors).
+    let build = tokio::task::spawn_blocking(move || crate::okf::build_bundle_zip(&src)).await;
+    let bytes = match build {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            eprintln!("okf-export: {slug}: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     // Slug is [a-z0-9-] by vault slug rules; sanitize defensively anyway so
     // the download filename can never carry quotes or path separators.
