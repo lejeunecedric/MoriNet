@@ -129,10 +129,10 @@
 
 ### Phase 18.1: tech-debt-cleanup fmt_date fix and phase-18 low test gaps (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Close v1.3 audit tech debt: `fmt_date` Hinnant bugs + phase-18 LOW test gaps
+**Requirements**: DEBT-1..4 (from v1.3-MILESTONE-AUDIT.md)
 **Depends on:** Phase 18
-**Plans:** 0 plans
+**Plans:** 1 plan — COMPLETE (2026-11-06)
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 18.1 to break down)
+- [x] 18.1-01: fmt_date fix + export-500/shared-badge/upload-update tests — commits `457173e`, `4fbc2b8`, `c508835`
