@@ -3012,6 +3012,14 @@ async fn vault_stats(
     nav_page(&state, &claims, "Statistics", &body).await
 }
 
+/// Global cap on concurrent bundle exports (SEC N-18-01): each export can
+/// buffer up to the 256 MiB caps twice (raw + deflated) on the blocking
+/// pool, so unbounded parallel exports from one user could force OOM.
+/// Two permits bounds worst-case memory at ~1 GiB; extra requests queue
+/// (backpressure) rather than fail.
+static EXPORT_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(2));
+
 /// `GET /vault/{slug}/okf-export.zip` (OKF-03, D-06): stream the vault
 /// source as an in-memory OKF zip bundle — byte-identical entries, virtual
 /// root `index.md` when absent (see `crate::okf::build_bundle_zip`).
@@ -3048,6 +3056,11 @@ async fn okf_export(
     if !src.is_dir() {
         return not_found();
     }
+    // One export per permit at a time, process-wide (N-18-01).
+    let _permit = match EXPORT_SEMAPHORE.acquire().await {
+        Ok(p) => p,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     // Sync FS walk + deflate off the async worker (REV-18 M-03); failures
     // log detail server-side and answer a bare 500 (REV-18 M-01: no paths
     // in user-facing errors).
@@ -10177,6 +10190,41 @@ mod tests {
             .map(|i| z.by_index(i).unwrap().name().unwrap().to_string())
             .collect();
         assert!(names.contains(&"export-note.md".to_string()), "{names:?}");
+    }
+
+    #[tokio::test]
+    async fn export_waits_for_semaphore_permit() {
+        // SEC N-18-01: exports queue behind EXPORT_SEMAPHORE instead of
+        // buffering unbounded copies of the vault in parallel.
+        let (app, _state) = test_router().await;
+        let src = std::env::temp_dir().join(format!("morinet-vault-{}", std::process::id()));
+        std::fs::write(src.join("export-note.md"), "# Exported\n").unwrap();
+        let cookie = login_cookie(&app).await;
+        // Saturate the pool BEFORE starting the export: it must queue.
+        let p1 = EXPORT_SEMAPHORE.acquire().await.unwrap();
+        let _p2 = EXPORT_SEMAPHORE.acquire().await.unwrap();
+        let mut handle = tokio::spawn(async move {
+            req(
+                app,
+                "GET",
+                "/vault/demo/okf-export.zip",
+                cookie_hdr(&cookie),
+                None,
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut handle)
+                .await
+                .is_err(),
+            "export must not complete while all permits are held"
+        );
+        drop(p1);
+        let res = tokio::time::timeout(std::time::Duration::from_secs(10), handle)
+            .await
+            .expect("export proceeds once a permit frees")
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
