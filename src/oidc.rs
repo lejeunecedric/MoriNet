@@ -837,6 +837,9 @@ mod tests {
         let _ = stream.write_all(resp.as_bytes()).await;
     }
 
+    // Test-only mock IdP dispatcher: the Arc<Mutex<..>> handles are one per mock
+    // knob; bundling them would obscure the mock more than the flat list helps.
+    #[allow(clippy::too_many_arguments)]
     async fn serve(
         stream: &mut TcpStream,
         jwks_json: String,
