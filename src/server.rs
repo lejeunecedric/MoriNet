@@ -2985,6 +2985,30 @@ async fn record_vault_changes(
     Ok(())
 }
 
+/// Phase 18 (D-02): best-effort OKF conformance scan of the vault SOURCE dir
+/// (never the generated `.morinet-build/` book). Same error contract as
+/// `record_vault_changes`: `anyhow::Result` up to the caller's `eprintln!`
+/// arm. `source_dir_of` never checks existence, so the `is_dir` guard is what
+/// makes the missing-source skip real. The single `set_vault_okf` write
+/// happens only after a complete scan — a failure leaves previous stats
+/// untouched (D-02). `pub` so the background sync loop in main.rs reuses it.
+pub async fn record_okf_scan(
+    store: &Store,
+    slug: &str,
+    book_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let Some(src) = webdav::source_dir_of(book_dir) else {
+        return Ok(());
+    };
+    if !src.is_dir() {
+        return Ok(());
+    }
+    let stats = crate::okf::scan_conformance(&src)?;
+    store
+        .set_vault_okf(slug, &serde_json::to_string(&stats)?)
+        .await
+}
+
 async fn refresh_my_vault(
     State(state): State<SharedState>,
     Extension(claims): Extension<Claims>,
@@ -3036,6 +3060,10 @@ async fn refresh_my_vault(
                         eprintln!("vault-changes: refresh log failed for {slug}: {e}");
                     }
                 }
+            }
+            // Best-effort OKF rescan (D-02): never changes the redirect.
+            if let Err(e) = record_okf_scan(&state.store, &slug, &book_dir).await {
+                eprintln!("okf-scan: scan failed for {slug}: {e}");
             }
             Redirect::to(&format!("/vault/{slug}/")).into_response()
         }
@@ -3118,6 +3146,10 @@ async fn load_personal_vault(
         Ok(()) => {
             // Remember the upstream so the vault can be refreshed later.
             let _ = state.store.set_vault_source(&slug, url).await;
+            // Best-effort OKF scan (D-02): never changes the redirect.
+            if let Err(e) = record_okf_scan(&state.store, &slug, &book_dir).await {
+                eprintln!("okf-scan: scan failed for {slug}: {e}");
+            }
             Redirect::to(&format!("/vault/{slug}/")).into_response()
         }
         Err(e) if e.to_string().contains("UNIQUE") => error_page(&format!(
@@ -3465,7 +3497,13 @@ async fn upload_local_vault(
         .create_personal_vault(&claims.email, &slug, &name, &book_dir)
         .await
     {
-        Ok(()) => Redirect::to(&format!("/vault/{slug}/")).into_response(),
+        Ok(()) => {
+            // Best-effort OKF scan (D-02): never changes the redirect.
+            if let Err(e) = record_okf_scan(&state.store, &slug, &book_dir).await {
+                eprintln!("okf-scan: scan failed for {slug}: {e}");
+            }
+            Redirect::to(&format!("/vault/{slug}/")).into_response()
+        }
         Err(e) if e.to_string().contains("UNIQUE") => {
             fail_upload(
                 &dir,
@@ -3650,6 +3688,10 @@ async fn finish_upload_update(
     if let Err(e) = src.sync().and_then(|d| src.build(&d, name)) {
         return error_page(&format!("sync/build failed: {e}"));
     }
+    // Best-effort OKF rescan (D-02): the applied files mutated the source.
+    if let Err(e) = record_okf_scan(&state.store, slug, dir).await {
+        eprintln!("okf-scan: scan failed for {slug}: {e}");
+    }
     Redirect::to(&format!("/vault/{slug}/")).into_response()
 }
 
@@ -3824,7 +3866,13 @@ async fn admin_create_vault(
 
     match result {
         Ok(book_dir) => match state.store.seed_vault(&p.slug, &p.name, &book_dir).await {
-            Ok(()) => Redirect::to("/admin/vaults").into_response(),
+            Ok(()) => {
+                // Best-effort OKF scan (D-02): never changes the redirect.
+                if let Err(e) = record_okf_scan(&state.store, &p.slug, &book_dir).await {
+                    eprintln!("okf-scan: scan failed for {}: {e}", p.slug);
+                }
+                Redirect::to("/admin/vaults").into_response()
+            }
             Err(e) => error_page(&format!("seed failed: {e}")),
         },
         Err(e) => error_page(&format!("sync/build failed: {e}")),
@@ -9693,4 +9741,153 @@ mod tests {
             assert_eq!(claims.email, "reader@example.com");
         }
     }
+
+    // ---- Phase 18 (plan 18-03): OKF scan hook + badge (OKF-01, OKF-02) ----
+
+    fn okf_hook_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("morinet-okf-{tag}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn okf_page(dir: &std::path::Path, rel: &str, content: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, content).unwrap();
+    }
+
+    fn okf_stats(version: Option<&str>, concepts: usize, total: usize) -> crate::okf::OkfStats {
+        crate::okf::OkfStats {
+            version: version.map(|v| v.to_string()),
+            concepts,
+            total,
+            has_index: true,
+            has_log: false,
+            scanned_at: 1762400000,
+        }
+    }
+
+    #[tokio::test]
+    async fn okf_scan_helper_writes_stats() {
+        let (_app, state) = test_router().await;
+        let src = okf_hook_dir("hook");
+        okf_page(&src, "concept.md", "---\ntype: concept\n---\n# c\n");
+        let book = src.join("book");
+        std::fs::create_dir_all(&book).unwrap();
+        state
+            .store
+            .seed_vault("okfhook", "OKF hook", &book)
+            .await
+            .unwrap();
+        record_okf_scan(&state.store, "okfhook", &book)
+            .await
+            .unwrap();
+        let json = state
+            .store
+            .vault_okf("okfhook")
+            .await
+            .unwrap()
+            .expect("scan wrote stats");
+        let stats: crate::okf::OkfStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(stats.version.as_deref(), Some("0.1"));
+        assert_eq!(stats.concepts, 1);
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
+    #[tokio::test]
+    async fn okf_scan_helper_skips_missing_source_dir() {
+        let (_app, state) = test_router().await;
+        let src = okf_hook_dir("missing");
+        let book = src.join("book");
+        std::fs::create_dir_all(&book).unwrap();
+        state
+            .store
+            .seed_vault("okfmiss", "OKF miss", &book)
+            .await
+            .unwrap();
+        // `gone/book` resolves to source dir `gone` which does NOT exist —
+        // source_dir_of never checks existence, the is_dir guard must skip.
+        let missing = src.join("gone").join("book");
+        record_okf_scan(&state.store, "okfmiss", &missing)
+            .await
+            .unwrap();
+        assert!(state
+            .store
+            .vault_okf("okfmiss")
+            .await
+            .unwrap()
+            .is_none());
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
+    #[tokio::test]
+    async fn okf_scan_helper_fires_on_upload_register() {
+        let (app, state) = test_router().await;
+        let cookie = login_as(&app, "admin@example.com", "test-pass-9f3a").await;
+        let body = multipart_body(
+            "bnd",
+            &[
+                ("name", None, b"OKF Local"),
+                ("files", Some("OKFWiki/index.md"), b"# hi\n"),
+                (
+                    "files",
+                    Some("OKFWiki/a.md"),
+                    b"---\ntype: concept\n---\n# a\n",
+                ),
+            ],
+        );
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/upload",
+            multipart_headers(&cookie, "bnd"),
+            Some(Body::from(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let json = state
+            .store
+            .vault_okf("okf-local")
+            .await
+            .unwrap()
+            .expect("register path fired the OKF scan");
+        let stats: crate::okf::OkfStats = serde_json::from_str(&json).unwrap();
+        assert!(stats.total >= 1, "scan saw the uploaded pages");
+        let dir = uploads_dir_for(&state, "okf-local");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn okf_scan_helper_overwrites_on_rerun() {
+        let (_app, state) = test_router().await;
+        let src = okf_hook_dir("rerun");
+        okf_page(&src, "a.md", "---\ntype: concept\n---\n# a\n");
+        let book = src.join("book");
+        std::fs::create_dir_all(&book).unwrap();
+        state
+            .store
+            .seed_vault("okfrerun", "OKF rerun", &book)
+            .await
+            .unwrap();
+        record_okf_scan(&state.store, "okfrerun", &book)
+            .await
+            .unwrap();
+        // A v0.2 marker key (D-03) on a new concept page flips the version.
+        okf_page(&src, "b.md", "---\ntype: concept\nstatus: draft\n---\n# b\n");
+        record_okf_scan(&state.store, "okfrerun", &book)
+            .await
+            .unwrap();
+        let json = state
+            .store
+            .vault_okf("okfrerun")
+            .await
+            .unwrap()
+            .unwrap();
+        let stats: crate::okf::OkfStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(stats.version.as_deref(), Some("0.2"));
+        assert_eq!(stats.concepts, 2);
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
 }

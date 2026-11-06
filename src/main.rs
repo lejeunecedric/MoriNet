@@ -222,6 +222,10 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
                         Ok(book_dir) => {
                             if let Err(e) = bg_store.seed_vault(slug, name, &book_dir).await {
                                 eprintln!("background sync: seed '{}' failed: {e}", slug);
+                            } else if let Err(e) =
+                                morinet::server::record_okf_scan(&bg_store, slug, &book_dir).await
+                            {
+                                eprintln!("okf-scan: scan failed for {slug}: {e}");
                             }
                         }
                         Err(e) => eprintln!("background sync '{}' failed: {e}", slug),
