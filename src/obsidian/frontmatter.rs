@@ -26,6 +26,13 @@ impl Frontmatter {
         self.fields.is_empty()
     }
 
+    /// Presence check only: true when `key` appeared in the frontmatter
+    /// block, whatever its value (even an empty block list). Read-only view
+    /// of already-parsed state — D-04: no parser change, no YAML typing.
+    pub fn has(&self, key: &str) -> bool {
+        self.fields.contains_key(key)
+    }
+
     pub fn scalar(&self, key: &str) -> Option<&str> {
         match self.fields.get(key)? {
             Field::Scalar(s) => Some(s),

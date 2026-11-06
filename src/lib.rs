@@ -9,6 +9,7 @@ pub mod init;
 pub mod mcp;
 pub mod obsidian;
 pub mod oidc;
+pub mod okf;
 pub mod server;
 pub mod session;
 pub mod sources;
