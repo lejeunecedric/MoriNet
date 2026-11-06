@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 ## Current Position
 
-Phase: 17
-Plan: Not started
-Status: Milestone complete
+Phase: — (v1.2 archived)
+Plan: —
+Status: Milestone v1.2 "Team Access" complete, audited (tech_debt, INTEGRATED), archived 2026-11-06; production v1.3.0
 Last activity: 2026-11-06
 
 ## Performance Metrics
@@ -76,6 +76,10 @@ None yet.
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
 | v1 out of scope | Real-time collab, mobile apps, SSO, webhooks, encryption at rest | Carried to post-v1 | v0.1 planning |
+| v1.2 human UAT | 15-HUMAN-UAT rclone/Obsidian real WebDAV smoke test | Pending operator | 2026-11-06 milestone close |
+| v1.2 human UAT | 17-HUMAN-UAT real-IdP SSO smoke test (Keycloak/Authentik/Authelia) | Pending operator | 2026-11-06 milestone close |
+| v1.2 test gaps | G1 SSO→API token→/api/v1 composed test; G2 group-revocation direct test; G3 shared-vault coexistence | Open (v1.3 quick task) | 2026-11-06 milestone audit |
+| v1.2 accepted debt | JWKS/discovery uncached (REV-17-02); no Secure cookie attr (pre-existing, D-02); no Cache-Control on API; fixed-window burst; Bearer case-sensitivity | Accepted | 2026-11-06 milestone audit |
 
 ## Session Continuity
 
@@ -85,10 +89,11 @@ Resume file: None
 
 ## Useful links
 
-- ROADMAP: `.planning/ROADMAP.md` · REQUIREMENTS: `.planning/REQUIREMENTS.md`
+- ROADMAP: `.planning/ROADMAP.md` · Shipped requirements: `.planning/milestones/`
 - Handoff: `.planning/HANDOFF.md` · Changelog + AD/PRD + notable errors: `.planning/STATE-LOG.md`
 - Pre-GSD phases: `.planning/phases/` · Live: https://morinet.treklair.fr
 
 ## Operator Next Steps
 
-- Plan Phase 15 (etag-conflict) with /gsd-plan-phase
+- v1.3 not yet scoped — candidates in PROJECT.md "Next Milestone Goals" (issues #10/#11, G1-G3 tests)
+- Run the two deferred human UATs when staging access is available (rclone/Obsidian + real IdP)

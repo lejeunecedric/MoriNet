@@ -10,16 +10,14 @@ A Rust server that exposes Obsidian / llm-wiki second brains as mdBook sites, wi
 
 Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site — without the user ever having to touch mdBook themselves.
 
-## Current Milestone: v1.2 Team Access
+## Current State
 
-**Goal:** a team can sign in through its own OIDC identity provider, read its vaults programmatically through a REST API, and edit in parallel without clobbering each other's work.
+**v1.2 "Team Access" shipped 2026-11-06** (released v1.2.0 → v1.3.0, live on holldemo): conflict-safe co-editing (CONF-01..05), read-only REST API on `/api/v1` (API-01..06), generic OIDC SSO (SSO-01..06). 17/17 requirements, milestone audit INTEGRATED (`.planning/v1.2-MILESTONE-AUDIT.md`). Archive: `.planning/milestones/v1.2-ROADMAP.md`.
 
-**Target features:**
-- **Generic OIDC SSO** — any OIDC-compliant IdP (Keycloak / Authentik / Authelia) configured in `config.toml`; coexists with password login (SSO button on the login page); account auto-created at first SSO login when the email matches an existing account or an allowed domain; OIDC groups claim → MoriNet groups (e.g. admin)
-- **Read-only REST API** — list vaults / list notes / read note / search, authenticated with the existing `/account` API tokens, ACL-scoped like MCP
-- **Safe asynchronous co-editing** — conflict detection via hash/ETag before overwrite: WebDAV `If-Match`/`If-None-Match` + upload-time check; no locks, no CRDT
+## Next Milestone Goals
 
-**Key context:** all three were Out of Scope in v1 — real-time CRDT editing stays out (replaced by conflict detection); the IdP is external to MoriNet; phase numbering continues from 14 → Phase 15+.
+- v1.3 candidates: GitHub #10 (web + MCP statistics, incl. REST access logging — needs `access_log.source` CHECK widened), #11 (OKF format spike), G1-G3 composed E2E tests from the v1.2 audit (SSO→API token→read, group-revocation direct test, shared-vault coexistence), deferred human UATs (rclone/Obsidian WebDAV smoke, real-IdP SSO smoke)
+- Backlog: API-F01 write endpoints, API-F02 scoped tokens, API-F03 webhooks
 
 ## Requirements
 
@@ -50,7 +48,7 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 
 ### Active
 
-<!-- Milestone v1.2 Team Access — scope being defined (2026-10-29). -->
+<!-- No active milestone — v1.2 archived 2026-11-06; v1.3 not yet scoped. -->
 
 
 ### Out of Scope

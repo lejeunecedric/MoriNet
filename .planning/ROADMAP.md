@@ -12,7 +12,7 @@
 
 - ✅ **v1.0** — Phases 00–11 (+10.1) — shipped 2026-10-25 (`v1.0.0`), hotfixes v1.0.1–v1.0.3 by 2026-10-28
 - ✅ **v1.1.0 demo hardening + vault options** — Phases 12–14 — shipped 2026-10-29 (`v1.1.0`, live on holldemo) → full phase details: [milestones/v1.1.0-ROADMAP.md](milestones/v1.1.0-ROADMAP.md)
-- 🚧 **v1.2 Team Access** — Phases 15–17 — planned (ETag conflict detection → read-only REST API → OIDC SSO)
+- ✅ **v1.2 Team Access** — Phases 15–17 — shipped 2026-11-06 (`v1.3.0`, live on holldemo) → full phase details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md)
 
 ## Phases
 
@@ -70,54 +70,13 @@
 </details>
 
 <details>
-<summary>🚧 v1.2 Team Access (Phases 15–17) — PLANNED (roadmap created 2026-10-30)</summary>
+<summary>✅ v1.2 Team Access (Phases 15–17) — SHIPPED 2026-11-06 (`v1.3.0`, live on holldemo)</summary>
 
-**Build order rationale** (all three researchers independently converged, see `.planning/research/SUMMARY.md`): ETag first (self-contained, no new deps, its `etag_of()` hash helper feeds the later phases), REST API second (pure reuse of MCP store queries, exposes Phase 15's ETags), OIDC last (only new dependency tree `openidconnect` 4.0.1, only migration, and the only change that can break login for existing users — lands on a stable base).
+1. **Phase 15 — etag-conflict** (CONF-01..05): strong content-hash ETags on WebDAV reads + PROPFIND `getetag`; fail-closed `If-Match`/`If-None-Match` enforcement on PUT (412/304/400); atomic writes + per-vault lock (no TOCTOU); upload conflict gate (409 + per-file list) with audited `force=1` overwrite; "Load local" two-phase UX. Migration 0011 (`vault_changes.forced/actor`).
+2. **Phase 16 — rest-api** (API-01..06): read-only JSON REST API on `/api/v1` — Bearer API tokens only (session cookies rejected), ACL parity with MCP via shared helpers in `src/api.rs`, RFC 9457 `problem+json` errors, opaque cursor pagination, search, raw-markdown note read with ETag/304, per-token rate limiter (SHA-256 keyed), public `/api/v1/docs`. No new dependencies.
+3. **Phase 17 — oidc-sso** (SSO-01..06): generic OIDC SSO — auth-code + PKCE S256, JWKS validation, `[oidc]` config (env-wins, disabled by default), migration 0012 (`user_identities` + `auth_events`), verified-email auto-link (admin refusal), domain-gated reader provisioning, replace-on-login group sync with last-admin guard, byte-identical session mint with password login. Only new dep: `openidconnect` (rustls-only).
 
-### Phase 15: etag-conflict — Conflict-safe co-editing (CONF-01..05)
-
-**Goal**: stop silent last-write-wins clobbering. Strong content-hash ETags on WebDAV reads, `If-Match`/`If-None-Match` enforcement on PUT, and upload-time conflict detection with an explicit force-overwrite path — all backward compatible for clients that never send preconditions.
-
-**Success criteria**:
-1. WebDAV GET responses carry a strong ETag = sha256 of the raw **source** markdown bytes (never mtime, never `W/`, never mdBook build output) — CONF-01
-2. PROPFIND responses include `getetag` per file — CONF-01
-3. PUT with non-matching `If-Match` → 412 Precondition Failed: nothing written, no rebuild, no `vault_changes` row; malformed precondition header → 400 — CONF-02
-4. PUT with `If-None-Match: *` creates the file only if absent (412 if it exists); successful conditional PUT returns the new ETag — CONF-03
-5. Local upload whose tree is stale vs server → rejected with a per-file conflict list; re-submit with explicit force-overwrite flag succeeds and force-overwrites are recorded in `vault_changes` — CONF-04
-6. Unconditional writes (no precondition headers, plain uploads) behave exactly as before — rclone/Obsidian regression green — CONF-05
-7. Check→write is race-safe: per-vault in-process write lock + temp-file/atomic-rename via one shared "write source file" helper used by WebDAV PUT and upload (pitfall C3/C5)
-
-**Avoids**: C1 (ETag on wrong layer), C2 (weak ETags), C3 (TOCTOU race), C6 (designing for clients that never send If-Match).
-
-### Phase 16: rest-api — Read-only REST API on `/api/v1` (API-01..06)
-
-**Goal**: expose the MCP read surface as a JSON REST API authenticated with existing `/account` API tokens — same ACL, same read helpers, Bearer-only. New `src/api.rs` router branch; `mcp.rs` tools become thin wrappers over the extracted helpers so ACL stays single-sourced.
-
-**Success criteria**:
-1. `/api/v1` accepts Bearer API tokens only (via `user_for_api_token`); session cookies are rejected 401 on this surface — API-01
-2. `GET /api/v1/vaults` lists exactly the vaults the token's user can access — API-02
-3. `GET /api/v1/vaults/{slug}/notes` lists markdown notes with cursor pagination (`has_more`); `GET /api/v1/vaults/{slug}/notes/{path}` returns the raw markdown **source** (not build output) with the Phase 15 ETag header; paths canonicalized against vault escape — API-03
-4. `GET /api/v1/search?q=` searches notes scoped to the token's accessible vaults — API-04
-5. A vault the user cannot see answers 404 (not 403) on every endpoint including search and path reads; all errors are RFC 9457 `application/problem+json` — API-05
-6. Per-token rate limiting returns 429 with `Retry-After` — API-06
-7. ACL test matrix ported from MCP `tools_are_acl_scoped` passes on all four endpoints — API-05
-
-**Avoids**: B1 (ACL bypass), B2 (token leakage), B3 (serving build output), B4 (cookie/Bearer auth mixing). No new dependencies (axum `Json` + serde DTOs).
-
-### Phase 17: oidc-sso — Generic OIDC SSO (SSO-01..06)
-
-**Goal**: teams sign in through their own OIDC-compliant IdP (Keycloak / Authentik / Authelia) via auth-code + PKCE, coexisting with password login. `src/oidc.rs` + `[oidc]` config section (env-wins, disabled by default) + migration 0011 (`users.provider`); callback mints the **same** HMAC session cookie as password login so downstream middleware is untouched. Only new dependency: `openidconnect` 4.0.1 (reqwest + rustls-tls). Intra-phase order: password-login regression tests first, then linking/provisioning, then group sync last.
-
-**Success criteria**:
-1. Login page shows an SSO button when `[oidc]` is configured; flow is authorization-code + PKCE (S256) with `state` + `nonce`, discovery + JWKS-validated ID token — SSO-01
-2. A user whose `email_verified` IdP email matches an existing local account links + signs in; admin accounts are never auto-linked; every link is logged; `(iss, sub)` is the authoritative identity, email is never the join key — SSO-02
-3. First-time SSO user with an `allowed_email_domains` email gets an account auto-created with the `reader` role; unmatched email fails closed — SSO-03
-4. Configurable groups claim (claim name + mapping in config) syncs to MoriNet groups at each login, read only from the signature-verified ID token; admin-group mapping is opt-in and fail-closed on absent claim; demotions are logged — SSO-04
-5. `[oidc]` section in config.toml (issuer, client id/secret, allowed domains, claim mapping) with env overrides following the env-wins pattern; SSO disabled by default and removable without affecting password login — SSO-05
-6. Password login keeps working for every account including SSO users; bootstrap admin always remains available (IdP-outage safety net) — SSO-06
-7. Migration 0011 (`users.provider` + unguessable bcrypt placeholder, no table rebuild) applies cleanly on existing databases; password-login regression suite green before and after
-
-**Avoids**: A1 (email auto-link takeover), A2 (state/nonce/PKCE gaps), A5 (group-claim escalation), A6 (session fixation), A7 (gates bypassed by auto-provision), X1 (hand-rolled OIDC). Open decision for the phase plan: group-sync semantics additive vs replace-on-login (research Gaps to Address).
+**Exit verified:** 493 tests green, `check.sh` OK, per-phase VERIFICATION 7/7 ×3 + SECURITY 67/67 threat blocks closed, milestone audit INTEGRATED (`v1.2-MILESTONE-AUDIT.md`). Releases v1.2.0 → v1.3.0 all deployed via GitHub Actions. Deferred: rclone/Obsidian + real-IdP human smoke tests, G1-G3 composed tests. Full details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md).
 
 </details>
 
@@ -135,7 +94,7 @@
 | 16. rest-api | v1.2 | 5/5 | Complete    | 2026-11-01 |
 | 17. oidc-sso | v1.2 | 5/5 | Complete    | 2026-11-06 |
 
-**Next milestone:** v1.2 Team Access — Phase 15 (etag-conflict) planning via `/gsd-plan-phase`.
+**Next milestone:** not yet planned. Candidates: GitHub issue #10 (web + MCP statistics — includes REST access logging, needs `access_log.source` CHECK widened), issue #11 (OKF format spike), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
 
 ## Out of scope (v1)
 
