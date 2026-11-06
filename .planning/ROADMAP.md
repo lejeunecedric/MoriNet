@@ -13,7 +13,7 @@
 - ✅ **v1.0** — Phases 00–11 (+10.1) — shipped 2026-10-25 (`v1.0.0`), hotfixes v1.0.1–v1.0.3 by 2026-10-28
 - ✅ **v1.1.0 demo hardening + vault options** — Phases 12–14 — shipped 2026-10-29 (`v1.1.0`, live on holldemo) → full phase details: [milestones/v1.1.0-ROADMAP.md](milestones/v1.1.0-ROADMAP.md)
 - ✅ **v1.2 Team Access** — Phases 15–17 — shipped 2026-11-06 (`v1.3.0`, live on holldemo) → full phase details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md)
-- 🚧 **v1.3 OKF Bundle Support** — Phase 18 — planned (GitHub issue #11)
+- ✅ **v1.3 OKF Bundle Support** — Phase 18 — SHIPPED 2026-11-06 (released as v1.4.0; GitHub issue #11 closed)
 
 ## Phases
 
@@ -96,7 +96,7 @@
 | 16. rest-api | v1.2 | 5/5 | Complete    | 2026-11-01 |
 | 17. oidc-sso | v1.2 | 5/5 | Complete    | 2026-11-06 |
 
-**Next milestone:** v1.3 OKF Bundle Support — Phase 18 planning via `/gsd-plan-phase`. Later candidates: issue #10 (web + MCP statistics, incl. REST access logging — needs `access_log.source` CHECK widened), trust-aware OKF rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
+**Next milestone candidates: issue #10 (web + MCP statistics, incl. REST access logging — needs `access_log.source` CHECK widened), trust-aware OKF rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
 
 ---
 
