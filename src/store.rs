@@ -971,6 +971,28 @@ impl Store {
         Ok(())
     }
 
+    /// Remember the latest OKF conformance scan (set at refresh/register;
+    /// best-effort callers). Opaque JSON text — serde validates in Rust (D-03).
+    pub async fn set_vault_okf(&self, slug: &str, json: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE vaults SET okf_json = ? WHERE slug = ?")
+            .bind(json)
+            .bind(slug)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The stored OKF conformance JSON (None = never scanned; unknown slug
+    /// collapses to the same None — no existence leak, T-18-04).
+    pub async fn vault_okf(&self, slug: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT okf_json FROM vaults WHERE slug = ?")
+                .bind(slug)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(v,)| v))
+    }
+
     /// The vault name (for rebuilds).
     pub async fn vault_name(&self, slug: &str) -> anyhow::Result<Option<String>> {
         let row: Option<(String,)> = sqlx::query_as("SELECT name FROM vaults WHERE slug = ?")
@@ -4032,5 +4054,81 @@ mod group_sync_store_tests {
         let g = s.create_group("writers").await.unwrap();
         assert_eq!(s.group_id_for_name("writers").await.unwrap(), Some(g));
         assert_eq!(s.group_id_for_name("ghost").await.unwrap(), None);
+    }
+}
+
+// ---------- Phase 18 / PLAN 18-02: okf_json persistence (OKF-01, D-03) ----------
+
+#[cfg(test)]
+mod okf_store_tests {
+    use super::*;
+    use sqlx::Row;
+
+    async fn st() -> Store {
+        Store::connect_memory().await.expect("store")
+    }
+
+    const SAMPLE: &str = r#"{"version":"0.2","concepts":3,"total":3,"has_index":true,"has_log":false,"scanned_at":1762400000}"#;
+
+    /// Migration 0013 shape: `vaults.okf_json` exists and is nullable
+    /// (NULL = never scanned, D-03).
+    #[tokio::test]
+    async fn okf_migration_adds_column() {
+        let s = st().await;
+        let row = sqlx::query("PRAGMA table_info(vaults)")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.get::<String, _>("name") == "okf_json")
+            .expect("vaults.okf_json column exists (migration 0013)");
+        assert_eq!(
+            row.get::<i64, _>("notnull"),
+            0,
+            "okf_json must be nullable (NULL = never scanned)"
+        );
+    }
+
+    #[tokio::test]
+    async fn vault_okf_roundtrip() {
+        let s = st().await;
+        s.seed_vault("okfrt", "OkfRt", Path::new("/tmp/okfrt/book"))
+            .await
+            .unwrap();
+        s.set_vault_okf("okfrt", SAMPLE).await.unwrap();
+        assert_eq!(s.vault_okf("okfrt").await.unwrap().as_deref(), Some(SAMPLE));
+    }
+
+    #[tokio::test]
+    async fn vault_okf_none_when_never_scanned() {
+        let s = st().await;
+        s.seed_vault("okfnew", "OkfNew", Path::new("/tmp/okfnew/book"))
+            .await
+            .unwrap();
+        assert_eq!(s.vault_okf("okfnew").await.unwrap(), None);
+    }
+
+    /// Unknown slug collapses to the same `None` as never-scanned — no
+    /// existence leak (T-18-04, same rule as api::source_dir).
+    #[tokio::test]
+    async fn vault_okf_none_for_unknown_slug() {
+        let s = st().await;
+        assert_eq!(s.vault_okf("ghost-vault").await.unwrap(), None);
+    }
+
+    /// Second write replaces the first (refresh re-scan semantics).
+    #[tokio::test]
+    async fn set_vault_okf_overwrites_previous() {
+        let s = st().await;
+        s.seed_vault("okfover", "OkfOver", Path::new("/tmp/okfover/book"))
+            .await
+            .unwrap();
+        s.set_vault_okf("okfover", SAMPLE).await.unwrap();
+        let newer = r#"{"version":"0.1","concepts":1,"total":2,"has_index":false,"has_log":false,"scanned_at":1762500000}"#;
+        s.set_vault_okf("okfover", newer).await.unwrap();
+        assert_eq!(
+            s.vault_okf("okfover").await.unwrap().as_deref(),
+            Some(newer)
+        );
     }
 }
