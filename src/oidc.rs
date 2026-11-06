@@ -107,6 +107,10 @@ async fn deny(state: &SharedState, iss: &str, sub: &str, detail: &str) -> Respon
     r
 }
 
+/// REV-17-04: serializes in-process group sync so the last-admin
+/// check-then-act guard cannot be raced by two concurrent SSO logins.
+static SYNC_GROUPS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// `Set-Cookie` clearing the state cookie (always sent, success or refusal).
 fn clear_state_cookie() -> String {
     format!("{SSO_STATE_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0")
@@ -188,7 +192,10 @@ pub(crate) async fn sso_callback(
     let iss = oidc.issuer.clone();
     // IdP-reported error (user denied consent, etc.) — refuse, no session.
     if q.error.is_some() {
-        let mut r = deny(&state, &iss, "", "idp_error").await;
+        // REV-17-01: pre-parse refusals are NOT audited — every anonymous
+        // request could otherwise insert an auth_events row (flood vector).
+        let mut r = error_page("Sign-in could not be completed.");
+        *r.status_mut() = StatusCode::FORBIDDEN;
         r.headers_mut()
             .append(SET_COOKIE, clear_state_cookie().parse().unwrap());
         return r;
@@ -211,7 +218,9 @@ pub(crate) async fn sso_callback(
     let (expected_state, expected_nonce, expected_verifier) = match stored {
         Some(t) => t,
         None => {
-            let mut r = deny(&state, &iss, "", "state_invalid").await;
+            // REV-17-01: pre-parse refusal, not audited (flood vector).
+            let mut r = error_page("Sign-in could not be completed.");
+            *r.status_mut() = StatusCode::FORBIDDEN;
             r.headers_mut()
                 .append(SET_COOKIE, clear_state_cookie().parse().unwrap());
             return r;
@@ -380,6 +389,15 @@ async fn resolve_identity(
     if email_norm.is_empty() {
         return Err(Refusal::deny("no_email"));
     }
+    // REV-17-03: control chars or embedded whitespace would provision an
+    // account whose minted session verify_session then rejects — refuse
+    // before any write (fail-closed, audited post-exchange).
+    if email_norm
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(Refusal::deny("invalid_email"));
+    }
     if let Some((uid, email, role)) = state
         .store
         .user_by_email_normalized(&email_norm)
@@ -398,20 +416,24 @@ async fn resolve_identity(
         // Reader: auto-link. INSERT OR IGNORE — a false return means a
         // concurrent login already linked this (iss,sub): re-read and
         // proceed as the returning user (T-17-14).
-        let linked = state
+        match state
             .store
             .link_identity(OIDC_PROVIDER, iss, &claims.sub, uid)
             .await
-            .unwrap_or(false);
-        if !linked {
-            if let Some((_id, email, _role)) = state
-                .store
-                .user_by_provider_iss_sub(OIDC_PROVIDER, iss, &claims.sub)
-                .await
-                .ok()
-                .flatten()
-            {
-                return Ok(email);
+        {
+            Ok(true) => {}
+            // REV-17-05: distinguish losing the race (row exists now) from a
+            // DB error — never log a `link` event we do not own.
+            Ok(false) | Err(_) => {
+                match state
+                    .store
+                    .user_by_provider_iss_sub(OIDC_PROVIDER, iss, &claims.sub)
+                    .await
+                {
+                    Ok(Some((_id, email, _role))) => return Ok(email),
+                    Ok(None) => return Err(Refusal::deny("link_race")),
+                    Err(_) => return Err(Refusal::deny("link_error")),
+                }
             }
         }
         let _ = state
@@ -540,6 +562,10 @@ async fn sync_groups(
     extra: &std::collections::HashMap<String, serde_json::Value>,
 ) -> anyhow::Result<()> {
     use std::collections::{HashMap, HashSet};
+    // REV-17-04: the last-admin guard is check-then-act; serialize syncs in
+    // this single-binary process so concurrent logins cannot jointly empty
+    // the admin group.
+    let _sync_guard = SYNC_GROUPS_LOCK.lock().await;
     let Some(oidc) = &state.cfg.oidc else {
         return Ok(());
     };
@@ -604,10 +630,12 @@ async fn sync_groups(
             .map(|(k, _)| k.as_str())
             .unwrap_or("");
         state.store.add_group_member(*id, user_email).await?;
-        state
+        // REV-17-06: audit is best-effort — an insert failure must not abort
+        // the diff mid-way leaving applied-but-unaudited changes.
+        let _ = state
             .store
             .log_auth_event("group_sync", user_email, iss, sub, &format!("added:{name}"))
-            .await?;
+            .await;
     }
     for (id, name) in &current_managed {
         if desired.contains(id) {
@@ -615,17 +643,17 @@ async fn sync_groups(
         }
         // Anti-lockout (D-07 spirit): never empty the admin group via sync.
         if name == "admin" && state.store.group_members(*id).await?.len() <= 1 {
-            state
+            let _ = state
                 .store
                 .log_auth_event("deny", user_email, iss, sub, "last_admin_kept")
-                .await?;
+                .await;
             continue;
         }
         state.store.remove_group_member(*id, user_email).await?;
-        state
+        let _ = state
             .store
             .log_auth_event("demote", user_email, iss, sub, &format!("removed:{name}"))
-            .await?;
+            .await;
     }
     Ok(())
 }
@@ -2773,7 +2801,8 @@ mod tests {
 
     // ----- A2: state / nonce / PKCE / code replay -----
 
-    /// Callback without the state cookie: 403, audited `state_invalid`.
+    /// Callback without the state cookie: 403. Pre-parse denies are NOT audited
+    /// (REV-17-01: unauthenticated request-per-row flood on auth_events).
     #[tokio::test]
     async fn matrix_a2_missing_state() {
         let idp = MockIdp::start().await;
@@ -2787,7 +2816,8 @@ mod tests {
                 .count_auth_events("deny", "state_invalid")
                 .await
                 .unwrap(),
-            1
+            0,
+            "pre-parse denies are not audited (REV-17-01)"
         );
     }
 
@@ -2813,12 +2843,13 @@ mod tests {
                 .count_auth_events("deny", "state_invalid")
                 .await
                 .unwrap(),
-            1
+            0,
+            "pre-parse denies are not audited (REV-17-01)"
         );
     }
 
     /// State cookie past its 600 s TTL (signed with a far-past `now`): the
-    /// codec expiry rejects it, audited `state_invalid`.
+    /// codec expiry rejects it; pre-parse deny, not audited (REV-17-01).
     #[tokio::test]
     async fn matrix_a2_expired_state() {
         let idp = MockIdp::start().await;
@@ -2839,7 +2870,8 @@ mod tests {
                 .count_auth_events("deny", "state_invalid")
                 .await
                 .unwrap(),
-            1
+            0,
+            "pre-parse denies are not audited (REV-17-01)"
         );
     }
 
@@ -3191,6 +3223,70 @@ mod tests {
     }
 
     // ----- Coexistence (SSO-06) -----
+
+    /// REV-17-01: unauthenticated callback flood must not write auth_events
+    /// rows (pre-parse denies are dropped; the 403 + cookie clear remain).
+    #[tokio::test]
+    async fn matrix_a2_deny_flood_not_audited() {
+        let idp = MockIdp::start().await;
+        let (app, state) = test_router_with_oidc(&idp.issuer).await;
+        for i in 0..90 {
+            let res = callback(&app, &format!("code=flood-{i}&state=nope"), None).await;
+            assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        }
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "state_invalid")
+                .await
+                .unwrap(),
+            0,
+            "flood of 90 unauthenticated callbacks must insert zero audit rows"
+        );
+    }
+
+    /// REV-17-03: an email claim carrying control characters passes the domain
+    /// allowlist but would provision an account whose minted session
+    /// `verify_session` then rejects — refuse before provisioning instead.
+    #[tokio::test]
+    async fn sso_email_control_chars_refused() {
+        let idp = MockIdp::start().await;
+        let mut cfg = oidc_cfg(&idp.issuer);
+        cfg.allowed_email_domains = vec!["corp.example".to_string()];
+        let (app, state) = test_router_with_cfg(Some(cfg)).await;
+        let res = callback_with_email(
+            &app,
+            &state,
+            &idp,
+            "ctrl-sub",
+            Some("evil\n@corp.example"),
+            Some(json!(true)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(
+            find_cookie(&set_cookie_headers(&res), "morinet_session").is_none(),
+            "no session for a control-char email"
+        );
+        assert!(
+            state
+                .store
+                .user_by_email_normalized("evil\n@corp.example")
+                .await
+                .unwrap()
+                .is_none(),
+            "no account provisioned from a control-char email"
+        );
+        assert_eq!(
+            state
+                .store
+                .count_auth_events("deny", "invalid_email")
+                .await
+                .unwrap(),
+            1,
+            "refusal audited post-exchange (real IdP session behind it)"
+        );
+    }
 
     /// With `[oidc]` fully configured, password login for admin AND reader AND
     /// the bootstrap fallback admin still works end-to-end, and an SSO reader
