@@ -73,8 +73,11 @@ created: 2026-10-30
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-30 | 21 | 21 | 0 | gsd-security-auditor (verify-only, register authored at plan time) |
+| 2026-11-09 | 21 | 21 | 0 | gsd-security-auditor (re-audit at HEAD 5448814, verify-only) |
 
 Verification was run against HEAD `f6255a8` including post-plan review fixes `25290c9` (REV-15-01 ownership gate → `can_edit_vault`) and `2be4bd9` (REV-15-02 conflict scan under `vault_lock`) — both confirmed live. Evidence: per-threat file:line citations + targeted test runs (webdav 32, upload_update 9, traversal 12, vault_changes 8, precondition 7, +6 others — 0 failures).
+
+**Re-audit 2026-11-09 (HEAD `5448814`, post v1.2–v1.4):** all 21 mitigations re-verified with re-anchored citations (22 commits touched server.rs since the original audit; webdav.rs and migration 0011 had zero diff; store.rs changes were additive SSO/OKF only). Accepted-risk anchors AR-15-02/03/04 remain valid (no cross-process lock added, body read still inside guard scope, no staging sweep introduced). Test evidence: webdav 32 ✓, upload_update 10 ✓, traversal 14 ✓, vault_changes 8 ✓, if_match 5 ✓, if_none_match 5 ✓, malformed 3 ✓ — 0 failures. Two citation corrections (non-behavioral): the register's "precondition" test filter corresponds to the `if_match`/`if_none_match`/`malformed` test names (13 tests), and "cleanup_staging" is implemented as `abort_staging` + direct removal. `threats_open` remains 0.
 
 ---
 
