@@ -10720,9 +10720,24 @@ mod tests {
     async fn export_zip_build_failure_is_bare_500() {
         // DEBT-2: builder failure (unreadable file → read error) answers a
         // bare 500 with no filesystem path in the body (REV-18 M-01).
+        // FLAKE FIX: the 0o000 file lives in a DEDICATED vault dir (unique
+        // per run, seed_locked_fixture pattern) — the shared demo fixture
+        // must never contain a 0o000 file, or sibling export tests whose zip
+        // build overlaps this chmod window fail spuriously with 500
+        // ("Permission denied"). That was the export_* suite flake.
         use std::os::unix::fs::PermissionsExt;
-        let (app, _state) = test_router().await;
-        let src = std::env::temp_dir().join(format!("morinet-vault-{}", std::process::id()));
+        let (app, state) = test_router().await;
+        let src = std::env::temp_dir().join(format!(
+            "morinet-vault-{}-buildfail-{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&src).unwrap();
+        state
+            .store
+            .seed_vault("locky", "Locked export fixture", &src)
+            .await
+            .unwrap();
         let locked = src.join("locked.md");
         std::fs::write(&locked, "# locked\n").unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -10730,7 +10745,7 @@ mod tests {
         let res = req(
             app,
             "GET",
-            "/vault/demo/okf-export.zip",
+            "/vault/locky/okf-export.zip",
             cookie_hdr(&cookie),
             None,
         )
