@@ -2816,6 +2816,42 @@ fn log_web_access(state: &AppState, email: &str, slug: &str, path: &str) {
     });
 }
 
+/// D-06: strict whitelist for the `?days=` chip — anything else falls back to
+/// 90 (the retention ceiling), so the value reaching SQL is always one of
+/// three bound integers, never attacker text (T-19-12).
+fn stats_days(raw: Option<&str>) -> i64 {
+    match raw {
+        Some("7") => 7,
+        Some("30") => 30,
+        Some("90") => 90,
+        _ => 90,
+    }
+}
+
+/// D-04: top words from raw search queries — lowercased whitespace-split
+/// tokens with `chars().count() >= 3`, no stopword list and no punctuation
+/// stripping (locked wording). Sorted by (count DESC, word ASC), capped at
+/// `top`.
+fn top_words(queries: &[String], top: usize) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for q in queries {
+        for tok in q.to_lowercase().split_whitespace() {
+            if tok.chars().count() >= 3 {
+                *counts.entry(tok.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut entries: Vec<(String, usize)> = counts.into_iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    entries.truncate(top);
+    entries
+}
+
+#[derive(serde::Deserialize)]
+struct StatsQuery {
+    days: Option<String>,
+}
+
 /// `GET /vault/{slug}/stats` (REQ-VLT-011). Owner/admin: full panel. Any
 /// other viewer WITH access (direct share hidden=0 or group grant — proven by
 /// their `accessible_vaults` row): ONLY their own hit count. No access: 403.
@@ -2823,7 +2859,19 @@ async fn vault_stats(
     State(state): State<SharedState>,
     Extension(claims): Extension<Claims>,
     Path(slug): Path<String>,
+    Query(q): Query<StatsQuery>,
 ) -> Response {
+    // D-06: one window for EVERY section on the page (chips below).
+    let days = stats_days(q.days.as_deref());
+    // D-06: fixed 7/30/90-day chips — plain menu-btn links, zero new CSS
+    // (D-03); the active chip is marked for assistive tech.
+    let chips = format!(
+        r#"<p><a class="menu-btn" href="/vault/{slug}/stats?days=7"{a7}>7 days</a> <a class="menu-btn" href="/vault/{slug}/stats?days=30"{a30}>30 days</a> <a class="menu-btn" href="/vault/{slug}/stats?days=90"{a90}>90 days</a></p>"#,
+        slug = html_escape(&slug),
+        a7 = if days == 7 { r#" aria-current="true""# } else { "" },
+        a30 = if days == 30 { r#" aria-current="true""# } else { "" },
+        a90 = if days == 90 { r#" aria-current="true""# } else { "" },
+    );
     let is_admin = state
         .store
         .role_for(&claims.email)
@@ -2844,12 +2892,13 @@ async fn vault_stats(
         // Sharee branch: a single line, nothing from the owner panel (T-10.1-07).
         let n = state
             .store
-            .stats_own_count(&slug, &claims.email, 90)
+            .stats_own_count(&slug, &claims.email, days)
             .await
             .unwrap_or(0);
         let body = format!(
             r#"<section class="panel">
 <h2>Statistics</h2>
+{chips}
 <p>You have accessed this vault {n} time(s).</p>
 </section>
 "#
@@ -2911,7 +2960,7 @@ async fn vault_stats(
     // escape them like every other interpolated string (T-10.1-09).
     let day_rows: String = state
         .store
-        .stats_per_day(&slug, 90)
+        .stats_per_day(&slug, days)
         .await
         .unwrap_or_default()
         .iter()
@@ -2926,7 +2975,7 @@ async fn vault_stats(
         .collect();
     let top_rows: String = state
         .store
-        .stats_top_pages(&slug, 90)
+        .stats_top_pages(&slug, days)
         .await
         .unwrap_or_default()
         .iter()
@@ -2945,7 +2994,7 @@ async fn vault_stats(
     // T-10.1-09 above).
     let changes = state
         .store
-        .recent_vault_changes(&slug, 5, 30, 90)
+        .recent_vault_changes(&slug, 5, 30, days)
         .await
         .unwrap_or_default();
     // Group consecutive rows sharing event_id (query is already newest-first).
@@ -2985,6 +3034,7 @@ async fn vault_stats(
     let body = format!(
         r#"<section class="panel">
 <h2>Statistics</h2>
+{chips}
 <dl class="stats">
   <dt>Pages</dt><dd>{pages}</dd>
   <dt>Disk size</dt><dd>{size}</dd>
@@ -3004,6 +3054,7 @@ async fn vault_stats(
         lr = html_escape(&last_refresh),
         src = html_escape(&source),
         slug = html_escape(&slug),
+        chips = chips,
         okf_line = okf_line,
         day_rows = day_rows,
         top_rows = top_rows,
@@ -7955,6 +8006,71 @@ mod tests {
             "no section for sharee: {body}"
         );
         assert!(!body.contains("secret.md"), "no change leak: {body}");
+    }
+
+    // ---------- Phase 19: date-range chips + top words (19-04 Task 1) ----------
+
+    #[test]
+    fn stats_days_whitelist() {
+        // D-06: strict three-value whitelist, 90 fallback (T-19-12 — the
+        // ?days param can never reach SQL as anything but one of three ints).
+        assert_eq!(stats_days(None), 90);
+        assert_eq!(stats_days(Some("7")), 7);
+        assert_eq!(stats_days(Some("30")), 30);
+        assert_eq!(stats_days(Some("90")), 90);
+        assert_eq!(stats_days(Some("999")), 90);
+        assert_eq!(stats_days(Some("0")), 90);
+        assert_eq!(stats_days(Some("7; DROP TABLE access_log")), 90);
+    }
+
+    #[test]
+    fn top_words_lowercases_and_filters_short_tokens() {
+        // D-04 locked wording: lowercase, whitespace-split, len >= 3,
+        // no stopword list, no punctuation stripping.
+        let qs = vec!["Foo BAR foo".to_string(), "ab baz".to_string()];
+        let words = top_words(&qs, 10);
+        assert_eq!(
+            words,
+            vec![
+                ("foo".to_string(), 2),
+                ("bar".to_string(), 1),
+                ("baz".to_string(), 1),
+            ]
+        );
+        assert!(!words.iter().any(|(w, _)| w == "ab"), "\"ab\" is too short");
+    }
+
+    #[test]
+    fn top_words_orders_by_count_then_alpha() {
+        let qs = vec![
+            "beta alpha".to_string(),
+            "alpha".to_string(),
+            "gamma gamma beta".to_string(),
+        ];
+        // All tied at 2 → alphabetical.
+        let words = top_words(&qs, 10);
+        assert_eq!(
+            words,
+            vec![
+                ("alpha".to_string(), 2),
+                ("beta".to_string(), 2),
+                ("gamma".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn top_words_caps_at_top() {
+        let qs = vec!["aaa bbb ccc".to_string()];
+        let words = top_words(&qs, 2);
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0], ("aaa".to_string(), 1));
+        assert_eq!(words[1], ("bbb".to_string(), 1));
+    }
+
+    #[test]
+    fn top_words_empty_input() {
+        assert!(top_words(&[], 10).is_empty());
     }
 
     #[tokio::test]
