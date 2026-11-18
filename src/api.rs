@@ -489,7 +489,13 @@ async fn api_search(
         );
     };
     match search_notes(&state.store, &user.email, query, q.vault.as_deref()).await {
-        Ok(hits) => Json(hits).into_response(),
+        Ok(hits) => {
+            // Phase 19 (STAT-01, D-04 REST half): the ACL-gated search
+            // succeeded — count it per searched vault. Every early-return
+            // problem+json path above writes nothing (T-19-07).
+            log_api_search(&state, &user.email, q.vault.as_deref(), query);
+            Json(hits).into_response()
+        }
         Err(ApiReadError::NotFound) => {
             problem(StatusCode::NOT_FOUND, "not_found", "vault not found")
         }
@@ -604,6 +610,32 @@ fn log_api_access(state: &SharedState, email: &str, slug: &str, path: &str, sour
     let source = source.to_string();
     tokio::spawn(async move {
         let _ = store.log_access(&email, &slug, &source, &path).await;
+    });
+}
+
+/// Phase 19 (D-04 REST half, STAT-01): best-effort search rows — one
+/// `access_log` row (path `-`) + one raw `search_queries` row per searched
+/// vault, mirroring the MCP fan-out (mcp.rs `search_notes`). Same
+/// spawn-and-drop contract; only reached from the ACL-passing Ok arm.
+fn log_api_search(state: &SharedState, email: &str, vault: Option<&str>, query: &str) {
+    let store = state.store.clone();
+    let email = email.to_string();
+    let query = query.to_string();
+    let vault = vault.map(str::to_string);
+    tokio::spawn(async move {
+        let slugs: Vec<String> = match &vault {
+            Some(slug) => vec![slug.clone()],
+            None => crate::api::accessible_vault_entries(&store, &email)
+                .await
+                .iter()
+                .filter(|a| crate::webdav::source_dir_of(Path::new(&a.vault.book_path)).is_some())
+                .map(|a| a.vault.slug.clone())
+                .collect(),
+        };
+        for slug in slugs {
+            let _ = store.log_access(&email, &slug, "api", "-").await;
+            let _ = store.log_search_query(&email, &slug, &query, "api").await;
+        }
     });
 }
 
@@ -1688,12 +1720,11 @@ mod tests {
     // These are the REST ports of the six behavioral tests in `mcp.rs`
     // `mod tests` (16-PATTERNS §10), named `api_*` to mirror each source
     // 1:1. The three LOGGING tests (`mcp_denied_call_logs_nothing`,
-    // `mcp_read_note_logs_access`, `mcp_list_and_search_log`) are
-    // DELIBERATELY not ported: REST access logging is skipped in v1 because
-    // migrations/0008_*.sql CHECK-constrains `access_log.source` to
-    // ('web','mcp') and a table-rebuild migration is unjustified for an
-    // unrequired best-effort feature (planner decision, 16-01). The gap is
-    // intentional, not forgotten.
+    // `mcp_read_note_logs_access`, `mcp_list_and_search_log`) were deferred
+    // in Phase 16 (the 0008 CHECK excluded source='api'); Phase 19
+    // (STAT-01, D-07) closed the gap — migration 0014 widened the CHECK
+    // and the ports live below as `api_read_note_logs_access`,
+    // `api_search_logs_access_and_query` and `api_denied_call_logs_nothing`.
 
     /// Port of mcp.rs `tools_are_acl_scoped`: a reader with no grants sees
     /// nothing, and a guessed slug answers 404 problem+json on every read
@@ -2316,12 +2347,108 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         // Give any (wrongly) spawned insert a chance to land before asserting.
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let rows: Vec<(i64,)> = sqlx::query_as("SELECT COUNT(*) FROM access_log WHERE email = ?")
+            .bind("nobody@api.test")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].0, 0, "denied calls log nothing");
+    }
+
+    /// Poll briefly for a spawned search_queries row to land.
+    async fn poll_search_query(s: &Store, email: &str, want: (&str, &str, &str)) -> bool {
+        for _ in 0..40 {
+            let hit: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM search_queries WHERE email = ? AND vault_slug = ? AND query = ? AND source = ? LIMIT 1",
+            )
+            .bind(email)
+            .bind(want.0)
+            .bind(want.1)
+            .bind(want.2)
+            .fetch_optional(&s.pool)
+            .await
+            .unwrap();
+            if hit.is_some() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn api_search_logs_access_and_query() {
+        let (app, s, src) = seed_notes_app("log-search", "ls1", &["note.md"]).await;
+        std::fs::write(src.join("note.md"), "needle here").unwrap();
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/search?q=needle&vault=ls1", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            poll_api_log(&s, "admin@api.test", ("ls1", "api", "-")).await,
+            "coarse access row (slug, api, -)"
+        );
+        assert!(
+            poll_search_query(&s, "admin@api.test", ("ls1", "needle", "api")).await,
+            "raw query row (slug, raw q, api)"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_search_multi_vault_logs_per_vault() {
+        // Global search fans out over the caller's accessible vaults —
+        // one search_queries row per searched vault (D-04, mcp.rs mirror).
+        let s = store().await;
+        s.ensure_admin("admin@api.test", "pw").await.unwrap();
+        for (slug, tag) in [("mv1", "apimv1"), ("mv2", "apimv2")] {
+            let src = tmpdir(tag);
+            std::fs::write(src.join("note.md"), "needle here").unwrap();
+            std::fs::create_dir_all(src.join("book")).unwrap();
+            s.seed_vault(slug, "MV vault", &src.join("book"))
+                .await
+                .unwrap();
+        }
+        let app = build_router_with_email(router_cfg(), s.clone(), Arc::new(InMemorySender::new()));
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/search?q=needle", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let mut count = 0;
+        for _ in 0..40 {
+            let rows: Vec<(i64,)> = sqlx::query_as(
+                "SELECT COUNT(*) FROM search_queries WHERE email = ? AND source = 'api'",
+            )
+            .bind("admin@api.test")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+            count = rows[0].0;
+            if count >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(count, 2, "one search_queries row per searched vault");
+    }
+
+    #[tokio::test]
+    async fn api_search_requires_q_logs_nothing() {
+        // The missing-q 400 returns BEFORE the Ok arm — no rows (T-19-07).
+        let (app, s) = api_app().await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/search", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let rows: Vec<(i64,)> =
-            sqlx::query_as("SELECT COUNT(*) FROM access_log WHERE email = ?")
-                .bind("nobody@api.test")
+            sqlx::query_as("SELECT COUNT(*) FROM search_queries WHERE email = ?")
+                .bind("admin@api.test")
                 .fetch_all(&s.pool)
                 .await
                 .unwrap();
-        assert_eq!(rows[0].0, 0, "denied calls log nothing");
+        assert_eq!(rows[0].0, 0, "rejected search logs no query");
+        let rows: Vec<(i64,)> = sqlx::query_as("SELECT COUNT(*) FROM access_log WHERE email = ?")
+            .bind("admin@api.test")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].0, 0, "rejected search logs no access row");
     }
 }
