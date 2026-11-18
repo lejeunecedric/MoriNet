@@ -1475,12 +1475,7 @@ impl Store {
 
     /// Total hits by one sharee on one vault, across all sources, within
     /// `days`.
-    pub async fn stats_own_count(
-        &self,
-        slug: &str,
-        email: &str,
-        days: i64,
-    ) -> anyhow::Result<i64> {
+    pub async fn stats_own_count(&self, slug: &str, email: &str, days: i64) -> anyhow::Result<i64> {
         let (n,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM access_log \
              WHERE vault_slug = ? AND email = ? AND ts >= datetime('now', ?)",
@@ -1509,6 +1504,7 @@ impl Store {
     /// fire-and-forget and ignore errors — logging must never break the
     /// request (STAT-05). `args`/`excerpt` are capped at 200 chars by the
     /// caller; full response bodies are NEVER stored.
+    #[allow(clippy::too_many_arguments)] // signature pinned by 19-01 plan for 19-02 callers
     pub async fn log_mcp_activity(
         &self,
         email: &str,
@@ -1577,13 +1573,15 @@ impl Store {
         query: &str,
         source: &str,
     ) -> anyhow::Result<()> {
-        sqlx::query("INSERT INTO search_queries (vault_slug, email, query, source) VALUES (?, ?, ?, ?)")
-            .bind(slug)
-            .bind(email)
-            .bind(query)
-            .bind(source)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO search_queries (vault_slug, email, query, source) VALUES (?, ?, ?, ?)",
+        )
+        .bind(slug)
+        .bind(email)
+        .bind(query)
+        .bind(source)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -3734,13 +3732,24 @@ mod access_log_tests {
             .await
             .unwrap();
         // Backdate the first row so newest-first ordering is time-driven.
-        sqlx::query("UPDATE mcp_activity SET ts = datetime('now', '-1 day') WHERE tool = 'list_notes'")
-            .execute(&s.pool)
-            .await
-            .unwrap();
-        s.log_mcp_activity("b@x.fr", "wiki", "read_note", "note.md", "error", 42, 0, "boom")
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE mcp_activity SET ts = datetime('now', '-1 day') WHERE tool = 'list_notes'",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        s.log_mcp_activity(
+            "b@x.fr",
+            "wiki",
+            "read_note",
+            "note.md",
+            "error",
+            42,
+            0,
+            "boom",
+        )
+        .await
+        .unwrap();
 
         let rows = s.recent_mcp_activity("wiki", 90, 10).await.unwrap();
         assert_eq!(rows.len(), 2);
@@ -3749,14 +3758,24 @@ mod access_log_tests {
         let (ts, tool, email, args, status, latency, size, excerpt) = &rows[0];
         assert!(!ts.is_empty());
         assert_eq!(
-            (tool.as_str(), email.as_str(), args.as_str(), status.as_str()),
+            (
+                tool.as_str(),
+                email.as_str(),
+                args.as_str(),
+                status.as_str()
+            ),
             ("read_note", "b@x.fr", "note.md", "error")
         );
         assert_eq!((*latency, *size, excerpt.as_str()), (42, 0, "boom"));
         let (ts2, tool2, email2, args2, status2, latency2, size2, excerpt2) = &rows[1];
         assert!(!ts2.is_empty());
         assert_eq!(
-            (tool2.as_str(), email2.as_str(), args2.as_str(), status2.as_str()),
+            (
+                tool2.as_str(),
+                email2.as_str(),
+                args2.as_str(),
+                status2.as_str()
+            ),
             ("list_notes", "a@x.fr", "", "ok")
         );
         assert_eq!((*latency2, *size2, excerpt2.as_str()), (5, 100, "a.md"));
@@ -3772,9 +3791,18 @@ mod access_log_tests {
             .execute(&s.pool)
             .await
             .unwrap();
-        s.log_mcp_activity("a@x.fr", "wiki", "read_note", "fresh.md", "ok", 2, 2, "fresh")
-            .await
-            .unwrap();
+        s.log_mcp_activity(
+            "a@x.fr",
+            "wiki",
+            "read_note",
+            "fresh.md",
+            "ok",
+            2,
+            2,
+            "fresh",
+        )
+        .await
+        .unwrap();
 
         let rows = s.recent_mcp_activity("wiki", 90, 10).await.unwrap();
         assert_eq!(rows.len(), 1, "the 100-day-old row is outside days=90");
@@ -3784,10 +3812,18 @@ mod access_log_tests {
     #[tokio::test]
     async fn top_search_queries_aggregates_and_orders() {
         let s = st("search-top").await;
-        s.log_search_query("a@x.fr", "wiki", "rust", "mcp").await.unwrap();
-        s.log_search_query("a@x.fr", "wiki", "rust", "api").await.unwrap();
-        s.log_search_query("b@x.fr", "wiki", "axum", "mcp").await.unwrap();
-        s.log_search_query("b@x.fr", "wiki", "beta", "api").await.unwrap();
+        s.log_search_query("a@x.fr", "wiki", "rust", "mcp")
+            .await
+            .unwrap();
+        s.log_search_query("a@x.fr", "wiki", "rust", "api")
+            .await
+            .unwrap();
+        s.log_search_query("b@x.fr", "wiki", "axum", "mcp")
+            .await
+            .unwrap();
+        s.log_search_query("b@x.fr", "wiki", "beta", "api")
+            .await
+            .unwrap();
 
         let top = s.top_search_queries("wiki", 90, 10).await.unwrap();
         assert_eq!(top[0], ("rust".to_string(), 2), "most-counted first");
@@ -3799,12 +3835,18 @@ mod access_log_tests {
     #[tokio::test]
     async fn recent_search_queries_newest_first() {
         let s = st("search-recent").await;
-        s.log_search_query("a@x.fr", "wiki", "older", "mcp").await.unwrap();
-        sqlx::query("UPDATE search_queries SET ts = datetime('now', '-1 day') WHERE query = 'older'")
-            .execute(&s.pool)
+        s.log_search_query("a@x.fr", "wiki", "older", "mcp")
             .await
             .unwrap();
-        s.log_search_query("a@x.fr", "wiki", "newer", "api").await.unwrap();
+        sqlx::query(
+            "UPDATE search_queries SET ts = datetime('now', '-1 day') WHERE query = 'older'",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        s.log_search_query("a@x.fr", "wiki", "newer", "api")
+            .await
+            .unwrap();
 
         let recent = s.recent_search_queries("wiki", 90, 10).await.unwrap();
         assert_eq!(
@@ -3843,7 +3885,9 @@ mod access_log_tests {
     #[tokio::test]
     async fn prune_search_queries_removes_only_old_rows() {
         let s = st("search-prune").await;
-        s.log_search_query("a@x.fr", "wiki", "fresh", "mcp").await.unwrap();
+        s.log_search_query("a@x.fr", "wiki", "fresh", "mcp")
+            .await
+            .unwrap();
         // One row 91 days old — beyond the 90-day retention window.
         sqlx::query(
             "INSERT INTO search_queries (vault_slug, email, query, source, ts) \
@@ -3884,7 +3928,10 @@ mod access_log_tests {
         assert!(!week.iter().any(|(p, _)| p == "/old.html"), "10 days > 7");
 
         let quarter = s.stats_top_pages("wiki", 90).await.unwrap();
-        assert!(quarter.iter().any(|(p, _)| p == "/old.html"), "10 days < 90");
+        assert!(
+            quarter.iter().any(|(p, _)| p == "/old.html"),
+            "10 days < 90"
+        );
     }
 }
 
@@ -3979,7 +4026,10 @@ mod vault_changes_tests {
         // Phase 19 (D-06): the fixture uses fixed Jan-2026 timestamps, so
         // this test passes a 100-year window — it pins grouping/capping, the
         // window itself is pinned by the Phase 19 days tests.
-        let rows = s.recent_vault_changes("vcwiki", 5, 30, 36500).await.unwrap();
+        let rows = s
+            .recent_vault_changes("vcwiki", 5, 30, 36500)
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 3, "other vault's row excluded");
         assert_eq!(rows[0].0, "e-b", "newest event first");
         assert_eq!(rows[0].2, "removed");
