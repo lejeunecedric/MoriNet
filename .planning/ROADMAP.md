@@ -100,7 +100,7 @@
 | 16. rest-api | v1.2 | 5/5 | Complete    | 2026-11-01 |
 | 17. oidc-sso | v1.2 | 5/5 | Complete    | 2026-11-06 |
 | 18. okf-bundle-support (+18.1) | v1.3 | 6/6 + 1/1 | Complete | 2026-11-06 |
-| 19. statistics-observability | v1.4 | 0/? | Planned | — |
+| 19. statistics-observability | v1.4 | 1/4 | In Progress|  |
 | 20. okf-ecosystem-quick-wins | v1.4 | 0/? | Planned | — |
 
 **Next milestone candidates: OKF-F01 trust-aware rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
