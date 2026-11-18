@@ -1418,8 +1418,8 @@ impl Store {
     // ─── Access log (Phase 10.1, REQ-VLT-011) ────────────────────────────
 
     /// Record one page view. Callers spawn this fire-and-forget and ignore
-    /// errors — stats must never break a request. `source` is 'web' or 'mcp'
-    /// (CHECK-enforced by migration 0008).
+    /// errors — stats must never break a request. `source` is 'web', 'mcp'
+    /// or 'api' (CHECK-enforced since migration 0014, D-07).
     pub async fn log_access(
         &self,
         email: &str,
@@ -2330,6 +2330,7 @@ mod tests {
 
     #[tokio::test]
     async fn access_log_rejects_bad_source() {
+        // Phase 19 (D-07): vocabulary is now web|mcp|api
         let s = store().await;
         let bad = sqlx::query(
             "INSERT INTO access_log (vault_slug, email, source, path) \
@@ -2348,6 +2349,13 @@ mod tests {
         sqlx::query(
             "INSERT INTO access_log (vault_slug, email, source, path) \
              VALUES ('v', 'a@x.fr', 'mcp', '/y')",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO access_log (vault_slug, email, source, path) \
+             VALUES ('v', 'a@x.fr', 'api', '/z')",
         )
         .execute(&s.pool)
         .await
@@ -3458,6 +3466,98 @@ mod access_log_tests {
 
         // Idempotent: a second prune deletes nothing.
         assert_eq!(s.prune_access_log().await.unwrap(), 0);
+    }
+
+    // ---------- Phase 19 / PLAN 19-01 Task 1: migration 0014 (D-01, D-04, D-07) ----------
+
+    #[tokio::test]
+    async fn access_log_accepts_all_three_sources() {
+        // Phase 19 (D-07): after the 0014 rebuild the CHECK accepts all of
+        // web, mcp and api — one insert per source, three rows counted.
+        let s = st("sources").await;
+        for source in ["web", "mcp", "api"] {
+            sqlx::query(
+                "INSERT INTO access_log (vault_slug, email, source, path) \
+                 VALUES ('wiki', 'a@x.fr', ?, '/x')",
+            )
+            .bind(source)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        }
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM access_log")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 3, "web + mcp + api all accepted");
+    }
+
+    #[tokio::test]
+    async fn access_log_indexes_survive_rebuild() {
+        // Phase 19 (T-19-02): the table rebuild must recreate BOTH original
+        // indexes — a forgotten index would silently skew every stats query.
+        let s = st("idx-rebuild").await;
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='index' AND name IN ('idx_access_log_slug_ts','idx_access_log_email')",
+        )
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 2, "both access_log indexes recreated after rename");
+    }
+
+    #[tokio::test]
+    async fn mcp_activity_rejects_bad_tool_and_status() {
+        // Phase 19 (D-01/D-02): the tool CHECK pins the 3 vault-scoped tools
+        // and the status CHECK pins ok|error.
+        let s = st("mcp-act").await;
+        let bad_tool = sqlx::query(
+            "INSERT INTO mcp_activity (vault_slug, email, tool, status) \
+             VALUES ('wiki', 'a@x.fr', 'evil', 'ok')",
+        )
+        .execute(&s.pool)
+        .await;
+        assert!(bad_tool.is_err(), "tool CHECK must reject 'evil'");
+        let bad_status = sqlx::query(
+            "INSERT INTO mcp_activity (vault_slug, email, tool, status) \
+             VALUES ('wiki', 'a@x.fr', 'read_note', 'boom')",
+        )
+        .execute(&s.pool)
+        .await;
+        assert!(bad_status.is_err(), "status CHECK must reject 'boom'");
+        sqlx::query(
+            "INSERT INTO mcp_activity (vault_slug, email, tool, args, status, \
+             latency_ms, resp_size, excerpt) \
+             VALUES ('wiki', 'a@x.fr', 'read_note', 'note.md', 'ok', 12, 340, 'first line')",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_queries_rejects_bad_source() {
+        // Phase 19 (D-04): search queries come from mcp or api only — 'web'
+        // search is client-side mdBook and is out of scope.
+        let s = st("search-q").await;
+        let bad = sqlx::query(
+            "INSERT INTO search_queries (vault_slug, email, query, source) \
+             VALUES ('wiki', 'a@x.fr', 'hello', 'web')",
+        )
+        .execute(&s.pool)
+        .await;
+        assert!(bad.is_err(), "source CHECK must reject 'web'");
+        for source in ["mcp", "api"] {
+            sqlx::query(
+                "INSERT INTO search_queries (vault_slug, email, query, source) \
+                 VALUES ('wiki', 'a@x.fr', 'hello', ?)",
+            )
+            .bind(source)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        }
     }
 }
 
