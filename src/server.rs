@@ -2987,6 +2987,78 @@ async fn vault_stats(
             )
         })
         .collect();
+    // MCP activity section (STAT-03, D-03): two-column request↔outcome,
+    // newest-first from the query (ts DESC, id DESC). Best-effort like the
+    // siblings. Every interpolated field is html_escaped — args/excerpts
+    // originate from note content and tool input (T-19-10, same rule as
+    // T-10.1-09 above); latency/size are i64, safe unescaped.
+    let mcp_html = match state
+        .store
+        .recent_mcp_activity(&slug, days, 20)
+        .await
+    {
+        Ok(rows) if !rows.is_empty() => {
+            let body: String = rows
+                .iter()
+                .map(|(_ts, tool, email, args, status, latency_ms, resp_size, excerpt)| {
+                    format!(
+                        r#"<tr><td>{tool} — {args}<br><small>{email}</small></td><td>{status} · {lat} ms · {size} B<br>{excerpt}</td></tr>"#,
+                        tool = html_escape(tool),
+                        args = html_escape(args),
+                        email = html_escape(email),
+                        status = html_escape(status),
+                        lat = latency_ms,
+                        size = resp_size,
+                        excerpt = html_escape(excerpt),
+                    )
+                })
+                .collect();
+            format!(
+                r#"<h2>MCP activity</h2>
+<table><thead><tr><th>Request</th><th>Outcome</th></tr></thead><tbody>{body}</tbody></table>"#
+            )
+        }
+        _ => "<p>No MCP activity recorded yet.</p>".to_string(),
+    };
+    // Search keywords section (STAT-04, D-04): top queries ranked + top words
+    // from up to 200 recent raw queries. Same best-effort + escaping rules.
+    let top_queries = state
+        .store
+        .top_search_queries(&slug, days, 10)
+        .await
+        .unwrap_or_default();
+    let words = top_words(
+        &state
+            .store
+            .recent_search_queries(&slug, days, 200)
+            .await
+            .unwrap_or_default(),
+        10,
+    );
+    let search_html = if top_queries.is_empty() && words.is_empty() {
+        "<p>No searches recorded yet.</p>".to_string()
+    } else {
+        let q_rows: String = top_queries
+            .iter()
+            .map(|(q, n)| {
+                format!(
+                    r#"<tr><td>{q}</td><td>{n}</td></tr>"#,
+                    q = html_escape(q),
+                    n = n
+                )
+            })
+            .collect();
+        let w_items: String = words
+            .iter()
+            .map(|(w, n)| format!("<li>{w} ({n})</li>", w = html_escape(w), n = n))
+            .collect();
+        format!(
+            r#"<h2>Search keywords</h2>
+<table><thead><tr><th>Query</th><th>Hits</th></tr></thead><tbody>{q_rows}</tbody></table>
+<h3>Top words</h3>
+<ul>{w_items}</ul>"#
+        )
+    };
     // Wiki changes section (D-06): best-effort like the sibling stats
     // queries — a read error degrades to the empty state, never breaks the
     // page. ts/kind/path all get html_escape: paths come from repo filenames
@@ -3045,6 +3117,8 @@ async fn vault_stats(
 <table><thead><tr><th>Day</th><th>Source</th><th>Hits</th></tr></thead><tbody>{day_rows}</tbody></table>
 <h2>Top pages</h2>
 <table><thead><tr><th>Page</th><th>Hits</th></tr></thead><tbody>{top_rows}</tbody></table>
+{mcp_html}
+{search_html}
 <h2>Wiki changes</h2>
 {changes_html}
 </section>
@@ -8071,6 +8145,195 @@ mod tests {
     #[test]
     fn top_words_empty_input() {
         assert!(top_words(&[], 10).is_empty());
+    }
+
+    // ---------- Phase 19: MCP activity + search keywords sections (19-04 Task 2) ----------
+
+    #[tokio::test]
+    async fn stats_shows_mcp_activity_section() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .log_mcp_activity(
+                "admin@example.com",
+                "demo",
+                "read_note",
+                "{\"path\":\"notes.md\"}",
+                "ok",
+                12,
+                3456,
+                "first 200 chars…",
+            )
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("MCP activity"), "section heading: {body}");
+        assert!(body.contains("read_note"), "tool name: {body}");
+        assert!(
+            body.contains("admin@example.com"),
+            "actor email column: {body}"
+        );
+        assert!(body.contains("first 200 chars"), "excerpt: {body}");
+        assert!(body.contains("Request"), "left column header: {body}");
+        assert!(body.contains("Outcome"), "right column header: {body}");
+    }
+
+    #[tokio::test]
+    async fn stats_mcp_activity_escapes_untrusted() {
+        let (app, state) = test_router().await;
+        // T-19-10: args/excerpts originate from note content / tool input.
+        state
+            .store
+            .log_mcp_activity(
+                "admin@example.com",
+                "demo",
+                "read_note",
+                "{\"path\":\"<img src=x onerror=alert(1)>\"}",
+                "ok",
+                1,
+                2,
+                "<img src=x onerror=alert(1)>",
+            )
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("&lt;img"), "escaped payload: {body}");
+        assert!(!body.contains("<img"), "raw payload leaked: {body}");
+    }
+
+    #[tokio::test]
+    async fn stats_top_queries_and_words_section() {
+        let (app, state) = test_router().await;
+        // D-04: both sources aggregate — 'mcp' and 'api' rows count together.
+        for _ in 0..2 {
+            state
+                .store
+                .log_search_query("admin@example.com", "demo", "rust macros", "mcp")
+                .await
+                .unwrap();
+        }
+        state
+            .store
+            .log_search_query("admin@example.com", "demo", "rust", "api")
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(body.contains("Search keywords"), "section heading: {body}");
+        assert!(
+            body.contains("rust macros</td><td>2<"),
+            "top query row with count: {body}"
+        );
+        assert!(body.contains("Top words"), "top words sub-heading: {body}");
+        assert!(body.contains("rust (3)"), "word count across queries: {body}");
+    }
+
+    #[tokio::test]
+    async fn stats_sharee_no_detailed_sections() {
+        let (app, state) = test_router().await;
+        seed_owner_and_shared_share(&state, "reader").await;
+        // D-05 / T-19-11: detailed rows exist, the sharee must see none of them.
+        state
+            .store
+            .log_mcp_activity(
+                "pal@example.com",
+                "demo",
+                "read_note",
+                "{\"path\":\"secret.md\"}",
+                "ok",
+                5,
+                10,
+                "secret excerpt",
+            )
+            .await
+            .unwrap();
+        state
+            .store
+            .log_search_query("pal@example.com", "demo", "secret query", "mcp")
+            .await
+            .unwrap();
+        state
+            .store
+            .log_access("pal@example.com", "demo", "web", "index.html")
+            .await
+            .unwrap();
+        let cookie = login_as(&app, "pal@example.com", "pw").await;
+        let res = req(app, "GET", "/vault/demo/stats", cookie_hdr(&cookie), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("You have accessed this vault 1 time(s)"),
+            "own count line: {body}"
+        );
+        assert!(!body.contains("MCP activity"), "no section for sharee: {body}");
+        assert!(
+            !body.contains("Search keywords"),
+            "no section for sharee: {body}"
+        );
+        assert!(!body.contains("secret excerpt"), "no excerpt leak: {body}");
+        assert!(!body.contains("secret query"), "no query leak: {body}");
+    }
+
+    #[tokio::test]
+    async fn stats_days_chip_filters_rows() {
+        let (app, state) = test_router().await;
+        state
+            .store
+            .log_access("admin@example.com", "demo", "web", "old-note.html")
+            .await
+            .unwrap();
+        // Backdate the row 30 days: outside the 7-day window, inside 90.
+        sqlx::query("UPDATE access_log SET ts = datetime('now', '-30 days') WHERE path = 'old-note.html'")
+            .execute(&state.store.pool)
+            .await
+            .unwrap();
+        let cookie = login_cookie(&app).await;
+        let res = req(
+            app.clone(),
+            "GET",
+            "/vault/demo/stats?days=7",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            !body.contains("old-note.html"),
+            "30-day-old row outside the 7-day window: {body}"
+        );
+        for d in [7, 30, 90] {
+            assert!(
+                body.contains(&format!("days={d}")),
+                "chip link days={d}: {body}"
+            );
+        }
+        assert!(
+            body.contains(r#"aria-current="true""#),
+            "active chip marked: {body}"
+        );
+        let res = req(
+            app,
+            "GET",
+            "/vault/demo/stats?days=90",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_text(res).await;
+        assert!(
+            body.contains("old-note.html"),
+            "row present inside the 90-day window: {body}"
+        );
     }
 
     #[tokio::test]
