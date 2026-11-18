@@ -140,6 +140,19 @@ pub struct SearchParams {
     pub tags: Option<Vec<String>>,
 }
 
+/// Char-boundary-safe truncation (D-01): keep at most `max_chars` CHARS and
+/// append `…` when anything was dropped. Never a byte slice — vault content
+/// is multi-byte prose and `&s[..n]` would panic on a split code point.
+/// `max_chars == 0` yields just the ellipsis (pinned by test).
+pub(crate) fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars).collect();
+    out.push('…');
+    out
+}
+
 /// One MCP server instance per request (stateless transport), bound to the
 /// user behind the Bearer token.
 #[derive(Clone)]
@@ -208,6 +221,35 @@ impl MoriMcp {
         });
     }
 
+    /// Best-effort detailed activity row (D-02/D-03, STAT-05): same
+    /// spawn-and-drop contract as `log_access` — a failing insert can never
+    /// fail or slow the tool response. `args` is capped here so EVERY call
+    /// site is UTF-8-safe at the write (D-01); `excerpt` arrives pre-truncated.
+    #[allow(clippy::too_many_arguments)]
+    fn log_activity(
+        &self,
+        slug: &str,
+        tool: &str,
+        args: &str,
+        status: &str,
+        latency_ms: i64,
+        resp_size: i64,
+        excerpt: &str,
+    ) {
+        let store = self.store.clone();
+        let email = self.email.clone();
+        let slug = slug.to_string();
+        let tool = tool.to_string();
+        let args = truncate_chars(args, 200);
+        let status = status.to_string();
+        let excerpt = excerpt.to_string();
+        tokio::spawn(async move {
+            // One-line shape pinned by 19-02 acceptance grep; skip rustfmt split.
+            #[rustfmt::skip]
+            let _ = store.log_mcp_activity(&email, &slug, &tool, &args, &status, latency_ms, resp_size, &excerpt).await;
+        });
+    }
+
     /// The vaults the token's user can access (personal + shared via groups).
     #[tool(description = "List the vaults this token's user can access")]
     pub async fn list_vaults(&self) -> Result<CallToolResult, ErrorData> {
@@ -230,6 +272,7 @@ impl MoriMcp {
         Parameters(p): Parameters<ListNotesParams>,
     ) -> Result<CallToolResult, ErrorData> {
         // Thin wrapper: all ACL + path logic lives in crate::api (D-04).
+        let t0 = std::time::Instant::now();
         match crate::api::list_notes(&self.store, &self.email, &p.slug, p.path.as_deref()).await {
             Ok(files) => {
                 // Post-ACL filter (D-08): only notes from accessible vaults
@@ -255,9 +298,17 @@ impl MoriMcp {
                     files
                 };
                 self.log_access(&p.slug, p.path.as_deref().unwrap_or("-"));
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string(&files).unwrap_or_else(|_| "[]".into()),
-                )]))
+                let text = serde_json::to_string(&files).unwrap_or_else(|_| "[]".into());
+                self.log_activity(
+                    &p.slug,
+                    "list_notes",
+                    &serde_json::json!({"slug": &p.slug, "path": &p.path, "type": &p.r#type, "tags": &p.tags}).to_string(),
+                    "ok",
+                    t0.elapsed().as_millis() as i64,
+                    text.len() as i64,
+                    &truncate_chars(&text, 200),
+                );
+                Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
             Err(e) => tool_error(e.mcp_message()),
         }
@@ -271,13 +322,36 @@ impl MoriMcp {
     ) -> Result<CallToolResult, ErrorData> {
         // Thin wrapper: the helper returns raw bytes (REST needs them for
         // ETags); non-UTF-8 maps to the legacy read-failure string.
+        let t0 = std::time::Instant::now();
         match crate::api::read_note(&self.store, &self.email, &p.slug, &p.path).await {
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(content) => {
                     self.log_access(&p.slug, &p.path);
+                    self.log_activity(
+                        &p.slug,
+                        "read_note",
+                        &serde_json::json!({"slug": &p.slug, "path": &p.path}).to_string(),
+                        "ok",
+                        t0.elapsed().as_millis() as i64,
+                        content.len() as i64,
+                        &truncate_chars(&content, 200),
+                    );
                     Ok(CallToolResult::success(vec![ContentBlock::text(content)]))
                 }
-                Err(_) => tool_error(crate::api::ApiReadError::Unreadable.mcp_message()),
+                // Post-ACL decode failure only: pre-ACL Err arms stay silent
+                // (collapsed NotFound could be a probing attempt — D-02/T-19-05).
+                Err(_) => {
+                    self.log_activity(
+                        &p.slug,
+                        "read_note",
+                        &serde_json::json!({"slug": &p.slug, "path": &p.path}).to_string(),
+                        "error",
+                        t0.elapsed().as_millis() as i64,
+                        0,
+                        "",
+                    );
+                    tool_error(crate::api::ApiReadError::Unreadable.mcp_message())
+                }
             },
             Err(e) => tool_error(e.mcp_message()),
         }
@@ -573,6 +647,95 @@ mod tests {
         .await
         .unwrap();
         assert!(rows.is_empty(), "denied calls log nothing: {rows:?}");
+    }
+
+    // ---- detailed MCP activity + search queries (plan 19-02, D-01/D-02) ----
+
+    #[test]
+    fn truncate_chars_short_string_unchanged() {
+        assert_eq!(truncate_chars("hello", 200), "hello");
+        assert_eq!(truncate_chars("", 200), "");
+        // Exactly at the cap: still unchanged (no ellipsis).
+        let exact = "b".repeat(200);
+        assert_eq!(truncate_chars(&exact, 200), exact);
+    }
+
+    #[test]
+    fn truncate_chars_ascii_caps_at_max_plus_ellipsis() {
+        let s = "a".repeat(300);
+        let t = truncate_chars(&s, 200);
+        assert_eq!(t.chars().count(), 201, "200 chars + one ellipsis");
+        assert!(t.starts_with("aaaa"));
+        assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_chars_utf8_boundary_safe() {
+        // 300 two-byte 'é': a byte slice at 200 would split a char and panic.
+        let s = "é".repeat(300);
+        let t = truncate_chars(&s, 200);
+        assert_eq!(t.chars().count(), 201);
+        assert_eq!(t.chars().filter(|&c| c == 'é').count(), 200);
+        assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_chars_zero_max_is_just_ellipsis_or_empty() {
+        // Pinned edge: max_chars 0 yields just the ellipsis.
+        assert_eq!(truncate_chars("abc", 0), "…");
+    }
+
+    #[tokio::test]
+    async fn mcp_read_note_logs_activity() {
+        let s = store().await;
+        s.ensure_admin("act@mcp.test", "pw").await.unwrap();
+        let src = tmpdir("act-read");
+        std::fs::write(src.join("note.md"), "# Note\ncontent").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        s.seed_vault("ar", "Act read", &src.join("book"))
+            .await
+            .unwrap();
+
+        let m = MoriMcp::new(s.clone(), "act@mcp.test".into());
+        let ok = m
+            .read_note(Parameters(SlugPath {
+                slug: "ar".into(),
+                path: "note.md".into(),
+            }))
+            .await
+            .unwrap();
+        assert_ne!(ok.is_error, Some(true));
+
+        // Poll for the spawned best-effort mcp_activity row (same shape as poll_log).
+        let mut row: Option<(String, String, i64, String, i64)> = None;
+        for _ in 0..40 {
+            row = sqlx::query_as(
+                "SELECT tool, excerpt, resp_size, status, latency_ms FROM mcp_activity WHERE email = ? AND vault_slug = ? LIMIT 1",
+            )
+            .bind("act@mcp.test")
+            .bind("ar")
+            .fetch_optional(&s.pool)
+            .await
+            .unwrap();
+            if row.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let (tool, excerpt, resp_size, status, latency_ms) =
+            row.expect("mcp_activity row for read_note");
+        assert_eq!(tool, "read_note");
+        assert_eq!(status, "ok");
+        assert!(
+            excerpt.starts_with("# Note"),
+            "excerpt is the note's opening: {excerpt:?}"
+        );
+        assert_eq!(
+            resp_size,
+            "# Note\ncontent".len() as i64,
+            "resp_size is the FULL byte length, not the excerpt length"
+        );
+        assert!(latency_ms >= 0);
     }
 
     // ---- share ACL through MCP tokens (plan 10.1-03, REQ-VLT-010) ----
