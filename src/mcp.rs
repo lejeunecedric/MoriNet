@@ -250,6 +250,18 @@ impl MoriMcp {
         });
     }
 
+    /// Best-effort raw search-query row (D-04, STAT-04 MCP half): same
+    /// spawn-and-drop contract as `log_access`; source is always `'mcp'`.
+    fn log_search_query(&self, slug: &str, query: &str) {
+        let store = self.store.clone();
+        let email = self.email.clone();
+        let slug = slug.to_string();
+        let query = query.to_string();
+        tokio::spawn(async move {
+            let _ = store.log_search_query(&email, &slug, &query, "mcp").await;
+        });
+    }
+
     /// The vaults the token's user can access (personal + shared via groups).
     #[tool(description = "List the vaults this token's user can access")]
     pub async fn list_vaults(&self) -> Result<CallToolResult, ErrorData> {
@@ -364,6 +376,7 @@ impl MoriMcp {
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
         // Thin wrapper: ACL + cap live in crate::api (D-04, D-10).
+        let t0 = std::time::Instant::now();
         match crate::api::search_notes(&self.store, &self.email, &p.query, p.slug.as_deref()).await
         {
             Ok(hits) => {
@@ -389,9 +402,25 @@ impl MoriMcp {
                 } else {
                     hits
                 };
-                // Same logging as before: one row per searched vault.
+                // One row per searched vault: coarse access_log (unchanged)
+                // + detailed mcp_activity + raw search_queries (D-04).
+                let text = serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into());
+                let args = serde_json::json!({"query": &p.query, "slug": &p.slug, "type": &p.r#type, "tags": &p.tags}).to_string();
+                let latency = t0.elapsed().as_millis() as i64;
                 match p.slug.as_deref() {
-                    Some(slug) => self.log_access(slug, "-"),
+                    Some(slug) => {
+                        self.log_access(slug, "-");
+                        self.log_activity(
+                            slug,
+                            "search_notes",
+                            &args,
+                            "ok",
+                            latency,
+                            text.len() as i64,
+                            &truncate_chars(&text, 200),
+                        );
+                        self.log_search_query(slug, &p.query);
+                    }
                     None => {
                         for a in
                             crate::api::accessible_vault_entries(&self.store, &self.email).await
@@ -399,13 +428,21 @@ impl MoriMcp {
                             if crate::webdav::source_dir_of(Path::new(&a.vault.book_path)).is_some()
                             {
                                 self.log_access(&a.vault.slug, "-");
+                                self.log_activity(
+                                    &a.vault.slug,
+                                    "search_notes",
+                                    &args,
+                                    "ok",
+                                    latency,
+                                    text.len() as i64,
+                                    &truncate_chars(&text, 200),
+                                );
+                                self.log_search_query(&a.vault.slug, &p.query);
                             }
                         }
                     }
                 }
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into()),
-                )]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
             Err(e) => tool_error(e.mcp_message()),
         }
@@ -736,6 +773,155 @@ mod tests {
             "resp_size is the FULL byte length, not the excerpt length"
         );
         assert!(latency_ms >= 0);
+    }
+
+    #[tokio::test]
+    async fn mcp_search_logs_query() {
+        let s = store().await;
+        s.ensure_admin("sq@mcp.test", "pw").await.unwrap();
+        let src = tmpdir("sq-search");
+        std::fs::write(src.join("note.md"), "needle here").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        s.seed_vault("ll", "Log list", &src.join("book"))
+            .await
+            .unwrap();
+
+        let m = MoriMcp::new(s.clone(), "sq@mcp.test".into());
+        m.search_notes(Parameters(SearchParams {
+            query: "needle".into(),
+            slug: Some("ll".into()),
+            r#type: None,
+            tags: None,
+        }))
+        .await
+        .unwrap();
+
+        // One search_queries row for the searched vault, raw query, source='mcp'.
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for _ in 0..40 {
+            rows =
+                sqlx::query_as("SELECT query, source FROM search_queries WHERE vault_slug = 'll'")
+                    .fetch_all(&s.pool)
+                    .await
+                    .unwrap();
+            if !rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            rows.len(),
+            1,
+            "one search_queries row for the searched vault"
+        );
+        assert_eq!(rows[0].0, "needle", "raw query text stored");
+        assert_eq!(rows[0].1, "mcp");
+
+        // Detailed activity row for the same search, excerpt showing a hit.
+        let mut act: Option<(String, String)> = None;
+        for _ in 0..40 {
+            act = sqlx::query_as(
+                "SELECT tool, excerpt FROM mcp_activity WHERE email = ? AND vault_slug = ? AND tool = 'search_notes' LIMIT 1",
+            )
+            .bind("sq@mcp.test")
+            .bind("ll")
+            .fetch_optional(&s.pool)
+            .await
+            .unwrap();
+            if act.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let (tool, excerpt) = act.expect("search_notes activity row");
+        assert_eq!(tool, "search_notes");
+        assert!(
+            excerpt.contains("note.md"),
+            "excerpt contains a hit path: {excerpt:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_search_multi_vault_logs_per_vault() {
+        let s = store().await;
+        s.ensure_admin("mv@mcp.test", "pw").await.unwrap();
+        for (slug, tag) in [("v1", "mv1"), ("v2", "mv2")] {
+            let src = tmpdir(tag);
+            std::fs::write(src.join("note.md"), "needle here").unwrap();
+            std::fs::create_dir_all(src.join("book")).unwrap();
+            s.seed_vault(slug, "MV vault", &src.join("book"))
+                .await
+                .unwrap();
+        }
+        let m = MoriMcp::new(s.clone(), "mv@mcp.test".into());
+        m.search_notes(Parameters(SearchParams {
+            query: "needle".into(),
+            slug: None,
+            r#type: None,
+            tags: None,
+        }))
+        .await
+        .unwrap();
+
+        // Same fan-out as the coarse logger: one search_queries row per vault.
+        let mut slugs: Vec<String> = Vec::new();
+        for _ in 0..40 {
+            let rows: Vec<(String,)> =
+                sqlx::query_as("SELECT vault_slug FROM search_queries WHERE email = ?")
+                    .bind("mv@mcp.test")
+                    .fetch_all(&s.pool)
+                    .await
+                    .unwrap();
+            slugs = rows.into_iter().map(|r| r.0).collect();
+            if slugs.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        slugs.sort();
+        assert_eq!(slugs, vec!["v1".to_string(), "v2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn mcp_denied_call_logs_no_activity() {
+        // Extends mcp_denied_call_logs_nothing to the new tables (T-19-05):
+        // denied probes must leave zero rows in mcp_activity AND search_queries.
+        let s = store().await;
+        s.create_user("nobody2@mcp.test", "pw", "reader")
+            .await
+            .unwrap();
+        let m = MoriMcp::new(s.clone(), "nobody2@mcp.test".into());
+        let res = m
+            .read_note(Parameters(SlugPath {
+                slug: "ghost".into(),
+                path: "x.md".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(res.is_error, Some(true));
+        m.search_notes(Parameters(SearchParams {
+            query: "secret".into(),
+            slug: Some("ghost".into()),
+            r#type: None,
+            tags: None,
+        }))
+        .await
+        .unwrap();
+        // Give any (wrongly) spawned insert a chance to land before asserting.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let (acts,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM mcp_activity WHERE email = ?")
+            .bind("nobody2@mcp.test")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        let (queries,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM search_queries WHERE email = ?")
+                .bind("nobody2@mcp.test")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(acts, 0, "denied calls write no mcp_activity rows");
+        assert_eq!(queries, 0, "denied calls write no search_queries rows");
     }
 
     // ---- share ACL through MCP tokens (plan 10.1-03, REQ-VLT-010) ----
