@@ -2868,9 +2868,21 @@ async fn vault_stats(
     let chips = format!(
         r#"<p><a class="menu-btn" href="/vault/{slug}/stats?days=7"{a7}>7 days</a> <a class="menu-btn" href="/vault/{slug}/stats?days=30"{a30}>30 days</a> <a class="menu-btn" href="/vault/{slug}/stats?days=90"{a90}>90 days</a></p>"#,
         slug = html_escape(&slug),
-        a7 = if days == 7 { r#" aria-current="true""# } else { "" },
-        a30 = if days == 30 { r#" aria-current="true""# } else { "" },
-        a90 = if days == 90 { r#" aria-current="true""# } else { "" },
+        a7 = if days == 7 {
+            r#" aria-current="true""#
+        } else {
+            ""
+        },
+        a30 = if days == 30 {
+            r#" aria-current="true""#
+        } else {
+            ""
+        },
+        a90 = if days == 90 {
+            r#" aria-current="true""#
+        } else {
+            ""
+        },
     );
     let is_admin = state
         .store
@@ -2992,11 +3004,7 @@ async fn vault_stats(
     // siblings. Every interpolated field is html_escaped — args/excerpts
     // originate from note content and tool input (T-19-10, same rule as
     // T-10.1-09 above); latency/size are i64, safe unescaped.
-    let mcp_html = match state
-        .store
-        .recent_mcp_activity(&slug, days, 20)
-        .await
-    {
+    let mcp_html = match state.store.recent_mcp_activity(&slug, days, 20).await {
         Ok(rows) if !rows.is_empty() => {
             let body: String = rows
                 .iter()
@@ -8233,7 +8241,10 @@ mod tests {
             "top query row with count: {body}"
         );
         assert!(body.contains("Top words"), "top words sub-heading: {body}");
-        assert!(body.contains("rust (3)"), "word count across queries: {body}");
+        assert!(
+            body.contains("rust (3)"),
+            "word count across queries: {body}"
+        );
     }
 
     #[tokio::test]
@@ -8273,7 +8284,10 @@ mod tests {
             body.contains("You have accessed this vault 1 time(s)"),
             "own count line: {body}"
         );
-        assert!(!body.contains("MCP activity"), "no section for sharee: {body}");
+        assert!(
+            !body.contains("MCP activity"),
+            "no section for sharee: {body}"
+        );
         assert!(
             !body.contains("Search keywords"),
             "no section for sharee: {body}"
@@ -8291,10 +8305,12 @@ mod tests {
             .await
             .unwrap();
         // Backdate the row 30 days: outside the 7-day window, inside 90.
-        sqlx::query("UPDATE access_log SET ts = datetime('now', '-30 days') WHERE path = 'old-note.html'")
-            .execute(&state.store.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE access_log SET ts = datetime('now', '-30 days') WHERE path = 'old-note.html'",
+        )
+        .execute(&state.store.pool)
+        .await
+        .unwrap();
         let cookie = login_cookie(&app).await;
         let res = req(
             app.clone(),
