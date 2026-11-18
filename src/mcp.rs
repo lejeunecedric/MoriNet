@@ -427,6 +427,13 @@ impl MoriMcp {
                         {
                             if crate::webdav::source_dir_of(Path::new(&a.vault.book_path)).is_some()
                             {
+                                // R-19-01: per-vault excerpt — the all-vaults
+                                // JSON must never land on a row readable by
+                                // another vault's owner.
+                                let own: Vec<_> =
+                                    hits.iter().filter(|h| h.slug == a.vault.slug).collect();
+                                let own_text =
+                                    serde_json::to_string(&own).unwrap_or_else(|_| "[]".into());
                                 self.log_access(&a.vault.slug, "-");
                                 self.log_activity(
                                     &a.vault.slug,
@@ -434,8 +441,8 @@ impl MoriMcp {
                                     &args,
                                     "ok",
                                     latency,
-                                    text.len() as i64,
-                                    &truncate_chars(&text, 200),
+                                    own_text.len() as i64,
+                                    &truncate_chars(&own_text, 200),
                                 );
                                 self.log_search_query(&a.vault.slug, &p.query);
                             }
@@ -880,6 +887,63 @@ mod tests {
         }
         slugs.sort();
         assert_eq!(slugs, vec!["v1".to_string(), "v2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn mcp_global_search_excerpt_scoped_to_vault() {
+        // R-19-01: each per-vault mcp_activity row must carry ONLY that vault's
+        // hits — the all-vaults JSON must not leak one owner's snippets onto
+        // another vault's stats page.
+        let s = store().await;
+        s.ensure_admin("scope@mcp.test", "pw").await.unwrap();
+        for (slug, tag, secret) in [("s1", "sc1", "alpha-secret"), ("s2", "sc2", "beta-secret")] {
+            let src = tmpdir(tag);
+            std::fs::write(src.join("note.md"), format!("needle {secret}")).unwrap();
+            std::fs::create_dir_all(src.join("book")).unwrap();
+            s.seed_vault(slug, "Scope vault", &src.join("book"))
+                .await
+                .unwrap();
+        }
+        let m = MoriMcp::new(s.clone(), "scope@mcp.test".into());
+        m.search_notes(Parameters(SearchParams {
+            query: "needle".into(),
+            slug: None,
+            r#type: None,
+            tags: None,
+        }))
+        .await
+        .unwrap();
+
+        for slug in ["s1", "s2"] {
+            let mut joined = String::new();
+            for _ in 0..40 {
+                let rows: Vec<(String,)> =
+                    sqlx::query_as("SELECT excerpt FROM mcp_activity WHERE vault_slug = ?")
+                        .bind(slug)
+                        .fetch_all(&s.pool)
+                        .await
+                        .unwrap();
+                joined = rows.into_iter().map(|r| r.0).collect::<Vec<_>>().join("|");
+                if !joined.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            assert!(!joined.is_empty(), "{slug} must have an activity row");
+            let (own, other) = if slug == "s1" {
+                ("alpha-secret", "beta-secret")
+            } else {
+                ("beta-secret", "alpha-secret")
+            };
+            assert!(
+                joined.contains(own),
+                "{slug} excerpt must contain its own hit: {joined}"
+            );
+            assert!(
+                !joined.contains(other),
+                "{slug} excerpt must NOT contain the other vault's hit: {joined}"
+            );
+        }
     }
 
     #[tokio::test]

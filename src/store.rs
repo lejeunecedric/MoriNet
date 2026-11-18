@@ -1573,12 +1573,19 @@ impl Store {
         query: &str,
         source: &str,
     ) -> anyhow::Result<()> {
+        // R-19-03: store chokepoint — trim, skip blank, cap at 200 chars
+        // (UTF-8-safe) to match the args/excerpt discipline elsewhere.
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let capped: String = trimmed.chars().take(200).collect();
         sqlx::query(
             "INSERT INTO search_queries (vault_slug, email, query, source) VALUES (?, ?, ?, ?)",
         )
         .bind(slug)
         .bind(email)
-        .bind(query)
+        .bind(&capped)
         .bind(source)
         .execute(&self.pool)
         .await?;
@@ -3853,6 +3860,46 @@ mod access_log_tests {
             recent,
             vec!["newer".to_string(), "older".to_string()],
             "raw query strings, newest first"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_search_query_trims_and_caps() {
+        // R-19-03: raw query text is capped at the store chokepoint — trimmed,
+        // capped at 200 chars (same discipline as args/excerpt), and a query
+        // blank after trimming stores no row.
+        let s = st("search-cap").await;
+        let long: String = "ü".repeat(300); // multibyte: cap must be char-based
+        s.log_search_query("a@x.fr", "wiki", &long, "mcp")
+            .await
+            .unwrap();
+        s.log_search_query("a@x.fr", "wiki", "  padded  ", "api")
+            .await
+            .unwrap();
+        s.log_search_query("a@x.fr", "wiki", "   ", "mcp")
+            .await
+            .unwrap();
+
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT query FROM search_queries WHERE vault_slug = 'wiki'")
+                .fetch_all(&s.pool)
+                .await
+                .unwrap();
+        let stored: Vec<String> = rows.into_iter().map(|r| r.0).collect();
+        assert_eq!(
+            stored.len(),
+            2,
+            "blank query must not be stored: {stored:?}"
+        );
+        assert!(stored.contains(&"padded".to_string()), "{stored:?}");
+        let capped = stored
+            .iter()
+            .find(|q| q.starts_with("ü"))
+            .expect("capped long query present");
+        assert_eq!(
+            capped.chars().count(),
+            200,
+            "cap must be 200 chars, UTF-8-safe"
         );
     }
 
