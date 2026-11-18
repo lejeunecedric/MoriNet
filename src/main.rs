@@ -153,6 +153,14 @@ async fn serve(config_path: PathBuf, vault: Option<PathBuf>) -> anyhow::Result<(
     if let Err(e) = store.prune_auth_events().await {
         eprintln!("warning: prune_auth_events failed: {e}");
     }
+    // Phase 19 (STAT-05): same 90-day window for the detailed logs — a failed
+    // prune must never abort boot.
+    if let Err(e) = store.prune_mcp_activity().await {
+        eprintln!("warning: prune_mcp_activity failed: {e}");
+    }
+    if let Err(e) = store.prune_search_queries().await {
+        eprintln!("warning: prune_search_queries failed: {e}");
+    }
     // REQ-VLT-013: boot-seed the global "MoriNet Documentation" vault.
     // Warning-only: a missing mdbook or a failed build must never abort boot.
     if let Err(e) = morinet::docs_seed::seed_docs_vault(&data_dir, &store).await {

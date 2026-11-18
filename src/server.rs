@@ -2844,7 +2844,7 @@ async fn vault_stats(
         // Sharee branch: a single line, nothing from the owner panel (T-10.1-07).
         let n = state
             .store
-            .stats_own_count(&slug, &claims.email)
+            .stats_own_count(&slug, &claims.email, 90)
             .await
             .unwrap_or(0);
         let body = format!(
@@ -2911,7 +2911,7 @@ async fn vault_stats(
     // escape them like every other interpolated string (T-10.1-09).
     let day_rows: String = state
         .store
-        .stats_per_day(&slug)
+        .stats_per_day(&slug, 90)
         .await
         .unwrap_or_default()
         .iter()
@@ -2926,7 +2926,7 @@ async fn vault_stats(
         .collect();
     let top_rows: String = state
         .store
-        .stats_top_pages(&slug)
+        .stats_top_pages(&slug, 90)
         .await
         .unwrap_or_default()
         .iter()
@@ -2945,7 +2945,7 @@ async fn vault_stats(
     // T-10.1-09 above).
     let changes = state
         .store
-        .recent_vault_changes(&slug, 5, 30)
+        .recent_vault_changes(&slug, 5, 30, 90)
         .await
         .unwrap_or_default();
     // Group consecutive rows sharing event_id (query is already newest-first).
@@ -5281,7 +5281,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
         let rows = state
             .store
-            .recent_vault_changes("refresh-chg", 5, 30)
+            .recent_vault_changes("refresh-chg", 5, 30, 90)
             .await
             .unwrap();
         let mut kinds: Vec<(String, String)> =
@@ -5326,7 +5326,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
         let rows = state
             .store
-            .recent_vault_changes("refresh-noop", 5, 30)
+            .recent_vault_changes("refresh-noop", 5, 30, 90)
             .await
             .unwrap();
         assert!(rows.is_empty(), "no-op refresh must log nothing");
@@ -5352,7 +5352,7 @@ mod tests {
         for _ in 0..50 {
             rows = state
                 .store
-                .recent_vault_changes("wikidav-chg", 5, 30)
+                .recent_vault_changes("wikidav-chg", 5, 30, 90)
                 .await
                 .unwrap();
             if !rows.is_empty() {
@@ -5380,7 +5380,7 @@ mod tests {
         for _ in 0..50 {
             rows2 = state
                 .store
-                .recent_vault_changes("wikidav-chg", 5, 30)
+                .recent_vault_changes("wikidav-chg", 5, 30, 90)
                 .await
                 .unwrap();
             if rows2.len() >= 2 {
@@ -7966,7 +7966,7 @@ mod tests {
         // The fire-and-forget spawn lands shortly after the response.
         let mut logged = false;
         for _ in 0..40 {
-            let top = state.store.stats_top_pages("demo").await.unwrap();
+            let top = state.store.stats_top_pages("demo", 90).await.unwrap();
             if top.iter().any(|(p, _)| p == "index.html") {
                 logged = true;
                 break;

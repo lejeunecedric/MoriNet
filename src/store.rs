@@ -1438,37 +1438,58 @@ impl Store {
     }
 
     /// Per-day hit counts split by source, newest day first, capped at the
-    /// 90-day retention window (LIMIT 90).
-    pub async fn stats_per_day(&self, slug: &str) -> anyhow::Result<Vec<(String, String, i64)>> {
+    /// 90-day retention window (LIMIT 90). `days` bounds the window (D-06:
+    /// the modifier is always bound as a parameter, never concatenated).
+    pub async fn stats_per_day(
+        &self,
+        slug: &str,
+        days: i64,
+    ) -> anyhow::Result<Vec<(String, String, i64)>> {
         Ok(sqlx::query_as(
             "SELECT date(ts) d, source, COUNT(*) FROM access_log \
-             WHERE vault_slug = ? GROUP BY d, source ORDER BY d DESC LIMIT 90",
+             WHERE vault_slug = ? AND ts >= datetime('now', ?) \
+             GROUP BY d, source ORDER BY d DESC LIMIT 90",
         )
         .bind(slug)
+        .bind(format!("-{days} days"))
         .fetch_all(&self.pool)
         .await?)
     }
 
-    /// Top 10 most-hit web paths for a vault (mcp hits excluded).
-    pub async fn stats_top_pages(&self, slug: &str) -> anyhow::Result<Vec<(String, i64)>> {
+    /// Top 10 most-hit web paths for a vault within `days` (mcp hits excluded).
+    pub async fn stats_top_pages(
+        &self,
+        slug: &str,
+        days: i64,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
         Ok(sqlx::query_as(
             "SELECT path, COUNT(*) FROM access_log \
-             WHERE vault_slug = ? AND source = 'web' \
+             WHERE vault_slug = ? AND source = 'web' AND ts >= datetime('now', ?) \
              GROUP BY path ORDER BY COUNT(*) DESC LIMIT 10",
         )
         .bind(slug)
+        .bind(format!("-{days} days"))
         .fetch_all(&self.pool)
         .await?)
     }
 
-    /// Total hits by one sharee on one vault, across all sources.
-    pub async fn stats_own_count(&self, slug: &str, email: &str) -> anyhow::Result<i64> {
-        let (n,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM access_log WHERE vault_slug = ? AND email = ?")
-                .bind(slug)
-                .bind(email)
-                .fetch_one(&self.pool)
-                .await?;
+    /// Total hits by one sharee on one vault, across all sources, within
+    /// `days`.
+    pub async fn stats_own_count(
+        &self,
+        slug: &str,
+        email: &str,
+        days: i64,
+    ) -> anyhow::Result<i64> {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM access_log \
+             WHERE vault_slug = ? AND email = ? AND ts >= datetime('now', ?)",
+        )
+        .bind(slug)
+        .bind(email)
+        .bind(format!("-{days} days"))
+        .fetch_one(&self.pool)
+        .await?;
         Ok(n)
     }
 
@@ -1476,6 +1497,141 @@ impl Store {
     /// return the deleted count. Called once at boot from `main::serve`.
     pub async fn prune_access_log(&self) -> anyhow::Result<u64> {
         let r = sqlx::query("DELETE FROM access_log WHERE ts < datetime('now', '-90 days')")
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
+    // ─── Detailed MCP activity + search queries (Phase 19, D-01/D-04) ─────
+
+    /// Record one vault-scoped MCP tool call (D-01): request (tool + args)
+    /// and outcome (status, latency, size, excerpt). Callers spawn this
+    /// fire-and-forget and ignore errors — logging must never break the
+    /// request (STAT-05). `args`/`excerpt` are capped at 200 chars by the
+    /// caller; full response bodies are NEVER stored.
+    pub async fn log_mcp_activity(
+        &self,
+        email: &str,
+        slug: &str,
+        tool: &str,
+        args: &str,
+        status: &str,
+        latency_ms: i64,
+        resp_size: i64,
+        excerpt: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO mcp_activity (vault_slug, email, tool, args, status, \
+             latency_ms, resp_size, excerpt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(slug)
+        .bind(email)
+        .bind(tool)
+        .bind(args)
+        .bind(status)
+        .bind(latency_ms)
+        .bind(resp_size)
+        .bind(excerpt)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Recent MCP activity rows for a vault, newest first: at most `limit`
+    /// rows within `days`. Returns `(ts, tool, email, args, status,
+    /// latency_ms, resp_size, excerpt)` — the 19-04 MCP activity section.
+    pub async fn recent_mcp_activity(
+        &self,
+        slug: &str,
+        days: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<(String, String, String, String, String, i64, i64, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT ts, tool, email, args, status, latency_ms, resp_size, excerpt \
+             FROM mcp_activity WHERE vault_slug = ? AND ts >= datetime('now', ?) \
+             ORDER BY ts DESC, id DESC LIMIT ?",
+        )
+        .bind(slug)
+        .bind(format!("-{days} days"))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// 90-day retention sweep for the detailed MCP log (STAT-05): same
+    /// convention as `prune_access_log`. Called at boot from `main::serve`.
+    pub async fn prune_mcp_activity(&self) -> anyhow::Result<u64> {
+        let r = sqlx::query("DELETE FROM mcp_activity WHERE ts < datetime('now', '-90 days')")
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
+    /// Record one search (D-04): raw query text, one row per searched vault,
+    /// `source` is 'mcp' or 'api' (CHECK-enforced by migration 0014). Best-
+    /// effort like `log_mcp_activity`.
+    pub async fn log_search_query(
+        &self,
+        email: &str,
+        slug: &str,
+        query: &str,
+        source: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO search_queries (vault_slug, email, query, source) VALUES (?, ?, ?, ?)")
+            .bind(slug)
+            .bind(email)
+            .bind(query)
+            .bind(source)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Top queries within `days`, most-counted first, ties broken by query
+    /// ASC (D-04 top-queries display).
+    pub async fn top_search_queries(
+        &self,
+        slug: &str,
+        days: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        Ok(sqlx::query_as(
+            "SELECT query, COUNT(*) c FROM search_queries \
+             WHERE vault_slug = ? AND ts >= datetime('now', ?) \
+             GROUP BY query ORDER BY c DESC, query ASC LIMIT ?",
+        )
+        .bind(slug)
+        .bind(format!("-{days} days"))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Raw query strings within `days`, newest first (input for the 19-04
+    /// top-words tokenizer).
+    pub async fn recent_search_queries(
+        &self,
+        slug: &str,
+        days: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT query FROM search_queries \
+             WHERE vault_slug = ? AND ts >= datetime('now', ?) \
+             ORDER BY ts DESC, id DESC LIMIT ?",
+        )
+        .bind(slug)
+        .bind(format!("-{days} days"))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(q,)| q).collect())
+    }
+
+    /// 90-day retention sweep for the search-query log (STAT-05): same
+    /// convention as `prune_access_log`. Called at boot from `main::serve`.
+    pub async fn prune_search_queries(&self) -> anyhow::Result<u64> {
+        let r = sqlx::query("DELETE FROM search_queries WHERE ts < datetime('now', '-90 days')")
             .execute(&self.pool)
             .await?;
         Ok(r.rows_affected())
@@ -1727,23 +1883,30 @@ impl Store {
 
     /// Latest change rows for a vault, newest first: at most `max_events`
     /// distinct events (grouped by event_id, newest event first) capped at
-    /// `max_rows` flat rows (D-06's ~5 events / 30 rows). Grouping per event
-    /// happens in the caller, not in SQL. Returns `(event_id, ts, kind, path)`.
+    /// `max_rows` flat rows (D-06's ~5 events / 30 rows), restricted to the
+    /// last `days` days (Phase 19 D-06 groundwork — same bound-modifier rule
+    /// as the stats queries). Grouping per event happens in the caller, not
+    /// in SQL. Returns `(event_id, ts, kind, path)`.
     pub async fn recent_vault_changes(
         &self,
         slug: &str,
         max_events: i64,
         max_rows: i64,
+        days: i64,
     ) -> anyhow::Result<Vec<(String, String, String, String)>> {
+        let modifier = format!("-{days} days");
         Ok(sqlx::query_as(
             "SELECT event_id, ts, kind, path FROM vault_changes \
-             WHERE vault_slug = ? AND event_id IN (\
+             WHERE vault_slug = ? AND ts >= datetime('now', ?) AND event_id IN (\
                  SELECT event_id FROM vault_changes WHERE vault_slug = ? \
+                 AND ts >= datetime('now', ?) \
                  GROUP BY event_id ORDER BY MAX(ts) DESC, MAX(id) DESC LIMIT ?) \
              ORDER BY ts DESC, id DESC LIMIT ?",
         )
         .bind(slug)
+        .bind(&modifier)
         .bind(slug)
+        .bind(&modifier)
         .bind(max_events)
         .bind(max_rows)
         .fetch_all(&self.pool)
@@ -3402,7 +3565,9 @@ mod access_log_tests {
         }
 
         // Per-day grouping: two days, each split by source, newest first.
-        let per_day = s.stats_per_day("wiki").await.unwrap();
+        // Phase 19 (D-06 groundwork): days=90 = today's retention ceiling,
+        // so the window keeps the pre-0014 behavior.
+        let per_day = s.stats_per_day("wiki", 90).await.unwrap();
         assert_eq!(per_day.len(), 4, "2 days x sources present, grouped");
         let today: (String,) = sqlx::query_as("SELECT date('now')")
             .fetch_one(&s.pool)
@@ -3429,15 +3594,15 @@ mod access_log_tests {
 
         // Top pages: web-only, most-hit first. /index.html has 3 web hits,
         // /setup.html 1, /old.html 1 — the mcp /index.html hit must not count.
-        let top = s.stats_top_pages("wiki").await.unwrap();
+        let top = s.stats_top_pages("wiki", 90).await.unwrap();
         assert_eq!(top[0], ("/index.html".to_string(), 3));
         assert!(top.iter().all(|(p, _)| p != "/never.html"));
         assert_eq!(top.iter().map(|(_, c)| c).sum::<i64>(), 5);
 
         // Own count: all sources for (slug, email).
-        assert_eq!(s.stats_own_count("wiki", "a@x.fr").await.unwrap(), 5);
-        assert_eq!(s.stats_own_count("wiki", "b@x.fr").await.unwrap(), 2);
-        assert_eq!(s.stats_own_count("wiki", "z@x.fr").await.unwrap(), 0);
+        assert_eq!(s.stats_own_count("wiki", "a@x.fr", 90).await.unwrap(), 5);
+        assert_eq!(s.stats_own_count("wiki", "b@x.fr", 90).await.unwrap(), 2);
+        assert_eq!(s.stats_own_count("wiki", "z@x.fr", 90).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -3559,6 +3724,168 @@ mod access_log_tests {
             .unwrap();
         }
     }
+
+    // ---------- Phase 19 / PLAN 19-01 Task 2: accessors, date range, prunes ----------
+
+    #[tokio::test]
+    async fn mcp_activity_roundtrip_newest_first() {
+        let s = st("mcp-round").await;
+        s.log_mcp_activity("a@x.fr", "wiki", "list_notes", "", "ok", 5, 100, "a.md")
+            .await
+            .unwrap();
+        // Backdate the first row so newest-first ordering is time-driven.
+        sqlx::query("UPDATE mcp_activity SET ts = datetime('now', '-1 day') WHERE tool = 'list_notes'")
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        s.log_mcp_activity("b@x.fr", "wiki", "read_note", "note.md", "error", 42, 0, "boom")
+            .await
+            .unwrap();
+
+        let rows = s.recent_mcp_activity("wiki", 90, 10).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        // Newest first: read_note, all 8 fields (ts, tool, email, args,
+        // status, latency_ms, resp_size, excerpt).
+        let (ts, tool, email, args, status, latency, size, excerpt) = &rows[0];
+        assert!(!ts.is_empty());
+        assert_eq!(
+            (tool.as_str(), email.as_str(), args.as_str(), status.as_str()),
+            ("read_note", "b@x.fr", "note.md", "error")
+        );
+        assert_eq!((*latency, *size, excerpt.as_str()), (42, 0, "boom"));
+        let (ts2, tool2, email2, args2, status2, latency2, size2, excerpt2) = &rows[1];
+        assert!(!ts2.is_empty());
+        assert_eq!(
+            (tool2.as_str(), email2.as_str(), args2.as_str(), status2.as_str()),
+            ("list_notes", "a@x.fr", "", "ok")
+        );
+        assert_eq!((*latency2, *size2, excerpt2.as_str()), (5, 100, "a.md"));
+    }
+
+    #[tokio::test]
+    async fn recent_mcp_activity_respects_days() {
+        let s = st("mcp-days").await;
+        s.log_mcp_activity("a@x.fr", "wiki", "read_note", "old.md", "ok", 1, 1, "old")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE mcp_activity SET ts = datetime('now', '-100 days')")
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        s.log_mcp_activity("a@x.fr", "wiki", "read_note", "fresh.md", "ok", 2, 2, "fresh")
+            .await
+            .unwrap();
+
+        let rows = s.recent_mcp_activity("wiki", 90, 10).await.unwrap();
+        assert_eq!(rows.len(), 1, "the 100-day-old row is outside days=90");
+        assert_eq!(rows[0].3, "fresh.md", "only the fresh row survives");
+    }
+
+    #[tokio::test]
+    async fn top_search_queries_aggregates_and_orders() {
+        let s = st("search-top").await;
+        s.log_search_query("a@x.fr", "wiki", "rust", "mcp").await.unwrap();
+        s.log_search_query("a@x.fr", "wiki", "rust", "api").await.unwrap();
+        s.log_search_query("b@x.fr", "wiki", "axum", "mcp").await.unwrap();
+        s.log_search_query("b@x.fr", "wiki", "beta", "api").await.unwrap();
+
+        let top = s.top_search_queries("wiki", 90, 10).await.unwrap();
+        assert_eq!(top[0], ("rust".to_string(), 2), "most-counted first");
+        // 1-vs-1 tie broken by query ASC.
+        assert_eq!(top[1], ("axum".to_string(), 1));
+        assert_eq!(top[2], ("beta".to_string(), 1));
+    }
+
+    #[tokio::test]
+    async fn recent_search_queries_newest_first() {
+        let s = st("search-recent").await;
+        s.log_search_query("a@x.fr", "wiki", "older", "mcp").await.unwrap();
+        sqlx::query("UPDATE search_queries SET ts = datetime('now', '-1 day') WHERE query = 'older'")
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        s.log_search_query("a@x.fr", "wiki", "newer", "api").await.unwrap();
+
+        let recent = s.recent_search_queries("wiki", 90, 10).await.unwrap();
+        assert_eq!(
+            recent,
+            vec!["newer".to_string(), "older".to_string()],
+            "raw query strings, newest first"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_mcp_activity_removes_only_old_rows() {
+        let s = st("mcp-prune").await;
+        s.log_mcp_activity("a@x.fr", "wiki", "read_note", "fresh.md", "ok", 1, 1, "f")
+            .await
+            .unwrap();
+        // One row 91 days old — beyond the 90-day retention window.
+        sqlx::query(
+            "INSERT INTO mcp_activity (vault_slug, email, tool, status, ts) \
+             VALUES ('wiki', 'a@x.fr', 'read_note', 'ok', datetime('now', '-91 days'))",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+        let removed = s.prune_mcp_activity().await.unwrap();
+        assert_eq!(removed, 1);
+        let remaining: Vec<(String,)> = sqlx::query_as("SELECT args FROM mcp_activity")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, vec![("fresh.md".to_string(),)]);
+        // Idempotent: a second prune deletes nothing.
+        assert_eq!(s.prune_mcp_activity().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn prune_search_queries_removes_only_old_rows() {
+        let s = st("search-prune").await;
+        s.log_search_query("a@x.fr", "wiki", "fresh", "mcp").await.unwrap();
+        // One row 91 days old — beyond the 90-day retention window.
+        sqlx::query(
+            "INSERT INTO search_queries (vault_slug, email, query, source, ts) \
+             VALUES ('wiki', 'a@x.fr', 'old', 'api', datetime('now', '-91 days'))",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+        let removed = s.prune_search_queries().await.unwrap();
+        assert_eq!(removed, 1);
+        let remaining: Vec<(String,)> = sqlx::query_as("SELECT query FROM search_queries")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, vec![("fresh".to_string(),)]);
+        // Idempotent: a second prune deletes nothing.
+        assert_eq!(s.prune_search_queries().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn stats_top_pages_respects_days() {
+        // Phase 19 (D-06 groundwork): the days window excludes older rows.
+        let s = st("top-days").await;
+        s.log_access("a@x.fr", "wiki", "web", "/fresh.html")
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO access_log (vault_slug, email, source, path, ts) \
+             VALUES ('wiki', 'a@x.fr', 'web', '/old.html', datetime('now', '-10 days'))",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+        let week = s.stats_top_pages("wiki", 7).await.unwrap();
+        assert!(week.iter().any(|(p, _)| p == "/fresh.html"));
+        assert!(!week.iter().any(|(p, _)| p == "/old.html"), "10 days > 7");
+
+        let quarter = s.stats_top_pages("wiki", 90).await.unwrap();
+        assert!(quarter.iter().any(|(p, _)| p == "/old.html"), "10 days < 90");
+    }
 }
 
 // ---------- Phase 13 / PLAN 13-01 Task 1: vault_changes (REQ-CHG-001) ----------
@@ -3649,7 +3976,10 @@ mod vault_changes_tests {
         .await
         .unwrap();
 
-        let rows = s.recent_vault_changes("vcwiki", 5, 30).await.unwrap();
+        // Phase 19 (D-06): the fixture uses fixed Jan-2026 timestamps, so
+        // this test passes a 100-year window — it pins grouping/capping, the
+        // window itself is pinned by the Phase 19 days tests.
+        let rows = s.recent_vault_changes("vcwiki", 5, 30, 36500).await.unwrap();
         assert_eq!(rows.len(), 3, "other vault's row excluded");
         assert_eq!(rows[0].0, "e-b", "newest event first");
         assert_eq!(rows[0].2, "removed");
@@ -3662,7 +3992,7 @@ mod vault_changes_tests {
         assert!(!rows[0].1.is_empty(), "ts column returned");
 
         // max_rows caps the flat row count.
-        let capped = s.recent_vault_changes("vcwiki", 5, 2).await.unwrap();
+        let capped = s.recent_vault_changes("vcwiki", 5, 2, 36500).await.unwrap();
         assert_eq!(capped.len(), 2);
     }
 
