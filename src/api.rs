@@ -537,6 +537,10 @@ async fn api_read_note(
             )
         }
     };
+    // Phase 19 (STAT-01, D-07): the read succeeded past the 404-collapse —
+    // count it. Raw AND `?meta=1` reads both count; denied reads returned
+    // above and write nothing (T-19-07).
+    log_api_access(&state, &user.email, &slug, &path, "api");
     // ONE hash, quoted wire form compared directly — never re-hash-and-quote
     // separately (15-01-SUMMARY rule).
     let etag = crate::webdav::etag_of(&bytes);
@@ -588,6 +592,19 @@ async fn api_read_note(
         bytes,
     )
         .into_response()
+}
+
+/// Phase 19 (STAT-01): best-effort REST hit — a logging failure never
+/// changes the response (same contract as server.rs `log_web_access`).
+fn log_api_access(state: &SharedState, email: &str, slug: &str, path: &str, source: &str) {
+    let store = state.store.clone();
+    let email = email.to_string();
+    let slug = slug.to_string();
+    let path = path.to_string();
+    let source = source.to_string();
+    tokio::spawn(async move {
+        let _ = store.log_access(&email, &slug, &source, &path).await;
+    });
 }
 
 /// `GET /api/v1/docs` — human-readable API docs in the app shell (D-15).
@@ -2222,5 +2239,89 @@ mod tests {
             .find(|v| v["slug"] == serde_json::json!("ovc"))
             .expect("vault listed");
         assert!(entry.get("okf").is_none(), "corrupt stats ⇒ key absent");
+    }
+
+    // ---- Phase 19 (STAT-01, D-07): REST access logging ----
+
+    /// Poll briefly for a spawned best-effort access_log row to land
+    /// (same shape as mcp.rs `poll_log`).
+    async fn poll_api_log(s: &Store, email: &str, want: (&str, &str, &str)) -> bool {
+        for _ in 0..40 {
+            let hit: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM access_log WHERE email = ? AND vault_slug = ? AND source = ? AND path = ? LIMIT 1",
+            )
+            .bind(email)
+            .bind(want.0)
+            .bind(want.1)
+            .bind(want.2)
+            .fetch_optional(&s.pool)
+            .await
+            .unwrap();
+            if hit.is_some() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn api_read_note_logs_access() {
+        let (app, s, _src) = seed_notes_app("log-read", "lr1", &["note.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(app, "/api/v1/vaults/lr1/notes/note.md", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            poll_api_log(&s, "admin@api.test", ("lr1", "api", "note.md")).await,
+            "expected (lr1, api, note.md) access_log row"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_read_note_meta_logs_access() {
+        let (app, s, _src) = seed_notes_app("log-meta", "lm1", &["note.md"]).await;
+        let tok = mint_token(&s, "admin@api.test").await;
+        let res = get(
+            app,
+            "/api/v1/vaults/lm1/notes/note.md?meta=1",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            poll_api_log(&s, "admin@api.test", ("lm1", "api", "note.md")).await,
+            "?meta=1 reads are reads too — the row must land"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_denied_call_logs_nothing() {
+        // Port of mcp.rs `mcp_denied_call_logs_nothing`: the 404-collapse
+        // runs BEFORE any logging — a denied caller leaves no trail (T-19-07).
+        let (app, s) = share_app("log-denied", "ld1", "reader").await;
+        s.create_user("nobody@api.test", "pw", "reader")
+            .await
+            .unwrap();
+        let tok = mint_token(&s, "nobody@api.test").await;
+        let res = get(
+            app.clone(),
+            "/api/v1/vaults/ld1/notes/note.md",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let res = get(app, "/api/v1/search?q=needle&vault=ld1", Some(&tok), None).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        // Give any (wrongly) spawned insert a chance to land before asserting.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let rows: Vec<(i64,)> =
+            sqlx::query_as("SELECT COUNT(*) FROM access_log WHERE email = ?")
+                .bind("nobody@api.test")
+                .fetch_all(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(rows[0].0, 0, "denied calls log nothing");
     }
 }
