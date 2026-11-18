@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.3
-milestone_name: OKF Bundle Support
-status: phase_complete
-stopped_at: Phase 18.1 complete — v1.3 ready to archive
-last_updated: "2026-11-06T23:20:00.000Z"
-last_activity: 2026-11-06 -- Phase 18.1 tech-debt cleanup complete (554 tests)
+milestone: v1.4
+milestone_name: Statistics & Observability
+status: planning
+last_updated: "2026-11-18T15:19:19.335Z"
+last_activity: 2026-11-18
 progress:
-  total_phases: 2
-  completed_phases: 2
-  total_plans: 7
-  completed_plans: 7
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 ## Current Position
 
-Phase: 18.1 tech-debt-cleanup — COMPLETE (audit option B done: fmt_date fixed, LOW gaps closed)
+Phase: Not started (defining requirements)
 Plan: —
-Status: v1.3 ready to archive (/gsd-complete-milestone v1.3)
-Last activity: 2026-11-06 -- Phase 18.1 tech-debt cleanup complete (554 tests)
+Status: Defining requirements
+Last activity: 2026-11-18 — Milestone v1.4 started
 
 ## Performance Metrics
 

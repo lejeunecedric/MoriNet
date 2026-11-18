@@ -13,7 +13,8 @@
 - ✅ **v1.0** — Phases 00–11 (+10.1) — shipped 2026-10-25 (`v1.0.0`), hotfixes v1.0.1–v1.0.3 by 2026-10-28
 - ✅ **v1.1.0 demo hardening + vault options** — Phases 12–14 — shipped 2026-10-29 (`v1.1.0`, live on holldemo) → full phase details: [milestones/v1.1.0-ROADMAP.md](milestones/v1.1.0-ROADMAP.md)
 - ✅ **v1.2 Team Access** — Phases 15–17 — shipped 2026-11-06 (`v1.3.0`, live on holldemo) → full phase details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md)
-- ✅ **v1.3 OKF Bundle Support** — Phase 18 — SHIPPED 2026-11-06 (released as v1.4.0; GitHub issue #11 closed)
+- ✅ **v1.3 OKF Bundle Support** — Phase 18 (+18.1) — SHIPPED 2026-11-06 (released as v1.4.0; GitHub issue #11 closed)
+- 🚧 **v1.4 Statistics & Observability** — Phases 19–20 — STARTED 2026-11-18 (GitHub issue #10 + OKF ecosystem quick wins)
 
 ## Phases
 
@@ -40,6 +41,9 @@
 - [x] **Phase 16: rest-api** - Read-only `/api/v1` (vaults/notes/read/search) on API tokens, ACL parity with MCP (v1.2) (completed 2026-11-01)
 - [x] **Phase 17: oidc-sso** - Generic OIDC SSO (auth-code + PKCE) coexisting with password login (v1.2) — **completed 2026-11-06**
 - [x] **Phase 18: okf-bundle-support** - OKF detection + conformance badge, bundle export (zip), API/MCP frontmatter metadata (v1.3)
+- [x] **Phase 18.1: tech-debt-cleanup** - fmt_date fix + phase-18 LOW test gaps (v1.3) (completed 2026-11-06)
+- [ ] **Phase 19: statistics-observability** - access logging on all surfaces (web/API/MCP), top viewed pages, MCP request↔response activity, top search keywords (issue #10)
+- [ ] **Phase 20: okf-ecosystem-quick-wins** - docs vault passes okflint + OKForest, conformance badge in README, viz.html shipped in bundle export
 
 <details>
 <summary>✅ v1.0 (Phases 00–11) — SHIPPED 2026-10-25 (v1.0.0; hotfixes v1.0.1–v1.0.3)</summary>
@@ -95,8 +99,11 @@
 | 15. etag-conflict | v1.2 | 5/5 | Complete    | 2026-10-30 |
 | 16. rest-api | v1.2 | 5/5 | Complete    | 2026-11-01 |
 | 17. oidc-sso | v1.2 | 5/5 | Complete    | 2026-11-06 |
+| 18. okf-bundle-support (+18.1) | v1.3 | 6/6 + 1/1 | Complete | 2026-11-06 |
+| 19. statistics-observability | v1.4 | 0/? | Planned | — |
+| 20. okf-ecosystem-quick-wins | v1.4 | 0/? | Planned | — |
 
-**Next milestone candidates: issue #10 (web + MCP statistics, incl. REST access logging — needs `access_log.source` CHECK widened), trust-aware OKF rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
+**Next milestone candidates: OKF-F01 trust-aware rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
 
 ---
 
@@ -136,3 +143,36 @@
 
 Plans:
 - [x] 18.1-01: fmt_date fix + export-500/shared-badge/upload-update tests — commits `457173e`, `4fbc2b8`, `c508835`
+
+---
+
+## Milestone v1.4: Statistics & Observability (Phases 19–20)
+
+**Goal:** Vault owners can see who reads their vaults and how — top viewed pages (web), API/MCP usage, MCP request↔response activity, top search keywords — plus OKF ecosystem quick wins that make MoriNet's conformance externally verifiable and its exports explorable. (GitHub issue #10; research: `.planning/research/OKF-ECOSYSTEM.md`)
+
+### Phase 19: statistics-observability
+
+**Goal:** every vault read is counted on every surface, and the Statistics page answers "what did people read, ask, and find?"
+**Requirements:** STAT-01..STAT-05
+**Depends on:** Phase 18 (REST `?meta=1` search/read surfaces to instrument)
+**Success criteria:**
+1. Migration 0014 widens `access_log.source` CHECK (adds `api`; existing `web`/`mcp` history preserved); boot succeeds on upgraded DBs.
+2. Web page views, REST API note reads/searches, and MCP tool invocations each append an access event; a logging failure never fails the request (best-effort, logged to stderr).
+3. Statistics page shows a "Top pages" section per vault (web source, ranked, date-range aware).
+4. Statistics page shows an "MCP activity" section: newest-first two-column list — request (tool, args summary, actor) left, outcome (status, latency, size + short excerpt) right; full response bodies never stored.
+5. "Top search keywords" section aggregates MCP `search_notes` + REST `search` query terms per vault.
+6. 90-day boot prune reuses the `vault_changes` convention; `scripts/check.sh` green; existing suite green (baseline 554 passed).
+
+### Phase 20: okf-ecosystem-quick-wins
+
+**Goal:** MoriNet's OKF claims are verifiable by third-party tools, and exported bundles open in the ecosystem's standard viewer.
+**Requirements:** OKFE-01, OKFE-02
+**Depends on:** Phase 18 (export pipeline), Phase 19 independent
+**Success criteria:**
+1. The built-in docs vault passes `okflint` and OKForest CLI with zero errors (fix vault content or document per-rule exceptions).
+2. A local validation script (optional `scripts/check.sh` step) runs the external validators when present in PATH — no GitHub CI resurrected.
+3. README shows an OKF conformance badge/claim backed by criterion 1.
+4. `GET /vault/{slug}/okf-export.zip` output contains a root `viz.html` (official static visualizer) that renders the bundle graph offline; byte-size and entry caps (T-18-10) still enforced.
+5. `scripts/check.sh` green; existing suite green.
+
+**Deferred (later milestones):** OKF-F01 trust-aware rendering (Impeccable pass); JSON-LD/schema.org bridge (listed ecosystem gap); registry/gallery submissions; Attested Computation execution (security non-starter).
