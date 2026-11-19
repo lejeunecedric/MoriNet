@@ -36,7 +36,7 @@ Category to request: **Publisher** (host/publish angle) or **Integration**; the 
 ## 3. Integration opportunities
 
 ### A. Validator interop — credibility, near-free (do first)
-The validator cluster is the most active ecosystem segment: **okflint v0.5** (npm), **OKForest CLI** (28 rules) + **OKForest Validate** GitHub Action, **OKF-Schema** (JSON Schema), **okf-mcp**, **JidoSeal** (Bronze/Silver/Gold grading).
+The validator cluster is the most active ecosystem segment: **okflint v0.5** (Python — pip/uv install; `okflint validate --manifest okf-base.yaml <base>`, manifest required; corrected 2026-11-19 at Phase 20 plan-time — an earlier draft of this doc mislabeled it npm), **OKForest CLI** (npm-based, `npx okforest validate`, Node 22+, 28 rules; exits 1 on errors only — enforce a zero-warnings bar by parsing `--format json`, not the exit code) + **OKForest Validate** GitHub Action, **OKF-Schema** (JSON Schema), **okf-mcp**, **JidoSeal** (Bronze/Silver/Gold grading).
 - Dogfood: run `okflint` and/or OKForest CLI against the built-in **docs vault** and the demo vault; fix any rule gaps our own `scan_conformance` misses.
 - Then claim it: "docs vault passes okflint + OKForest" badge in the README.
 - Note: MoriNet deliberately has no GitHub CI (only `deploy.yml`) — integrate as an optional step in `scripts/check.sh` or a local dev script, not a resurrected workflow.

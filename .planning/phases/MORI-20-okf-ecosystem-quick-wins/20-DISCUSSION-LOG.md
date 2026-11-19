@@ -71,3 +71,7 @@ Follow-up round (warning bar + more areas vs ready) timed out — user away. Rem
 
 - No-code ecosystem quick wins (GitHub topics, okf.md listing issue, awesome-okf PRs, BundleDex) — operator actions.
 - Obsidian-consumer / MCP-consumer recipes cross-listing — marketing work.
+
+---
+
+*2026-11-19 (plan-phase): re-asked D-04 (validation bar) via interactive gate — timed out unanswered; recommended default (zero errors AND zero warnings) stands as Claude-recommended default, mode: timed out, defaults applied.*
