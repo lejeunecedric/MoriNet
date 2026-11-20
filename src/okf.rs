@@ -264,6 +264,79 @@ fn viz_json_escape(json: String) -> String {
     json.replace('<', "\\u003c")
 }
 
+/// URL schemes that must never survive into rendered link hrefs (20-R1).
+const VIZ_DANGEROUS_SCHEMES: [&str; 4] = ["javascript", "data", "vbscript", "file"];
+
+/// True when a link target's scheme (whitespace/control chars stripped,
+/// lowercased) is dangerous. Returns the colon index in the original target
+/// so the caller can rewrite just the scheme.
+fn viz_dangerous_scheme(target: &str) -> Option<usize> {
+    let colon = target.find(':')?;
+    let scheme: String = target[..colon]
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    VIZ_DANGEROUS_SCHEMES
+        .contains(&scheme.as_str())
+        .then_some(colon)
+}
+
+/// Neutralize render-time XSS vectors in a markdown body before it enters
+/// the bundle JSON (20-R1). viz.js renders bodies with `marked.parse` →
+/// `innerHTML` with no sanitizer, and marked v12 passes raw HTML and
+/// `javascript:` hrefs through verbatim. Two deterministic transforms:
+///
+/// 1. escape every `<` that starts an HTML tag / comment / processing
+///    instruction (followed by an ASCII letter, `/`, `!` or `?`) to `&lt;`,
+///    so marked emits inert text instead of live markup. Side effect: a
+///    literal `<` inside fenced/inline code renders as `&lt;` — accepted
+///    trade-off for a shareable offline viewer.
+/// 2. rewrite the scheme of inline link targets `](...)` whose scheme is in
+///    [`VIZ_DANGEROUS_SCHEMES`] to `blocked:`.
+///
+/// Labels/descriptions need no treatment: viz.js sets them via
+/// `textContent` (viz.js:180-182), never innerHTML.
+fn sanitize_viz_body(body: &str) -> String {
+    // Pass 1: escape raw-HTML tag starts.
+    let mut escaped = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '<' {
+            if let Some(&n) = chars.peek() {
+                if n.is_ascii_alphabetic() || matches!(n, '/' | '!' | '?') {
+                    escaped.push_str("&lt;");
+                    continue;
+                }
+            }
+        }
+        escaped.push(c);
+    }
+    // Pass 2: neutralize dangerous schemes in inline link targets. Same
+    // `](...)` scan as viz_edges — first-`)` targets share its limitation
+    // by construction, so the two views of the body stay consistent.
+    let mut out = String::with_capacity(escaped.len());
+    let mut rest = escaped.as_str();
+    while let Some(i) = rest.find("](") {
+        out.push_str(&rest[..i + 2]);
+        rest = &rest[i + 2..];
+        let Some(end) = rest.find(')') else { break };
+        let inner = &rest[..end];
+        let target = inner.split_whitespace().next().unwrap_or("");
+        match viz_dangerous_scheme(target) {
+            Some(colon) => {
+                out.push_str("blocked:");
+                out.push_str(&target[colon + 1..]);
+            }
+            None => out.push_str(inner),
+        }
+        out.push(')');
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn viz_replace(hay: &mut String, needle: &str, with: &str) -> anyhow::Result<()> {
     if !hay.contains(needle) {
         anyhow::bail!("viz template drift: literal {needle:?} not found in vendored template");
@@ -455,7 +528,9 @@ pub fn build_bundle_zip(src: &std::path::Path) -> anyhow::Result<Vec<u8>> {
                         page_type: fm.page_type().unwrap_or("untyped").to_string(),
                         description: fm.scalar("description").map(str::to_string),
                         tags: fm.list("tags"),
-                        body: body.to_string(),
+                        // 20-R1: neutralize render-time XSS vectors
+                        // before the body enters the bundle JSON.
+                        body: sanitize_viz_body(body),
                     });
                 }
             }
@@ -927,6 +1002,43 @@ mod tests {
         assert!(
             viz.contains("\\u003c/script>\\u003cb>x\\u003c/b>"),
             "escaped form missing"
+        );
+    }
+
+    /// 20-R1 regression: viz.js renders bodies via `marked.parse` →
+    /// `innerHTML` with no sanitizer (viz.js:263-265) and marked v12 passes
+    /// raw HTML and `javascript:` hrefs through verbatim. Bodies must be
+    /// neutralized at synthesis time in Rust, before they enter the JSON.
+    #[test]
+    fn viz_sanitizes_markdown_bodies() {
+        let d = tmpdir("viz-xss-body");
+        page(
+            &d,
+            "a.md",
+            "---\ntype: concept\ntitle: A\n---\n\n<img src=x onerror=alert(1)>\n\n<script>alert(2)</script>\n\n[x](javascript:alert(3))\n\n[y](JaVaScRiPt:alert(4))\n\n[z](data:text/html;base64,PHNjcmlwdD4=)\n",
+        );
+        let viz = String::from_utf8(zip_entry(&build_bundle_zip(&d).unwrap(), "viz.html")).unwrap();
+        // Raw tag starts must not survive JSON-decode: viz_json_escape turns
+        // every `<` into \u003c, which JS decodes back to a live `<` for
+        // marked. After sanitization the body carries HTML-escaped tag
+        // starts (`&lt;`) instead — no decodable `<tag` remains.
+        assert!(viz.contains("&lt;img"), "img tag not escaped");
+        assert!(viz.contains("&lt;script"), "script tag not escaped");
+        assert!(!viz.contains("\\u003cimg"), "decodable <img survived");
+        assert!(!viz.contains("\\u003cscript"), "decodable <script survived");
+        // Dangerous URL schemes in inline link targets are neutralized.
+        assert!(
+            !viz.contains("javascript:alert"),
+            "javascript: href survived"
+        );
+        assert!(
+            !viz.contains("JaVaScRiPt:alert"),
+            "case-variant javascript: survived"
+        );
+        assert!(!viz.contains("data:text/html"), "data: href survived");
+        assert!(
+            viz.contains("blocked:alert"),
+            "link not neutralized to blocked:"
         );
     }
 
