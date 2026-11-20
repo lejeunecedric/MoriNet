@@ -113,6 +113,21 @@ fn reseed_source_tree(dest: &Path) -> anyhow::Result<PathBuf> {
     Ok(src)
 }
 
+/// Decide and run the tree write for a seed pass (marker already known not
+/// to be current). The decision is made by TREE STATE, not marker presence
+/// (20-R2): a tree already on disk with a non-current marker — stale OR
+/// missing (crashed first boot: tree written, build failed before the
+/// marker write) — forces the re-seed, so stale pages can never be baked
+/// by the marker write that follows a successful build. Only a genuinely
+/// absent tree takes the plain first-boot write.
+fn seed_tree(src_dir: &Path) -> anyhow::Result<PathBuf> {
+    if src_dir.join("book.toml").exists() {
+        reseed_source_tree(src_dir)
+    } else {
+        write_source_tree(src_dir, false)
+    }
+}
+
 /// Seed the global docs vault on first boot, or re-seed it once when the
 /// marker holds a stale version (D-03). Returns whether this boot actually
 /// seeded (false = marker already current, nothing touched).
@@ -129,14 +144,7 @@ pub async fn seed_docs_vault(data_dir: &Path, store: &Store) -> anyhow::Result<b
         // are never rewritten.
         return Ok(false);
     }
-    // Marker present but stale => forced re-seed (first-party pages are
-    // intentionally overwritten, stale book/ deleted). Marker missing =>
-    // first boot: plain write, nothing to overwrite yet.
-    let src_dir = if marker.exists() {
-        reseed_source_tree(&docs_dir.join(DOCS_SLUG))?
-    } else {
-        write_source_tree(&docs_dir.join(DOCS_SLUG), false)?
-    };
+    let src_dir = seed_tree(&docs_dir.join(DOCS_SLUG))?;
     let source = LocalSource {
         path: src_dir.clone(),
     };
@@ -294,6 +302,41 @@ mod tests {
         // A marker holding the current value short-circuits.
         std::fs::write(&marker, SEED_MARKER_VALUE).unwrap();
         assert!(marker_is_current(&marker));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 20-R2 regression: marker MISSING + tree already present (crashed
+    /// first boot: tree written, build failed before the marker write at
+    /// line ~148) must take the forced re-seed path. The old marker-based
+    /// branch treated this as first boot, ran the non-forcing write, built
+    /// the stale tree, then stamped the marker "current" — baking stale
+    /// v1 pages forever and skipping the D-03 re-seed.
+    #[test]
+    fn missing_marker_with_existing_tree_forces_reseed() {
+        let dir = temp_dir_for("missing_marker_reseed");
+        let src = write_source_tree(&dir, false).unwrap();
+        let marker = dir.join(MARKER_NAME);
+        assert!(
+            !marker.exists(),
+            "scenario: tree on disk, marker never written"
+        );
+        // Stale v1 leftovers from the failed first boot.
+        let qs = src.join("src/quickstart.md");
+        std::fs::write(&qs, "stale v1 page\n").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        std::fs::write(src.join("book/index.html"), b"stale render").unwrap();
+
+        seed_tree(&src).unwrap();
+        assert!(
+            std::fs::read_to_string(&qs)
+                .unwrap()
+                .contains("type: Guide"),
+            "missing marker + existing tree must force the re-seed"
+        );
+        assert!(
+            !src.join("book/index.html").exists(),
+            "forced re-seed must delete the stale compiled book"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
