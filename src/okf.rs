@@ -534,6 +534,37 @@ mod tests {
     }
 
     #[test]
+    fn vendored_okf_viewer_assets_are_complete() {
+        // Coverage lock (20-04): the vendored official viewer assets must be
+        // present and the template must keep the placeholders plan 20-05
+        // substitutes at export time.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/okf-viz");
+        for name in [
+            "viz-template.html",
+            "viz.css",
+            "viz.js",
+            "cytoscape.min.js",
+            "marked.min.js",
+        ] {
+            assert!(dir.join(name).is_file(), "missing vendored asset {name}");
+        }
+        let template = std::fs::read_to_string(dir.join("viz-template.html")).unwrap();
+        for token in [
+            "__BUNDLE_NAME__",
+            "__BUNDLE_DATA__",
+            "__VIZ_CSS__",
+            "__VIZ_JS__",
+        ] {
+            assert!(template.contains(token), "template lost {token}");
+        }
+        // Apache-2.0 attribution header retained (Google LLC).
+        assert!(template.contains("Copyright 2026 Google LLC"));
+        // The two CDN libraries the template references (20-05 inlines them).
+        assert!(template.contains("cytoscape@3.28.1"));
+        assert!(template.contains("marked@12.0.0"));
+    }
+
+    #[test]
     fn export_caps_guard_direct() {
         // Constants pinned (T-18-10): 20 000 entries / 256 MiB.
         assert_eq!(MAX_EXPORT_ENTRIES, 20_000);
