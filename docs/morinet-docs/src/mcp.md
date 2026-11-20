@@ -1,3 +1,12 @@
+---
+type: Guide
+title: MCP
+description: Expose MoriNet vaults to AI agents through the Model Context Protocol.
+generated:
+  by: process:morinet-docs
+  at: '2026-11-19T00:00:00Z'
+---
+
 # MCP
 
 MoriNet exposes your vaults to AI agents (Claude, IDE assistants, or any

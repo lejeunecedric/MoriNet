@@ -1,3 +1,12 @@
+---
+type: Reference
+title: Config reference
+description: Every MoriNet config.toml section and option.
+generated:
+  by: process:morinet-docs
+  at: '2026-11-19T00:00:00Z'
+---
+
 # Config reference
 
 MoriNet reads a TOML file passed with `--config` (default `./config.toml`).

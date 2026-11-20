@@ -1,3 +1,12 @@
+---
+type: Guide
+title: Quick start
+description: Install MoriNet and serve your first vault in minutes.
+generated:
+  by: process:morinet-docs
+  at: '2026-11-19T00:00:00Z'
+---
+
 # Quick start
 
 MoriNet is a self-hosted server for your notes. It takes mdBook projects and

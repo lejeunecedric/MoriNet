@@ -1,3 +1,12 @@
+---
+type: FAQ
+title: FAQ
+description: Frequently asked questions about running MoriNet.
+generated:
+  by: process:morinet-docs
+  at: '2026-11-19T00:00:00Z'
+---
+
 # FAQ
 
 ## Why do I have to press Refresh after changing a theme or an asset?

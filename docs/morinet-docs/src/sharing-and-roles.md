@@ -1,3 +1,12 @@
+---
+type: Guide
+title: Sharing & roles
+description: Groups, vault sharing, and the read/write/admin roles.
+generated:
+  by: process:morinet-docs
+  at: '2026-11-19T00:00:00Z'
+---
+
 # Sharing & roles
 
 Vaults are private by default: only their owner (and admins) can see them.

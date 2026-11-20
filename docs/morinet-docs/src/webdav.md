@@ -1,3 +1,12 @@
+---
+type: Guide
+title: WebDAV
+description: Browse and edit vaults over WebDAV from rclone, cadaver, or Obsidian.
+generated:
+  by: process:morinet-docs
+  at: '2026-11-19T00:00:00Z'
+---
+
 # WebDAV
 
 Every vault you can access is also exposed as a WebDAV collection, so you can

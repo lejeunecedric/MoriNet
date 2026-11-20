@@ -120,6 +120,47 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Coverage lock (D-01): every embedded content page carries OKF v0.2
+    /// frontmatter per the B3Wiki house pattern (type/title/description/
+    /// generated) and NEVER emits the trust fields verified/status/stale_after.
+    #[test]
+    fn docs_pages_carry_okf_frontmatter() {
+        let all = pages();
+        let content_pages: Vec<&(&str, &str)> = all
+            .iter()
+            .filter(|(rel, _)| rel.starts_with("src/") && *rel != "src/SUMMARY.md")
+            .collect();
+        assert_eq!(content_pages.len(), 6, "six content pages expected");
+        for (rel, content) in content_pages {
+            assert!(
+                content.starts_with("---\n"),
+                "{rel} must open with a frontmatter fence at byte 0"
+            );
+            let fm = content[4..]
+                .split_once("\n---\n")
+                .map(|(f, _)| f)
+                .unwrap_or_else(|| panic!("{rel} has no closing frontmatter fence"));
+            for key in ["type: ", "title: ", "description: ", "generated:"] {
+                assert!(fm.contains(key), "{rel} frontmatter missing `{key}`");
+            }
+            assert!(
+                fm.contains("by: process:morinet-docs"),
+                "{rel} must stamp generated.by process:morinet-docs"
+            );
+            assert!(
+                fm.contains("at: '2026-11-19T00:00:00Z'"),
+                "{rel} must carry the fixed generated.at timestamp"
+            );
+            // Honesty rule (D-01): never emit trust claims.
+            for trust in ["verified:", "status:", "stale_after:"] {
+                assert!(
+                    fm.lines().all(|l| !l.trim_start().starts_with(trust)),
+                    "{rel} must not emit trust field `{trust}`"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn seed_is_idempotent_and_preserves_edits() {
         let dir = temp_dir_for("seed_is_idempotent_and_preserves_edits");
