@@ -5,8 +5,13 @@
 //! `<data_dir>/docs/morinet-docs/` as a native mdBook source, built through
 //! the normal mdbook pipeline and registered as the global vault
 //! `morinet-docs` ("MoriNet Documentation"), granted read to every group.
-//! A marker file (`<data_dir>/docs/.morinet-docs-seed`) makes the seed
-//! strictly once-only: operator edits to the pages survive every restart.
+//! A marker file (`<data_dir>/docs/.morinet-docs-seed`) holds the seed
+//! version: while its content equals `SEED_MARKER_VALUE` nothing is rewritten
+//! (operator edits survive every restart). When a new binary ships a newer
+//! marker value, every existing install re-seeds ONCE at next boot: the
+//! embedded pages overwrite the vault (first-party content — replacing it is
+//! the point, D-03) and the stale compiled `book/` is deleted so the new
+//! content actually renders.
 
 use std::path::{Path, PathBuf};
 
@@ -17,8 +22,13 @@ use crate::store::Store;
 pub const DOCS_SLUG: &str = "morinet-docs";
 /// Display name of the embedded documentation vault.
 pub const DOCS_NAME: &str = "MoriNet Documentation";
-/// Marker file name; its presence means "already seeded, never rewrite".
+/// Marker file name; the seed is skipped only when its content equals
+/// `SEED_MARKER_VALUE`.
 const MARKER_NAME: &str = ".morinet-docs-seed";
+/// Current seed marker version. Bump when embedded docs content changes so
+/// every existing install re-seeds once at next boot (D-03).
+/// "2" = OKF frontmatter pages + render-time stripper shipped.
+const SEED_MARKER_VALUE: &str = "2";
 
 const BOOK_TOML: &str = include_str!("../docs/morinet-docs/book.toml");
 const SUMMARY_MD: &str = include_str!("../docs/morinet-docs/src/SUMMARY.md");
@@ -43,22 +53,69 @@ fn pages() -> [(&'static str, &'static str); 8] {
     ]
 }
 
+/// The literal preprocessor command shipped in the embedded `book.toml`.
+/// Rewritten to an absolute path at seed time (D-05).
+const PREPROCESSOR_COMMAND_LITERAL: &str = "command = \"morinet mdbook-okf-preprocessor\"";
+
+/// Seed-time rewrite of the preprocessor command to the absolute
+/// `current_exe` path, so mdBook resolves it regardless of the service PATH
+/// (D-05). Note: mdBook splits the command string on whitespace, so a
+/// `current_exe` path containing spaces fails the build LOUDLY with mdBook's
+/// "command wasn't found" error — never silently. Falls back to the literal
+/// when `current_exe` is unavailable.
+fn seeded_book_toml(content: &str) -> String {
+    let command = match std::env::current_exe() {
+        Ok(exe) => format!("command = \"{} mdbook-okf-preprocessor\"", exe.display()),
+        Err(_) => PREPROCESSOR_COMMAND_LITERAL.to_string(),
+    };
+    content.replace(PREPROCESSOR_COMMAND_LITERAL, &command)
+}
+
+/// True when the marker exists and its trimmed content equals the current
+/// seed version. A missing, unreadable or stale marker means "re-seed" (D-03).
+fn marker_is_current(marker: &Path) -> bool {
+    std::fs::read_to_string(marker)
+        .map(|content| content.trim() == SEED_MARKER_VALUE)
+        .unwrap_or(false)
+}
+
 /// Write the embedded mdBook source tree under `dest` and return its path.
-/// Existing files are NEVER overwritten — belt-and-braces alongside the seed
-/// marker, so operator edits always win (T-10.1-15).
-pub fn write_source_tree(dest: &Path) -> anyhow::Result<PathBuf> {
+/// With `force = false` existing files are NEVER overwritten — belt-and-braces
+/// alongside the seed marker, so operator edits always win (T-10.1-15). With
+/// `force = true` every file is overwritten: that is the marker-bump re-seed
+/// path, where replacing first-party docs content is the point (D-03).
+/// `book.toml` always gets the seed-time preprocessor command rewrite (D-05).
+pub fn write_source_tree(dest: &Path, force: bool) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(dest.join("src"))?;
     for (rel, content) in pages() {
         let path = dest.join(rel);
-        if !path.exists() {
-            std::fs::write(&path, content)?;
+        if !force && path.exists() {
+            continue;
         }
+        let body = if rel == "book.toml" {
+            std::borrow::Cow::Owned(seeded_book_toml(content))
+        } else {
+            std::borrow::Cow::Borrowed(content)
+        };
+        std::fs::write(&path, body.as_bytes())?;
     }
     Ok(dest.to_path_buf())
 }
 
-/// Seed the global docs vault on first boot. Returns whether this boot
-/// actually seeded (false = marker already present, nothing touched).
+/// Re-seed half of a marker bump: force-write the embedded tree, then delete
+/// the stale compiled `book/`. `sources.rs::build` has a Native
+/// skip-when-compiled fast path (early return when `book/index.html` exists),
+/// so without this delete a re-seed would serve the OLD rendered book and
+/// never run the new preprocessor (D-05).
+fn reseed_source_tree(dest: &Path) -> anyhow::Result<PathBuf> {
+    let src = write_source_tree(dest, true)?;
+    let _ = std::fs::remove_dir_all(src.join("book"));
+    Ok(src)
+}
+
+/// Seed the global docs vault on first boot, or re-seed it once when the
+/// marker holds a stale version (D-03). Returns whether this boot actually
+/// seeded (false = marker already current, nothing touched).
 /// Any failure (mdbook missing, build error) is returned as `Err` — the
 /// caller in `main.rs` only warns; boot never aborts (T-10.1-16).
 pub async fn seed_docs_vault(data_dir: &Path, store: &Store) -> anyhow::Result<bool> {
@@ -67,11 +124,19 @@ pub async fn seed_docs_vault(data_dir: &Path, store: &Store) -> anyhow::Result<b
     store.grant_vault_to_all_groups(DOCS_SLUG).await?;
     let docs_dir = data_dir.join("docs");
     let marker = docs_dir.join(MARKER_NAME);
-    if marker.exists() {
-        // Already seeded once — operator edits are never rewritten.
+    if marker_is_current(&marker) {
+        // Already seeded with the current content version — operator edits
+        // are never rewritten.
         return Ok(false);
     }
-    let src_dir = write_source_tree(&docs_dir.join(DOCS_SLUG))?;
+    // Marker present but stale => forced re-seed (first-party pages are
+    // intentionally overwritten, stale book/ deleted). Marker missing =>
+    // first boot: plain write, nothing to overwrite yet.
+    let src_dir = if marker.exists() {
+        reseed_source_tree(&docs_dir.join(DOCS_SLUG))?
+    } else {
+        write_source_tree(&docs_dir.join(DOCS_SLUG), false)?
+    };
     let source = LocalSource {
         path: src_dir.clone(),
     };
@@ -80,7 +145,7 @@ pub async fn seed_docs_vault(data_dir: &Path, store: &Store) -> anyhow::Result<b
     // The sweep above ran before the vault row existed; grant now that it does.
     store.grant_vault_to_all_groups(DOCS_SLUG).await?;
     std::fs::create_dir_all(&docs_dir)?;
-    std::fs::write(&marker, "1")?;
+    std::fs::write(&marker, SEED_MARKER_VALUE)?;
     Ok(true)
 }
 
