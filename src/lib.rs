@@ -7,6 +7,7 @@ pub mod docs_seed;
 pub mod email;
 pub mod init;
 pub mod mcp;
+pub mod mdbook_preprocessor;
 pub mod obsidian;
 pub mod oidc;
 pub mod okf;

@@ -47,6 +47,14 @@ enum Command {
         #[arg(long)]
         vault: Option<PathBuf>,
     },
+    /// Internal: mdBook preprocessor that strips OKF frontmatter at render
+    /// time (invoked by `mdbook` via the docs vault's book.toml, D-05).
+    #[command(name = "mdbook-okf-preprocessor", hide = true)]
+    MdbookOkfPreprocessor {
+        /// Trailing args from mdBook (`supports <renderer>` probe)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -74,6 +82,19 @@ fn main() -> anyhow::Result<()> {
             .enable_all()
             .build()?
             .block_on(serve(config, vault))?,
+        Some(Command::MdbookOkfPreprocessor { args }) => {
+            // mdBook first probes `<cmd> supports <renderer>`; exiting
+            // non-zero here makes mdBook SILENTLY skip the preprocessor and
+            // the frontmatter leaks with no error — always exit 0.
+            if morinet::mdbook_preprocessor::is_supports_probe(&args) {
+                return Ok(());
+            }
+            use std::io::{Read, Write};
+            let mut input = Vec::new();
+            std::io::stdin().read_to_end(&mut input)?;
+            let out = morinet::mdbook_preprocessor::preprocess(&input)?;
+            std::io::stdout().write_all(&out)?;
+        }
         None => {
             println!("morinet {} — run `morinet --help` for usage", version());
         }

@@ -6,3 +6,12 @@ description = "User documentation for the MoriNet mdBook server"
 
 [output.html]
 default-theme = "navy"
+
+# D-05: strip the OKF YAML frontmatter at render time (mdBook does not
+# consume it — the block would render as visible text). `docs_seed` rewrites
+# the command to the absolute current_exe path at seed time; the literal
+# form works in dev when target/debug is on PATH. NOT `optional = true`:
+# a missing preprocessor must fail the build loudly, never leak frontmatter.
+[preprocessor.okf-frontmatter]
+before = ["links"]
+command = "morinet mdbook-okf-preprocessor"
