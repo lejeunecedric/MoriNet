@@ -64,9 +64,24 @@ const PREPROCESSOR_COMMAND_LITERAL: &str = "command = \"morinet mdbook-okf-prepr
 /// "command wasn't found" error — never silently. Falls back to the literal
 /// when `current_exe` is unavailable.
 fn seeded_book_toml(content: &str) -> String {
-    let command = match std::env::current_exe() {
-        Ok(exe) => format!("command = \"{} mdbook-okf-preprocessor\"", exe.display()),
-        Err(_) => PREPROCESSOR_COMMAND_LITERAL.to_string(),
+    seeded_book_toml_with(content, std::env::current_exe().ok().as_deref())
+}
+
+/// `seeded_book_toml` with the executable injected for testability (20-R3).
+/// The path is escaped for a TOML basic string (backslashes and quotes) so
+/// an install path containing `"` or `\` cannot break the file or inject
+/// arbitrary keys into the seeded `book.toml`.
+fn seeded_book_toml_with(content: &str, exe: Option<&std::path::Path>) -> String {
+    let command = match exe {
+        Some(exe) => {
+            let escaped = exe
+                .display()
+                .to_string()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            format!("command = \"{escaped} mdbook-okf-preprocessor\"")
+        }
+        None => PREPROCESSOR_COMMAND_LITERAL.to_string(),
     };
     content.replace(PREPROCESSOR_COMMAND_LITERAL, &command)
 }
@@ -361,6 +376,23 @@ mod tests {
             "the relative literal must not survive seeding"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 20-R3: a `current_exe` path containing `"` or `\` must be escaped for
+    /// the TOML basic string — the seeded book.toml must stay parseable and
+    /// must not allow arbitrary-key injection. Test added in the same commit
+    /// as the one-line fix (LOW finding).
+    #[test]
+    fn seeded_book_toml_escapes_special_chars_in_exe_path() {
+        let weird = std::path::Path::new("/tmp/we\"ird\\dir/morinet");
+        let out = seeded_book_toml_with(BOOK_TOML, Some(weird));
+        assert!(
+            out.contains("command = \"/tmp/we\\\"ird\\\\dir/morinet mdbook-okf-preprocessor\""),
+            "quotes/backslashes must be TOML-escaped"
+        );
+        out.parse::<toml::Value>()
+            .expect("seeded book.toml must still parse as TOML");
+        assert!(seeded_book_toml_with(BOOK_TOML, None).contains(PREPROCESSOR_COMMAND_LITERAL));
     }
 
     #[tokio::test]
