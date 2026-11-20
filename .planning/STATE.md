@@ -4,8 +4,8 @@ milestone: v1.4
 milestone_name: Statistics & Observability
 status: executing
 stopped_at: Phase 20 context gathered
-last_updated: "2026-11-19T00:53:06.994Z"
-last_activity: 2026-11-19 -- Phase 20 planning complete
+last_updated: "2026-11-20T14:49:56.555Z"
+last_activity: 2026-11-20 -- Phase 20 execution started
 progress:
   total_phases: 2
   completed_phases: 1
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
-**Current focus:** Phase 20 — okf ecosystem quick wins
+**Current focus:** Phase 20 — okf-ecosystem-quick-wins
 
 ## Current Position
 
-Phase: 20
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-11-19 -- Phase 20 planning complete
+Phase: 20 (okf-ecosystem-quick-wins) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 20
+Last activity: 2026-11-20 -- Phase 20 execution started
 
 ## Performance Metrics
 
