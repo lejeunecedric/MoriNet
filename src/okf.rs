@@ -565,6 +565,39 @@ mod tests {
     }
 
     #[test]
+    fn vendored_okf_viewer_provenance_checksums_match() {
+        // Tamper-evidence lock (20-04): every vendored asset must match the
+        // sha256 recorded in PROVENANCE.md's provenance table.
+        use sha2::{Digest, Sha256};
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/okf-viz");
+        let record = std::fs::read_to_string(dir.join("PROVENANCE.md")).unwrap();
+        // Only the provenance table (after its heading) carries hashes;
+        // the license table above has rows starting with the same file names.
+        let record = record.split("## Provenance").nth(1).unwrap();
+        let mut checked = 0;
+        for name in [
+            "viz-template.html",
+            "viz.css",
+            "viz.js",
+            "cytoscape.min.js",
+            "marked.min.js",
+        ] {
+            let needle = format!("| `{name}` |");
+            let line = record
+                .lines()
+                .find(|l| l.starts_with(&needle))
+                .unwrap_or_else(|| panic!("PROVENANCE.md has no row for {name}"));
+            // Row shape: `| \`file\` | url | \`sha256\` |` → cell index 3.
+            let hash = line.split('|').nth(3).unwrap().trim().trim_matches('`');
+            let bytes = std::fs::read(dir.join(name)).unwrap();
+            let actual = format!("{:x}", Sha256::digest(&bytes));
+            assert_eq!(actual, hash, "sha256 drift for {name}");
+            checked += 1;
+        }
+        assert_eq!(checked, 5);
+    }
+
+    #[test]
     fn export_caps_guard_direct() {
         // Constants pinned (T-18-10): 20 000 entries / 256 MiB.
         assert_eq!(MAX_EXPORT_ENTRIES, 20_000);
