@@ -597,6 +597,87 @@ mod tests {
         assert_eq!(checked, 5);
     }
 
+    // ---------- 20-05: synthesized viz.html entry (OKFE-02) ----------
+
+    #[test]
+    fn bundle_contains_synthesized_viz() {
+        let d = tmpdir("viz-synth");
+        page(
+            &d,
+            "notes/a.md",
+            "---\ntype: concept\ntitle: Alpha\ndescription: first page\ntags: [x]\n---\n\nAlpha body links [B](b.md).\n",
+        );
+        page(&d, "notes/b.md", &typed("Beta"));
+        let bytes = build_bundle_zip(&d).unwrap();
+        let names = zip_names(&bytes);
+        assert!(names.contains(&"viz.html".to_string()), "{names:?}");
+        let viz = String::from_utf8(zip_entry(&bytes, "viz.html")).unwrap();
+        // Concept ids are bundle-relative paths minus ".md".
+        assert!(viz.contains("notes/a"), "viz lacks concept a");
+        assert!(viz.contains("notes/b"), "viz lacks concept b");
+        // Bundle name = source dir file name (no slug param exists).
+        let bundle_name = d.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(viz.contains(&bundle_name), "viz lacks bundle name");
+        // Fully offline: CDN tags replaced by inlined library bytes.
+        assert!(!viz.contains("cdn.jsdelivr.net"), "CDN reference leaked");
+        assert!(viz.contains("cytoscape"), "cytoscape not inlined");
+        assert!(viz.contains("marked"), "marked not inlined");
+        // Injection happened: payload present, placeholder tokens consumed.
+        assert!(viz.contains("window.BUNDLE ="));
+        assert!(!viz.contains("__BUNDLE_DATA__"), "placeholder not replaced");
+        assert!(!viz.contains("__BUNDLE_NAME__"), "placeholder not replaced");
+        // In-memory only, like the index.md precedent: never written to disk.
+        assert!(!d.join("viz.html").exists());
+    }
+
+    #[test]
+    fn vault_viz_wins() {
+        // Collision policy (Phase 18 D-06 precedent): the vault's own
+        // viz.html ships byte-identical; synthesis is only-when-absent.
+        let d = tmpdir("viz-collision");
+        page(&d, "a.md", &typed("A"));
+        page(&d, "viz.html", "SENTINEL-VIZ\n");
+        let bytes = build_bundle_zip(&d).unwrap();
+        assert_eq!(zip_entry(&bytes, "viz.html"), b"SENTINEL-VIZ\n");
+        // Same entry count as the equivalent vault that gets a synthesized
+        // viz.html — one viz entry either way, never two.
+        let d2 = tmpdir("viz-collision-b");
+        page(&d2, "a.md", &typed("A"));
+        let bytes2 = build_bundle_zip(&d2).unwrap();
+        assert_eq!(zip_names(&bytes).len(), zip_names(&bytes2).len());
+    }
+
+    #[test]
+    fn viz_bytes_count_toward_caps() {
+        // T-18-10: the guard is consulted with (entries + 1, bytes + viz_len)
+        // BEFORE the entry is written — same semantics build_bundle_zip uses.
+        let viz_len = 1_000_000u64;
+        // Running total + viz bytes crosses the cap → the guard must reject.
+        let r = check_export_caps(1, (MAX_EXPORT_BYTES - viz_len / 2) + viz_len);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().to_string().contains("bundle too large"));
+        // A viz-sized entry under the cap is fine.
+        assert!(check_export_caps(0, viz_len).is_ok());
+    }
+
+    #[test]
+    fn viz_escapes_script_breakout() {
+        // Stored-XSS guard: vault-controlled text inside the <script> block
+        // must not be able to close it. `<` is escaped as \u003c in the JSON.
+        let d = tmpdir("viz-xss");
+        page(
+            &d,
+            "a.md",
+            "---\ntype: concept\ntitle: </script><b>x</b>\n---\n\nbody\n",
+        );
+        let viz = String::from_utf8(zip_entry(&build_bundle_zip(&d).unwrap(), "viz.html")).unwrap();
+        assert!(!viz.contains("</script><b>x</b>"), "script breakout leaked");
+        assert!(
+            viz.contains("\\u003c/script\\u003e<b>x\\u003c/b\\u003e"),
+            "escaped form missing"
+        );
+    }
+
     #[test]
     fn export_caps_guard_direct() {
         // Constants pinned (T-18-10): 20 000 entries / 256 MiB.
