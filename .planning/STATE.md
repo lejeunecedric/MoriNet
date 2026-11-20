@@ -45,6 +45,12 @@ Last activity: 2026-11-19 -- Phase 20 planning complete
 | 10. mcp | TBD | Not started |
 | 11. polish v1.0 | TBD | Not started |
 
+## Quick Tasks Completed
+
+| Date | Task | Status |
+|------|------|--------|
+| 2026-11-20 | README tagline — foreground OKF import/read (`quick/20261120-readme-okf-tagline`) | complete ✓ |
+
 ## Accumulated Context
 
 ### Roadmap Evolution
