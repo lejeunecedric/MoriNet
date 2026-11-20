@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Statistics & Observability
-status: executing
-stopped_at: Phase 20 context gathered
-last_updated: "2026-11-20T14:49:56.555Z"
+status: milestone_complete
+stopped_at: Milestone complete (Phase 20 was final phase)
+last_updated: 2026-11-20T16:32:53.249Z
 last_activity: 2026-11-20 -- Phase 20 execution started
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 10
-  completed_plans: 4
-  percent: 40
+  completed_plans: 32
+  percent: 50
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
-**Current focus:** Phase 20 — okf-ecosystem-quick-wins
+**Current focus:** Milestone complete
 
 ## Current Position
 
-Phase: 20 (okf-ecosystem-quick-wins) — EXECUTING
-Plan: 1 of 6
-Status: Executing Phase 20
-Last activity: 2026-11-20 -- Phase 20 execution started
+Phase: 20
+Plan: Not started
+Status: Milestone complete
+Last activity: 2026-11-20
 
 ## Performance Metrics
 
@@ -42,8 +42,13 @@ Last activity: 2026-11-20 -- Phase 20 execution started
 | Phase | Plans | Status |
 |-------|-------|--------|
 | 00–09.1 | pre-GSD | Complete (v0.1.0 → v0.1.20) |
-| 10. mcp | TBD | Not started |
-| 11. polish v1.0 | TBD | Not started |
+| 10. mcp | 6 | Complete (v1.0.0) |
+| 11. polish v1.0 | 5 | Complete (v1.0.0) |
+| 12–14. demo lock/changes/upload | — | Complete (v1.1.0) |
+| 15–17. ETag/API/OIDC | — | Complete (v1.2) |
+| 18. okf-bundle-support | — | Complete (v1.3) |
+| 19. statistics-observability | — | Complete (v1.4, 2026-11-18) |
+| 20. okf-ecosystem-quick-wins | 6/6 | Complete (2026-11-20) — validators 0/0 + badge + viz.html in export; 611 tests green; review 5 findings fixed; verifier 5/5 |
 
 ## Quick Tasks Completed
 

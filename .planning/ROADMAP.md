@@ -42,8 +42,8 @@
 - [x] **Phase 17: oidc-sso** - Generic OIDC SSO (auth-code + PKCE) coexisting with password login (v1.2) — **completed 2026-11-06**
 - [x] **Phase 18: okf-bundle-support** - OKF detection + conformance badge, bundle export (zip), API/MCP frontmatter metadata (v1.3)
 - [x] **Phase 18.1: tech-debt-cleanup** - fmt_date fix + phase-18 LOW test gaps (v1.3) (completed 2026-11-06)
-- [ ] **Phase 19: statistics-observability** - access logging on all surfaces (web/API/MCP), top viewed pages, MCP request↔response activity, top search keywords (issue #10)
-- [ ] **Phase 20: okf-ecosystem-quick-wins** - docs vault passes okflint + OKForest, conformance badge in README, viz.html shipped in bundle export
+- [x] **Phase 19: statistics-observability** (completed 2026-11-18) - access logging on all surfaces (web/API/MCP), top viewed pages, MCP request↔response activity, top search keywords (issue #10)
+- [x] **Phase 20: okf-ecosystem-quick-wins** (completed 2026-11-20) - docs vault passes okflint + OKForest, conformance badge in README, viz.html shipped in bundle export
 
 <details>
 <summary>✅ v1.0 (Phases 00–11) — SHIPPED 2026-10-25 (v1.0.0; hotfixes v1.0.1–v1.0.3)</summary>
@@ -101,7 +101,7 @@
 | 17. oidc-sso | v1.2 | 5/5 | Complete    | 2026-11-06 |
 | 18. okf-bundle-support (+18.1) | v1.3 | 6/6 + 1/1 | Complete | 2026-11-06 |
 | 19. statistics-observability | v1.4 | 4/4 | Complete    | 2026-11-18 |
-| 20. okf-ecosystem-quick-wins | v1.4 | 6/6 | Complete   | 2026-11-20 |
+| 20. okf-ecosystem-quick-wins | v1.4 | 6/6 | Complete    | 2026-11-20 |
 
 **Next milestone candidates: OKF-F01 trust-aware rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
 

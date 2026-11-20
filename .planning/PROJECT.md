@@ -59,13 +59,14 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 - ✓ Conflict-safe co-editing: strong sha256 ETags + If-Match/If-None-Match on WebDAV, upload conflict list + force-overwrite audit — CONF-01..05 (v1.2, Phase 15)
 - ✓ Read-only REST API on existing API tokens (vaults, notes, read, search) — API-01..06 (v1.2, Phase 16)
 - ✓ Generic OIDC SSO coexisting with password auth (IdP in config, auto-provisioning, group claim mapping) — SSO-01..06 (v1.2, Phase 17)
+- ✓ Statistics & observability: access logging all surfaces, top pages, MCP request↔response activity, top keywords, 90-day retention — STAT-01..05 (v1.4, Phase 19, 2026-11-18)
+- ✓ OKF ecosystem quick wins: docs vault passes okflint + OKForest 0/0 (evidence-backed README conformance badge, demo validation pending-operator), offline viz.html synthesized into bundle export at root — OKFE-01..02 (Phase 20, 2026-11-20)
 
 ### Active
 
-<!-- v1.4 Statistics & Observability — scoped 2026-11-18 from issue #10 + OKF ecosystem research. -->
+<!-- v1.4 Statistics & Observability — all requirements validated (Phases 19–20). -->
 
-- **STAT-01..05**: access logging all surfaces, top pages, MCP request↔response activity, top keywords, 90-day retention (see REQUIREMENTS.md)
-- **OKFE-01..02**: external validator interop (okflint/OKForest), viz.html in bundle export
+- (none — v1.4 requirements all validated)
 
 
 ### Out of Scope
@@ -126,4 +127,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-18 — Milestone v1.4 "Statistics & Observability" started (issue #10 + OKF ecosystem quick wins).*
+*Last updated: 2026-11-20 — Phase 20 (okf-ecosystem-quick-wins) complete; v1.4 requirements all validated.*

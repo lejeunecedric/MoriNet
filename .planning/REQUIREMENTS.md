@@ -16,8 +16,8 @@
 
 ### OKF ecosystem quick wins (research: `.planning/research/OKF-ECOSYSTEM.md`)
 
-- [ ] **OKFE-01**: Built-in docs vault (and demo vault) pass external OKF validators **okflint** and **OKForest CLI** with zero errors; conformance claim + badge published in the README; validation runnable locally (optional `scripts/check.sh` step — no GitHub CI).
-- [ ] **OKFE-02**: "Export OKF bundle" zip ships the official **viz.html** static graph visualizer at the bundle root, working offline on the exported files (no network, no build step).
+- [x] **OKFE-01**: Built-in docs vault (and demo vault) pass external OKF validators **okflint** and **OKForest CLI** with zero errors; conformance claim + badge published in the README; validation runnable locally (optional `scripts/check.sh` step — no GitHub CI).
+- [x] **OKFE-02**: "Export OKF bundle" zip ships the official **viz.html** static graph visualizer at the bundle root, working offline on the exported files (no network, no build step).
 
 ## Backlog / deferred candidates
 
@@ -39,8 +39,8 @@
 | REQ | Phase | Status |
 |-----|-------|--------|
 | OKF-01..04 | 18 | Complete |
-| STAT-01..05 | 19 | Planned |
-| OKFE-01..02 | 20 | Planned |
+| STAT-01..05 | 19 | Complete |
+| OKFE-01..02 | 20 | Complete |
 
 ---
 
