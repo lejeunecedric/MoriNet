@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn write_source_tree_lands_all_files() {
         let dir = temp_dir_for("write_source_tree_lands_all_files");
-        let src = write_source_tree(&dir).unwrap();
+        let src = write_source_tree(&dir, false).unwrap();
         assert!(src.join("book.toml").is_file(), "book.toml missing");
         assert!(src.join("src/SUMMARY.md").is_file(), "SUMMARY.md missing");
         for page in [
@@ -170,8 +170,8 @@ mod tests {
         // First pass: write the tree, then simulate the marker a successful
         // seed leaves behind (the build half needs mdbook — tested in the
         // #[ignore]d oracle below).
-        let src = write_source_tree(&dir.join("docs").join(DOCS_SLUG)).unwrap();
-        std::fs::write(dir.join("docs").join(MARKER_NAME), "1").unwrap();
+        let src = write_source_tree(&dir.join("docs").join(DOCS_SLUG), false).unwrap();
+        std::fs::write(dir.join("docs").join(MARKER_NAME), SEED_MARKER_VALUE).unwrap();
 
         // Operator edits a page.
         let qs = src.join("src/quickstart.md");
@@ -186,10 +186,72 @@ mod tests {
             .contains("operator edit survives restarts"));
 
         // write_source_tree itself never overwrites existing files either.
-        write_source_tree(&src).unwrap();
+        write_source_tree(&src, false).unwrap();
         assert!(std::fs::read_to_string(&qs)
             .unwrap()
             .contains("operator edit survives restarts"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// D-03: a marker holding the OLD value ("1") must NOT short-circuit the
+    /// seed — the forced re-seed overwrites operator edits with the embedded
+    /// pages and deletes the stale compiled book/ (the Native build has a
+    /// skip-when-compiled fast path, so a stale book would be served).
+    #[test]
+    fn stale_marker_triggers_reseed() {
+        let dir = temp_dir_for("stale_marker_triggers_reseed");
+        let src = write_source_tree(&dir, false).unwrap();
+        let marker = dir.join(MARKER_NAME);
+        std::fs::write(&marker, "1").unwrap();
+        assert!(
+            !marker_is_current(&marker),
+            "a marker holding the old value must not be treated as current"
+        );
+
+        // Operator edit + stale compiled book from the old render.
+        let qs = src.join("src/quickstart.md");
+        std::fs::write(&qs, "operator edit\n").unwrap();
+        std::fs::create_dir_all(src.join("book")).unwrap();
+        std::fs::write(src.join("book/index.html"), b"stale render").unwrap();
+
+        reseed_source_tree(&dir).unwrap();
+        assert!(
+            std::fs::read_to_string(&qs)
+                .unwrap()
+                .contains("type: Guide"),
+            "forced re-seed must restore the embedded page over the edit"
+        );
+        assert!(
+            !src.join("book/index.html").exists(),
+            "re-seed must delete the stale compiled book before rebuilding"
+        );
+
+        // A marker holding the current value short-circuits.
+        std::fs::write(&marker, SEED_MARKER_VALUE).unwrap();
+        assert!(marker_is_current(&marker));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// D-05: the seeded book.toml must carry the absolute current_exe path
+    /// so mdBook can resolve the preprocessor regardless of the service PATH.
+    #[test]
+    fn seeded_book_toml_uses_absolute_preprocessor_command() {
+        let dir = temp_dir_for("seeded_book_toml_absolute_command");
+        let src = write_source_tree(&dir, false).unwrap();
+        let toml = std::fs::read_to_string(src.join("book.toml")).unwrap();
+        assert!(toml.contains("[preprocessor.okf-frontmatter]"));
+        let exe = std::env::current_exe().unwrap();
+        assert!(
+            toml.contains(&format!(
+                "command = \"{} mdbook-okf-preprocessor\"",
+                exe.display()
+            )),
+            "seeded book.toml must rewrite the preprocessor command to the absolute current_exe"
+        );
+        assert!(
+            !toml.contains("command = \"morinet mdbook-okf-preprocessor\""),
+            "the relative literal must not survive seeding"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -219,7 +281,7 @@ mod tests {
         assert_eq!(docs.vault.name, DOCS_NAME);
         assert_eq!(
             std::fs::read(dir.join("docs").join(MARKER_NAME)).unwrap(),
-            b"1"
+            SEED_MARKER_VALUE.as_bytes()
         );
         assert!(dir
             .join("docs")
