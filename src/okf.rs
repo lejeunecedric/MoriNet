@@ -1,5 +1,6 @@
 //! Phase 18 (OKF) — core module: conformance scan, trust tier, note metadata,
-//! bundle export.
+//! bundle export. When the vault lacks them, a root `index.md` and a
+//! self-contained `viz.html` viewer (20-05) are synthesized in-memory only.
 //!
 //! Pure functions over a directory tree and parsed frontmatter — no store, no
 //! async (D-04/D-10). The conformance rules follow OKF
@@ -146,6 +147,205 @@ pub(crate) fn check_export_caps(entries: usize, bytes: u64) -> anyhow::Result<()
     Ok(())
 }
 
+// ---- 20-05: synthesized viz.html (official OKF viewer, OKFE-02) ----
+//
+// Vendored from open-knowledge-format @ 527e81af (see assets/okf-viz/
+// PROVENANCE.md; sha256 lock tests below). The upstream generator fills the
+// template by substituting the four placeholders and swapping the two
+// cdn.jsdelivr <script src> tags for inline library bytes — we mirror that
+// in-memory at export time so the viewer works fully offline.
+
+const VIZ_TEMPLATE: &str = include_str!("../assets/okf-viz/viz-template.html");
+const VIZ_CSS: &str = include_str!("../assets/okf-viz/viz.css");
+const VIZ_JS: &str = include_str!("../assets/okf-viz/viz.js");
+const VIZ_CYTOSCAPE: &str = include_str!("../assets/okf-viz/cytoscape.min.js");
+const VIZ_MARKED: &str = include_str!("../assets/okf-viz/marked.min.js");
+
+/// Deterministic node colors per concept type (viewer-only cosmetics).
+const VIZ_PALETTE: [&str; 8] = [
+    "#7dd3fc", "#c4b5fd", "#fda4af", "#fcd34d", "#86efac", "#fdba74", "#a5b4fc", "#5eead4",
+];
+
+fn viz_type_color(t: &str) -> &'static str {
+    // FNV-1a — stable across builds, no hash dependency.
+    let h = t.bytes().fold(0x811c9dc5u32, |h, b| {
+        (h ^ b as u32).wrapping_mul(0x01000193)
+    });
+    VIZ_PALETTE[(h as usize) % VIZ_PALETTE.len()]
+}
+
+/// One graph node collected from a walked `.md` file during export.
+struct VizConcept {
+    /// Bundle-relative path minus the `.md` suffix (viewer id convention).
+    id: String,
+    label: String,
+    page_type: String,
+    description: Option<String>,
+    tags: Vec<String>,
+    body: String,
+}
+
+/// Resolve a markdown link target to a concept id (mirrors viz.js
+/// `resolveTarget`, OKF v0.3 §6): fragment stripped, `.md` required,
+/// scheme-qualified URLs rejected, `/` = bundle root else relative to the
+/// linking file's dir. Returns the id (path minus `.md`) or `None`.
+fn resolve_md_link(href: &str, from_id: &str) -> Option<String> {
+    let path = href.split('#').next().filter(|p| !p.is_empty())?;
+    if !path.ends_with(".md") {
+        return None;
+    }
+    // ^[a-z][a-z0-9+.-]*: — http:, mailto:, anything scheme-qualified.
+    if let Some(scheme_end) = path.find(':') {
+        let scheme = &path[..scheme_end];
+        let scheme_ok = !scheme.is_empty()
+            && scheme.as_bytes()[0].is_ascii_alphabetic()
+            && scheme
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'.' || b == b'-');
+        if scheme_ok {
+            return None;
+        }
+    }
+    let mut parts: Vec<&str> = if path.starts_with('/') {
+        Vec::new()
+    } else {
+        from_id
+            .split('/')
+            .take(from_id.split('/').count() - 1)
+            .collect()
+    };
+    for seg in path.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            parts.pop()?;
+        } else {
+            parts.push(seg);
+        }
+    }
+    let joined = parts.join("/");
+    Some(joined.strip_suffix(".md")?.to_string())
+}
+
+/// Markdown link edges between walked concepts: scan each body for `](...)`,
+/// keep targets that resolve to another walked concept. Unresolvable links
+/// are dropped (spec §5.3: broken links are a feature). Deduped, ordered.
+fn viz_edges(concepts: &[VizConcept]) -> Vec<(String, String)> {
+    let ids: std::collections::HashSet<&str> = concepts.iter().map(|c| c.id.as_str()).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for c in concepts {
+        let mut rest = c.body.as_str();
+        while let Some(i) = rest.find("](") {
+            rest = &rest[i + 2..];
+            let Some(end) = rest.find(')') else {
+                break;
+            };
+            // `](target "title")` — the target ends at the first whitespace.
+            let target = rest[..end].split_whitespace().next().unwrap_or("");
+            rest = &rest[end..];
+            if let Some(to) = resolve_md_link(target, &c.id) {
+                if to != c.id
+                    && ids.contains(to.as_str())
+                    && seen.insert((c.id.clone(), to.clone()))
+                {
+                    out.push((c.id.clone(), to));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Escape `<` as `\u003c` (a valid JSON escape) so vault-controlled text
+/// cannot close the surrounding `<script>` block. Mandatory (T-20 XSS guard).
+fn viz_json_escape(json: String) -> String {
+    json.replace('<', "\\u003c")
+}
+
+fn viz_replace(hay: &mut String, needle: &str, with: &str) -> anyhow::Result<()> {
+    if !hay.contains(needle) {
+        anyhow::bail!("viz template drift: literal {needle:?} not found in vendored template");
+    }
+    *hay = hay.replace(needle, with);
+    Ok(())
+}
+
+/// Build the self-contained viewer HTML: template + injected bundle data +
+/// inlined CSS/JS/libraries. Field shape follows what viz.js actually reads
+/// (cytoscape element objects, `types`, `bodies` map) — see 20-05-SUMMARY.
+fn synthesize_viz_html(
+    name: &str,
+    concepts: &[VizConcept],
+    edges: &[(String, String)],
+) -> anyhow::Result<Vec<u8>> {
+    use std::collections::BTreeMap;
+    let mut types: Vec<&str> = concepts.iter().map(|c| c.page_type.as_str()).collect();
+    types.sort_unstable();
+    types.dedup();
+    let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for (s, t) in edges {
+        *degree.entry(s.as_str()).or_default() += 1;
+        *degree.entry(t.as_str()).or_default() += 1;
+    }
+    let nodes: Vec<serde_json::Value> = concepts
+        .iter()
+        .map(|c| {
+            let mut data = serde_json::json!({
+                "id": c.id,
+                "label": c.label,
+                "type": c.page_type,
+                "color": viz_type_color(&c.page_type),
+                "size": 26 + degree.get(c.id.as_str()).copied().unwrap_or(0).min(8) * 2,
+            });
+            if let Some(d) = &c.description {
+                data["description"] = serde_json::Value::String(d.clone());
+            }
+            if !c.tags.is_empty() {
+                data["tags"] = serde_json::json!(c.tags);
+            }
+            serde_json::json!({ "data": data })
+        })
+        .collect();
+    let edge_elems: Vec<serde_json::Value> = edges
+        .iter()
+        .map(|(s, t)| serde_json::json!({ "data": { "source": s, "target": t } }))
+        .collect();
+    let bodies: BTreeMap<&str, &str> = concepts
+        .iter()
+        .map(|c| (c.id.as_str(), c.body.as_str()))
+        .collect();
+    let doc = serde_json::json!({
+        "name": name,
+        "types": types,
+        "nodes": nodes,
+        "edges": edge_elems,
+        "bodies": bodies,
+    });
+    let name_json = viz_json_escape(serde_json::to_string(name)?);
+    let data_json = viz_json_escape(serde_json::to_string(&doc)?);
+
+    // Substitution order matters: bundle data goes LAST so vault-controlled
+    // bytes are never scanned for further placeholders.
+    let mut html = VIZ_TEMPLATE.to_string();
+    viz_replace(&mut html, "/*__VIZ_CSS__*/", VIZ_CSS)?;
+    viz_replace(&mut html, "/*__VIZ_JS__*/", VIZ_JS)?;
+    viz_replace(
+        &mut html,
+        "<script src=\"https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js\"></script>",
+        &format!("<script>\n{VIZ_CYTOSCAPE}\n</script>"),
+    )?;
+    viz_replace(
+        &mut html,
+        "<script src=\"https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js\"></script>",
+        &format!("<script>\n{VIZ_MARKED}\n</script>"),
+    )?;
+    viz_replace(&mut html, "__BUNDLE_NAME__", &name_json)?;
+    viz_replace(&mut html, "__BUNDLE_DATA__", &data_json)?;
+    Ok(html.into_bytes())
+}
+
 /// In-memory OKF bundle of a vault source tree (D-06, OKF-03): every file
 /// below `src` byte-identical, dot-directories (`.morinet-build/`, `.git/`,
 /// …) excluded, entries `/`-separated relative paths. When the walk finds no
@@ -169,6 +369,10 @@ pub fn build_bundle_zip(src: &std::path::Path) -> anyhow::Result<Vec<u8>> {
     let mut entries = 0usize;
     let mut bytes = 0u64;
     let mut has_index = false;
+    let mut has_viz = false;
+    // 20-05: per-.md viewer data collected during the walk (no second read —
+    // the bytes are already in `data`).
+    let mut concepts: Vec<VizConcept> = Vec::new();
     // Explicit stack, same idiom as the frontmatter oracle walk.
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
@@ -220,12 +424,41 @@ pub fn build_bundle_zip(src: &std::path::Path) -> anyhow::Result<Vec<u8>> {
             if rel == "index.md" {
                 has_index = true;
             }
+            if rel == "viz.html" {
+                has_viz = true;
+            }
             // Caps checked on the metadata BEFORE buffering the bytes.
             let len = std::fs::metadata(&canon)?.len();
             check_export_caps(entries + 1, bytes + len)?;
             let data = std::fs::read(&canon)?;
             entries += 1;
             bytes += len;
+            // Viewer graph data: non-reserved .md files only (root
+            // index.md/log.md are reserved, mirroring scan_conformance);
+            // files that fail UTF-8 decode are skipped, never fatal.
+            if rel.ends_with(".md") && rel != "index.md" && rel != "log.md" {
+                if let Ok(text) = std::str::from_utf8(&data) {
+                    let (fm, body) = frontmatter::split(text);
+                    let id = rel.trim_end_matches(".md").to_string();
+                    let label = fm
+                        .title()
+                        .map(str::to_string)
+                        .or_else(|| {
+                            std::path::Path::new(&rel)
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().into_owned())
+                        })
+                        .unwrap_or_else(|| id.clone());
+                    concepts.push(VizConcept {
+                        id,
+                        label,
+                        page_type: fm.page_type().unwrap_or("untyped").to_string(),
+                        description: fm.scalar("description").map(str::to_string),
+                        tags: fm.list("tags"),
+                        body: body.to_string(),
+                    });
+                }
+            }
             zip.start_file(rel, options)?;
             zip.write_all(&data)?;
         }
@@ -233,6 +466,25 @@ pub fn build_bundle_zip(src: &std::path::Path) -> anyhow::Result<Vec<u8>> {
     if !has_index {
         zip.start_file("index.md", options)?;
         zip.write_all(b"---\nokf_version: \"0.2\"\n---\n\n# Bundle index\n")?;
+    }
+    // 20-05 (OKFE-02): synthesize the official viewer at the zip root,
+    // ONLY when the vault ships no viz.html of its own (the vault's own
+    // file wins — Phase 18 D-06 index.md precedent). In-memory only,
+    // never written to disk. Bundle name fallback: the source dir's file
+    // name — build_bundle_zip takes no slug parameter by design.
+    if !has_viz {
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "bundle".to_string());
+        let edges = viz_edges(&concepts);
+        let viz = synthesize_viz_html(&name, &concepts, &edges)?;
+        // T-18-10: the synthesized entry's bytes count toward the caps.
+        // (Counters are not bumped after this point — the guard above is the
+        // last consumer, so no dead stores.)
+        check_export_caps(entries + 1, bytes + viz.len() as u64)?;
+        zip.start_file("viz.html", options)?;
+        zip.write_all(&viz)?;
     }
     Ok(zip.finish()?.into_inner())
 }
@@ -673,7 +925,7 @@ mod tests {
         let viz = String::from_utf8(zip_entry(&build_bundle_zip(&d).unwrap(), "viz.html")).unwrap();
         assert!(!viz.contains("</script><b>x</b>"), "script breakout leaked");
         assert!(
-            viz.contains("\\u003c/script\\u003e<b>x\\u003c/b\\u003e"),
+            viz.contains("\\u003c/script>\\u003cb>x\\u003c/b>"),
             "escaped form missing"
         );
     }
