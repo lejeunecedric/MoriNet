@@ -35,16 +35,29 @@ if command -v okforest >/dev/null 2>&1; then
   json="$(okforest validate "$target" --format json)"
   printf '%s\n' "$json"
   # D-04: warnings fail here even though okforest itself exits 0 on warnings.
+  # 20-R4 defense-in-depth: also assert the summary counters, and fail
+  # closed on an unrecognized schema instead of treating it as clean.
   printf '%s\n' "$json" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
-bad = [f for f in data.get("findings", [])
+findings = data.get("findings")
+summary = data.get("summary")
+if findings is None and summary is None:
+    print("okforest: unrecognized JSON output — neither findings[] nor summary present (failing closed)")
+    sys.exit(1)
+bad = [f for f in (findings or [])
        if f.get("severity") in ("error", "warning")]
 if bad:
     print(f"okforest: {len(bad)} error/warning finding(s) — D-04 bar is 0 errors / 0 warnings")
     for f in bad:
         print("  [%s] %s %s: %s" % (f.get("severity"), f.get("ruleId"), f.get("file", ""), f.get("message", "")))
     sys.exit(1)
+if isinstance(summary, dict):
+    for key in ("errors", "warnings"):
+        n = summary.get(key, 0)
+        if n:
+            print(f"okforest: summary.{key} = {n} — D-04 bar is 0 errors / 0 warnings")
+            sys.exit(1)
 '
 else
   echo "skip: okforest not in PATH — install with npm install --global okforest to enable the OKForest gate"
