@@ -1,0 +1,9 @@
+# okforest settings for the MoriNet docs vault (dev-time validation config).
+#
+# SUMMARY.md is the mdBook table-of-contents index, not an OKF concept
+# (Phase 20 D-01: the docs vault is a native mdBook source). Excluding it
+# here mirrors the okflint manifest's exclude_patterns (okf-base.yaml) so
+# both validators judge the same set of six concept pages.
+
+ignore:
+  - "src/SUMMARY.md"

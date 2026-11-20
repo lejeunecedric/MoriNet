@@ -1,0 +1,58 @@
+# okf-base.yaml — okflint manifest for the MoriNet built-in docs vault.
+#
+# Declares the conformance standard for this documentary base (the six
+# first-party docs pages under src/). Adapted from okflint's
+# example/manifest.example.yaml (okflint 0.5.1).
+#
+# Taxonomy: Guide / Reference / FAQ (the types the docs pages actually use).
+# Deliberately NO status vocabulary and no `status`/`verified`/`stale_after`
+# required fields: MoriNet's docs emit no trust fields (D-01 honesty rule —
+# trust fields are claims; we never fabricate them to satisfy a validator).
+
+okf_version: "0.2"
+
+base:
+  name: "MoriNet documentation"
+
+  roots:
+    - path: "."
+      exclude_patterns:
+        # SUMMARY.md is the mdBook table-of-contents index, not an OKF
+        # concept (D-01: the docs vault is a native mdBook source).
+        - "src/SUMMARY.md"
+        - "book/**"          # compiled mdBook output (not source)
+
+  # OKF reserved files (exempt from type validation). The docs vault has no
+  # on-disk index.md/log.md — the export synthesizes index.md at zip time
+  # (Phase 18 D-06), so none is declared on disk.
+  reserved_files:
+    index: "index.md"
+    log: "log.md"
+
+  link_resolution:
+    scope: base
+    external_refs: []
+
+profile:
+  # No created/updated fields are emitted; nothing to constrain as dates.
+  date_fields: []
+
+  types:
+    Guide:
+      required: [type, title, description, generated]
+      optional: [tags]
+    Reference:
+      required: [type, title, description, generated]
+      optional: [tags]
+    FAQ:
+      required: [type, title, description, generated]
+      optional: [tags]
+
+hygiene:
+  broken_links: warn
+  split_candidates: off
+  reserved_files: off      # no on-disk index.md/log.md by design (Phase 18 D-06)
+  unknown_fields: off
+  okf_v02_shapes: warn
+  legacy_forms: off
+  stale_content: off
