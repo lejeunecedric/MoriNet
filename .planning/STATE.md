@@ -50,6 +50,7 @@ Last activity: 2026-11-19 -- Phase 20 planning complete
 | Date | Task | Status |
 |------|------|--------|
 | 2026-11-20 | README tagline — foreground OKF import/read (`quick/20261120-readme-okf-tagline`) | complete ✓ |
+| 2026-11-20 | README — "detected at import" wording (`quick/20261120-readme-detected-at-import`) | complete ✓ |
 
 ## Accumulated Context
 
