@@ -1,6 +1,6 @@
 # MoriNet
 
-> Self-hosted mdBook server that exposes llm-wiki / Obsidian vaults as shared wiki sites and portable [OKF bundles](https://github.com/GoogleCloudPlatform/open-knowledge-format), with multi-user auth, WebDAV, and MCP.
+> Self-hosted mdBook server that exposes llm-wiki / Obsidian vaults and [OKF bundles](https://github.com/GoogleCloudPlatform/open-knowledge-format) as shared wiki sites, with multi-user auth, WebDAV, and MCP.
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 
