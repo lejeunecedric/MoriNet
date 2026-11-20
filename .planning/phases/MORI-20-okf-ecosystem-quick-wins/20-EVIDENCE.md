@@ -246,13 +246,19 @@ add frontmatter to the 3 newsletters and `AGENTS.md`/`SCHEMA.md`/`README.md`;
 convert `log.md` headings to `## YYYY-MM-DD`; convert wikilinks to markdown
 links; add `title`/`description`.
 
-### Status (plan 20-06 checkpoint)
+### Status (plan 20-06 checkpoint — RESOLVED 2026-11-20)
 
 The one-off run happened; the D-04 clean bar is **not met** and cannot be met
 without upstream content fixes in operator-owned repos (B3Wiki, ProgWiki).
-Awaiting operator decision: (A) fix at source + re-validate, (B) documented
+The checkpoint offered: (A) fix at source + re-validate, (B) documented
 D-04 exceptions (e.g. scraped `raw/` captures exempt from description/link
 rules), or (C) publish the README claim scoped to the docs vault with the
-demo validation marked pending. Until resolved, the README badge/claim must
-NOT cite demo-vault conformance.
+demo validation marked pending.
+
+**Decision (user, 2026-11-20): Option C** — the README badge/claim is
+published citing **docs-vault evidence only**; the demo-vault validation is
+explicitly marked in-progress/pending-operator in the README. Demo-vault
+conformance is **not** claimed. Upstream fixes for B3Wiki/ProgWiki remain
+with the operator repos (out of scope for this repo); this section can be
+updated with a clean re-run if the sources are ever fixed.
 

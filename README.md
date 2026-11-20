@@ -3,6 +3,7 @@
 > Self-hosted mdBook server that exposes llm-wiki / Obsidian vaults and [OKF bundles](https://github.com/GoogleCloudPlatform/open-knowledge-format) as shared wiki sites, with multi-user auth, WebDAV, and MCP.
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
+[![OKF v0.2 conformance](https://img.shields.io/badge/OKF%20v0.2-conformant-brightgreen.svg)](#okf-bundle-support)
 
 ## What
 
@@ -50,6 +51,8 @@ MoriNet is an OKF-native host:
 - 🔎 **Conformance detection** — vault sources are scanned at refresh/register; the vault page shows an `OKF v0.2 — N/M concepts` badge (or "not an OKF bundle").
 - 📦 **Bundle export** — "Export OKF bundle" streams a zip of the vault source, files byte-identical, synthesizing a root `index.md` with `okf_version: "0.2"` when absent.
 - 🤖 **Agent-ready metadata** — `/api/v1` note list/read accept `?meta=1` to return parsed frontmatter (`type`, `tags`, `status`, derived trust tier), and MCP `list_notes` / `search_notes` accept optional `type` / `tags` filters — agents consume your vault as a knowledge graph, not a pile of raw files.
+
+The built-in docs vault passes **okflint** and **OKForest CLI** with zero errors and zero warnings; validation of the public demo vault is in progress (evidence: `.planning/phases/MORI-20-okf-ecosystem-quick-wins/20-EVIDENCE.md`). This certifies MoriNet's own content, not arbitrary user vaults.
 
 The human-facing mdBook rendering is untouched: the converter still strips frontmatter from the rendered pages.
 
