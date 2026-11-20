@@ -13,6 +13,9 @@ cargo clippy --all-targets -- -D warnings
 echo "==> tests"
 cargo test
 
+echo "==> OKF external validators (optional)"
+bash scripts/check-okf.sh
+
 echo "==> release build"
 cargo build --release
 
