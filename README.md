@@ -6,7 +6,7 @@
 
 ## What
 
-MoriNet hosts one or more **llm-wiki / Obsidian vaults** — plain markdown with `[[wikilinks]]` and YAML frontmatter — converts them to mdBook sites, and serves them to your team or your AI agents. Every vault is also a native **[OKF (Open Knowledge Format)](#okf-bundle-support)** bundle — detected, exportable, and served with concept metadata to agents. Everything runs in a single Rust binary.
+MoriNet hosts one or more **llm-wiki / Obsidian vaults** — plain markdown with `[[wikilinks]]` and YAML frontmatter — converts them to mdBook sites, and serves them to your team or your AI agents. Every vault is also a native **[OKF (Open Knowledge Format)](#okf-bundle-support)** bundle — detected at import, exportable, and served with concept metadata to agents. Everything runs in a single Rust binary.
 
 - 📦 **OKF-native vault host**: detects [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundles with a conformance badge, exports any vault as a portable OKF bundle (zip), and serves concept metadata (`type`/`tags`/`status`/trust tier) to agents via API + MCP
 - 📚 **llm-wiki / Obsidian conversion**: wikilinks, frontmatter, and auto-generated `SUMMARY.md` — no `book.toml` hand-editing
