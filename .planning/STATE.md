@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Statistics & Observability
-status: milestone_complete
-stopped_at: Milestone complete (Phase 20 was final phase)
-last_updated: 2026-11-20T16:32:53.249Z
-last_activity: 2026-11-20 -- Phase 20 execution started
+status: Awaiting next milestone
+stopped_at: Phase 20 context gathered
+last_updated: "2026-11-20T19:14:09.296Z"
+last_activity: 2026-11-20 — Milestone v1.4 completed and archived
 progress:
   total_phases: 2
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 10
-  completed_plans: 32
-  percent: 50
+  completed_plans: 10
+  percent: 100
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 ## Current Position
 
-Phase: 20
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-11-20
+Phase: Milestone v1.4 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-11-20 — Milestone v1.4 completed and archived
 
 ## Performance Metrics
 
@@ -108,8 +108,7 @@ Resume file: .planning/phases/MORI-20-okf-ecosystem-quick-wins/20-CONTEXT.md
 
 ## Operator Next Steps
 
-- v1.3 not yet scoped — candidates in PROJECT.md "Next Milestone Goals" (issues #10/#11, G1-G3 tests)
-- Run the two deferred human UATs when staging access is available (rclone/Obsidian + real IdP)
+- Start the next milestone with /gsd-new-milestone
 
 ## Deferred Items
 

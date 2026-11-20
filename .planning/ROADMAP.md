@@ -13,8 +13,8 @@
 - ✅ **v1.0** — Phases 00–11 (+10.1) — shipped 2026-10-25 (`v1.0.0`), hotfixes v1.0.1–v1.0.3 by 2026-10-28
 - ✅ **v1.1.0 demo hardening + vault options** — Phases 12–14 — shipped 2026-10-29 (`v1.1.0`, live on holldemo) → full phase details: [milestones/v1.1.0-ROADMAP.md](milestones/v1.1.0-ROADMAP.md)
 - ✅ **v1.2 Team Access** — Phases 15–17 — shipped 2026-11-06 (`v1.3.0`, live on holldemo) → full phase details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md)
-- ✅ **v1.3 OKF Bundle Support** — Phase 18 (+18.1) — SHIPPED 2026-11-06 (released as v1.4.0; GitHub issue #11 closed)
-- 🚧 **v1.4 Statistics & Observability** — Phases 19–20 — STARTED 2026-11-18 (GitHub issue #10 + OKF ecosystem quick wins)
+- ✅ **v1.3 OKF Bundle Support** — Phase 18 (+18.1) — shipped 2026-11-06 (released as `v1.4.0`; issue #11 closed) → full phase details: [milestones/v1.3-ROADMAP.md](milestones/v1.3-ROADMAP.md)
+- ✅ **v1.4 Statistics & Observability** — Phases 19–20 — shipped 2026-11-20 (issue #10 closed) → full phase details: [milestones/v1.4-ROADMAP.md](milestones/v1.4-ROADMAP.md)
 
 ## Phases
 
@@ -82,7 +82,27 @@
 2. **Phase 16 — rest-api** (API-01..06): read-only JSON REST API on `/api/v1` — Bearer API tokens only (session cookies rejected), ACL parity with MCP via shared helpers in `src/api.rs`, RFC 9457 `problem+json` errors, opaque cursor pagination, search, raw-markdown note read with ETag/304, per-token rate limiter (SHA-256 keyed), public `/api/v1/docs`. No new dependencies.
 3. **Phase 17 — oidc-sso** (SSO-01..06): generic OIDC SSO — auth-code + PKCE S256, JWKS validation, `[oidc]` config (env-wins, disabled by default), migration 0012 (`user_identities` + `auth_events`), verified-email auto-link (admin refusal), domain-gated reader provisioning, replace-on-login group sync with last-admin guard, byte-identical session mint with password login. Only new dep: `openidconnect` (rustls-only).
 
-**Exit verified:** 493 tests green, `check.sh` OK, per-phase VERIFICATION 7/7 ×3 + SECURITY 67/67 threat blocks closed, milestone audit INTEGRATED (`v1.2-MILESTONE-AUDIT.md`). Releases v1.2.0 → v1.3.0 all deployed via GitHub Actions. Deferred: rclone/Obsidian + real-IdP human smoke tests, G1-G3 composed tests. Full details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md).
+**Exit verified:** 493 tests green, `check.sh` OK, per-phase VERIFICATION 7/7 ×3 + SECURITY 67/67 threat blocks closed, milestone audit INTEGRATED (`v1.2-MILESTONE-AUDIT.md`). Releases v1.2.0 → v1.3.0 all deployed via GitHub Actions. Deferred at the time: rclone/Obsidian + real-IdP human smoke tests (resolved 2026-11-20), G1-G3 composed tests. Full details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md).
+
+</details>
+
+<details>
+<summary>✅ v1.3 OKF Bundle Support (Phase 18 + 18.1) — SHIPPED 2026-11-06 (released `v1.4.0`)</summary>
+
+1. **Phase 18 — okf-bundle-support** (OKF-01..04): OKF conformance scan at refresh/register (per-file `type` frontmatter, reserved `index.md`/`log.md` shape, v0.1/v0.2 version guess), vault-page conformance badge, "Export as OKF bundle" zip (byte-identical source + in-memory root `index.md` synthesis, read-ACL gated), concept metadata (`type`/`tags`/`status`/trust tier) on `/api/v1` + MCP `type`/`tags` filters. Issue #11 closed.
+2. **Phase 18.1 — tech-debt-cleanup** (DEBT-1..4 from the v1.3 audit): `fmt_date` Hinnant fixes + phase-18 LOW test gaps (`457173e`, `4fbc2b8`, `c508835`).
+
+**Exit verified:** 554 tests green, VERIFICATION 7/7, milestone audit `tech_debt` with all DEBT items closed by 18.1. Full details: [milestones/v1.3-ROADMAP.md](milestones/v1.3-ROADMAP.md).
+
+</details>
+
+<details>
+<summary>✅ v1.4 Statistics & Observability (Phases 19–20) — SHIPPED 2026-11-20</summary>
+
+1. **Phase 19 — statistics-observability** (STAT-01..05): migration 0014 widens `access_log.source` CHECK (adds `api`); access events logged best-effort on web/API/MCP; Statistics page gains Top pages, MCP activity (request↔outcome two-column, newest-first, excerpt + size only, never full bodies), and Top search keywords; 90-day boot prune. Issue #10 closed.
+2. **Phase 20 — okf-ecosystem-quick-wins** (OKFE-01..02): docs vault passes okflint 0.5.1 + okforest 0.14.0 at the 0-errors/0-warnings bar (evidence in 20-EVIDENCE.md); optional local validator gate `scripts/check-okf.sh` wired into `scripts/check.sh` (no GitHub CI); README conformance badge scoped honestly to the docs vault; official offline OKF viewer vendored (pinned `527e81a`) and synthesized as root `viz.html` into every bundle export (vault's own viz.html wins; T-18-10 caps enforced).
+
+**Exit verified:** 611 tests green, `check.sh` OK, per-phase VERIFICATION 19: 6/6 + 20: 5/5, SECURITY 20: 17/17 threats closed, milestone audit PASSED (7/7 requirements, 11/11 integration, 3/3 E2E flows — `v1.4-MILESTONE-AUDIT.md`). Both v1.2-deferred human UATs resolved with real clients (rclone v1.76.0 WebDAV smoke, oidc-provider v9.15.1 real-IdP SSO smoke). Full details: [milestones/v1.4-ROADMAP.md](milestones/v1.4-ROADMAP.md).
 
 </details>
 
@@ -103,76 +123,15 @@
 | 19. statistics-observability | v1.4 | 4/4 | Complete    | 2026-11-18 |
 | 20. okf-ecosystem-quick-wins | v1.4 | 6/6 | Complete    | 2026-11-20 |
 
-**Next milestone candidates: OKF-F01 trust-aware rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
+**Next milestone candidates:** release v1.5.0 for phases 19–20 (Cargo.toml still says 1.4.0 — collides with the 2026-11-06 `v1.4.0` tag, bump required); OKF-F01 trust-aware rendering (needs Impeccable pass); G1-G3 composed E2E tests from the v1.2 audit; write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
 
----
-
-## Milestone v1.3: OKF Bundle Support (Phases 18+)
-
-**Goal:** MoriNet hosts Open Knowledge Format bundles natively — detect and report OKF conformance of vaults, export any vault as a portable OKF bundle, and expose concept metadata (type/tags/status/trust tier) through the REST API and MCP so agents consume bundles as knowledge graphs, not raw files. (GitHub issue #11; research: `.planning/research/OKF.md`)
-
-### Phase 18: okf-bundle-support
-
-**Goal:** detect OKF conformance at refresh time with a vault-page badge, one-click "Export as OKF bundle" (zip), and frontmatter metadata surfaced on `/api/v1` + MCP filters.
-**Requirements:** OKF-01..OKF-04
-**Success criteria:**
-1. At refresh/register, vault sources are scanned for OKF conformance (per-file non-empty `type` frontmatter, reserved `index.md`/`log.md` shape, version guess v0.1 vs v0.2); stats persisted and shown on the vault page as a badge ("OKF v0.2 — N/M concepts" or "not an OKF bundle").
-2. "Export as OKF bundle" download streams a zip of the vault source (files byte-identical), synthesizing a root `index.md` with `okf_version: "0.2"` in-memory when absent; gated by vault read ACL.
-3. `/api/v1` note list/read expose parsed frontmatter metadata (`type`, `tags`, `status`, derived trust tier per OKF §5.3); MCP list/search accept optional `type`/`tags` filters; ACL semantics unchanged (404 on inaccessible).
-4. mdBook rendering pipeline unchanged: converter still strips frontmatter (rendered output identical to v1.3.0).
-5. At most ONE new runtime dependency (archive format only); `scripts/check.sh` green; existing suite green (baseline 493 passed).
-
-**Deferred (later phases):** trust-aware page rendering of OKF families (needs Impeccable design pass); Attested Computation execution (security non-starter — spec defers the runtime protocol).
-
-## Out of scope (v1)
+## Out of scope (standing)
 
 - Real-time collaborative editing
 - Native mobile apps
 - ~~SSO (Google / Microsoft OAuth)~~ → delivered generically in v1.2 (Phase 17, OIDC)
 - ~~Webhooks / public API to manage vaults programmatically~~ → v1.2 adds a **read-only** REST API (Phase 16); write/webhook management stays out
 - Encryption at rest (rely on the server's FS)
+- Attested Computation *execution* (spec defers the runtime protocol; running bundle code is a security non-starter)
 
 > These items can move into a phase if a strong request emerges.
-
-### Phase 18.1: tech-debt-cleanup fmt_date fix and phase-18 low test gaps (INSERTED)
-
-**Goal:** Close v1.3 audit tech debt: `fmt_date` Hinnant bugs + phase-18 LOW test gaps
-**Requirements**: DEBT-1..4 (from v1.3-MILESTONE-AUDIT.md)
-**Depends on:** Phase 18
-**Plans:** 1 plan — COMPLETE (2026-11-06)
-
-Plans:
-- [x] 18.1-01: fmt_date fix + export-500/shared-badge/upload-update tests — commits `457173e`, `4fbc2b8`, `c508835`
-
----
-
-## Milestone v1.4: Statistics & Observability (Phases 19–20)
-
-**Goal:** Vault owners can see who reads their vaults and how — top viewed pages (web), API/MCP usage, MCP request↔response activity, top search keywords — plus OKF ecosystem quick wins that make MoriNet's conformance externally verifiable and its exports explorable. (GitHub issue #10; research: `.planning/research/OKF-ECOSYSTEM.md`)
-
-### Phase 19: statistics-observability
-
-**Goal:** every vault read is counted on every surface, and the Statistics page answers "what did people read, ask, and find?"
-**Requirements:** STAT-01..STAT-05
-**Depends on:** Phase 18 (REST `?meta=1` search/read surfaces to instrument)
-**Success criteria:**
-1. Migration 0014 widens `access_log.source` CHECK (adds `api`; existing `web`/`mcp` history preserved); boot succeeds on upgraded DBs.
-2. Web page views, REST API note reads/searches, and MCP tool invocations each append an access event; a logging failure never fails the request (best-effort, logged to stderr).
-3. Statistics page shows a "Top pages" section per vault (web source, ranked, date-range aware).
-4. Statistics page shows an "MCP activity" section: newest-first two-column list — request (tool, args summary, actor) left, outcome (status, latency, size + short excerpt) right; full response bodies never stored.
-5. "Top search keywords" section aggregates MCP `search_notes` + REST `search` query terms per vault.
-6. 90-day boot prune reuses the `vault_changes` convention; `scripts/check.sh` green; existing suite green (baseline 554 passed).
-
-### Phase 20: okf-ecosystem-quick-wins
-
-**Goal:** MoriNet's OKF claims are verifiable by third-party tools, and exported bundles open in the ecosystem's standard viewer.
-**Requirements:** OKFE-01, OKFE-02
-**Depends on:** Phase 18 (export pipeline), Phase 19 independent
-**Success criteria:**
-1. The built-in docs vault passes `okflint` and OKForest CLI with zero errors (fix vault content or document per-rule exceptions).
-2. A local validation script (optional `scripts/check.sh` step) runs the external validators when present in PATH — no GitHub CI resurrected.
-3. README shows an OKF conformance badge/claim backed by criterion 1.
-4. `GET /vault/{slug}/okf-export.zip` output contains a root `viz.html` (official static visualizer) that renders the bundle graph offline; byte-size and entry caps (T-18-10) still enforced.
-5. `scripts/check.sh` green; existing suite green.
-
-**Deferred (later milestones):** OKF-F01 trust-aware rendering (Impeccable pass); JSON-LD/schema.org bridge (listed ecosystem gap); registry/gallery submissions; Attested Computation execution (security non-starter).

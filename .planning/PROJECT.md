@@ -12,26 +12,15 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 
 ## Current State
 
-**v1.3 "OKF Bundle Support" shipped 2026-11-06** (released v1.4.0, live on holldemo): OKF conformance detection + vault badge, bundle export (zip), concept metadata on `/api/v1` (`?meta=1`) + MCP `type`/`tags` filters (OKF-01..04), plus Phase 18.1 tech-debt cleanup (fmt_date fix, LOW test gaps). 554 tests green. Milestone archive pending (`/gsd-complete-milestone v1.3`). Ecosystem: listing issue opened on `fabricioctelles/skills#26` (okf.md catalog); research: `.planning/research/OKF.md` + `OKF-ECOSYSTEM.md`.
-
-## Current Milestone: v1.4 Statistics & Observability
-
-**Goal:** Vault owners can see who reads their vaults and how — top viewed pages (web), API/MCP usage, MCP request↔response activity, top search keywords. Plus OKF ecosystem quick wins (external validator interop + viz.html in bundle export). (GitHub issue #10; research: `.planning/research/OKF-ECOSYSTEM.md`)
-
-**Target features:**
-- Access logging extended to all surfaces: web page views, REST API calls, MCP tool invocations (`access_log.source` CHECK widened — migration 0014)
-- Top viewed pages per vault on the Statistics page
-- MCP activity log: request (tool, args, actor) ↔ response (status, latency, excerpt)
-- Top search keywords (MCP `search_notes` + REST `search`)
-- Best-effort retention: 90-day boot prune, no full response bodies (excerpt + size), same conventions as `vault_changes`
-- OKF ecosystem: docs/demo vaults pass okflint + OKForest CLI; official viz.html shipped inside the export zip
-
-**Key context:** `access_log` exists since migration 0008 with `source IN ('web','mcp')` — REST API (Phase 16) currently logs nothing; SQLite CHECK change = table rebuild in migration. Issue #10 body: "For web we want which pages [viewed]… For MCP we want the MCP requests on left and answer on right and statistics of main keywords."
+**v1.4 "Statistics & Observability" shipped 2026-11-20** (Phases 19–20, issue #10 closed): access logging on all surfaces (web/API/MCP), Top pages, MCP request↔response activity, Top search keywords, 90-day prune (STAT-01..05); docs vault passes okflint + OKForest at the 0/0 bar with evidence-backed README badge, local validator gate in `scripts/check.sh`, offline viz.html synthesized into every OKF bundle export (OKFE-01..02). 611 tests green; milestone audit PASSED (7/7 requirements, 11/11 integration, 3/3 E2E flows). Both v1.2-deferred human UATs resolved 2026-11-20 with real clients (rclone WebDAV smoke, oidc-provider real-IdP SSO smoke). Milestones v1.3 + v1.4 archived under `.planning/milestones/`. Ecosystem: listing issue opened on `fabricioctelles/skills#26` (okf.md catalog); research: `.planning/research/OKF.md` + `OKF-ECOSYSTEM.md`.
 
 ## Next Milestone Goals
 
-- OKF-F01 trust-aware rendering (needs Impeccable pass), G1-G3 composed E2E tests from the v1.2 audit, deferred human UATs (rclone/Obsidian WebDAV smoke, real-IdP SSO smoke)
+- **Release first**: ship phases 19–20 — Cargo.toml still says `1.4.0` which collides with the 2026-11-06 `v1.4.0` tag (that release predates Phase 19); bump to `1.5.0` via `scripts/release.sh` + deploy to holldemo
+- OKF-F01 trust-aware rendering (needs Impeccable pass); demo-vault conformance fixes are upstream operator work (b3wiki/progwiki fix lists in 20-EVIDENCE.md)
+- G1-G3 composed E2E tests from the v1.2 audit
 - Backlog: API-F01 write endpoints, API-F02 scoped tokens, API-F03 webhooks
+- Known cosmetic debt: PROPFIND trailing-slash 404 routing quirk (pre-Phase-15, documented in 15-HUMAN-UAT.md); docs note that IdPs must place claims in the ID token (`conformIdTokenClaims`, 17-HUMAN-UAT.md)
 
 ## Requirements
 
@@ -80,7 +69,7 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 
 - Stack: Rust stable, axum, sqlx (SQLite), mdbook (upstream CLI, called as a subprocess), rmcp (coming), lettre. Deployed with systemd + nginx on holldemo.
 - Vault pipeline: sync → mirror in `<source>/.morinet-build/` (frontmatter consumed, wikilinks resolved, SUMMARY.md + book.toml generated) → `mdbook build` → served. mdBook themes are frozen at build: after changing `assets/zoom.*` or `MORINET_CSS`, you must click **Refresh** (pitfall #24).
-- 554 tests, clippy `-D warnings`, fmt clean on every release (`scripts/check.sh`). No GitHub CI since 2026-10-25 — local gate only.
+- 611 tests, clippy `-D warnings`, fmt clean on every release (`scripts/check.sh`). No GitHub CI since 2026-10-25 — local gate only.
 - v1.4.0 live on holldemo (2026-11-06): OKF conformance badge, bundle export, API/MCP concept metadata. Issues #7/#11 closed.
 - Detailed version-by-version history: `.planning/STATE-LOG.md` and `.planning/HANDOFF.md`.
 - Catalog of verifiable requirements: `.planning/REQUIREMENTS.md`.
@@ -127,4 +116,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-20 — Phase 20 (okf-ecosystem-quick-wins) complete; v1.4 requirements all validated.*
+*Last updated: 2026-11-20 — v1.4 milestone archived (v1.3 archived retroactively); next: release v1.5.0, then /gsd-new-milestone.*
