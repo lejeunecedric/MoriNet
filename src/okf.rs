@@ -511,27 +511,30 @@ pub fn build_bundle_zip(src: &std::path::Path) -> anyhow::Result<Vec<u8>> {
             // files that fail UTF-8 decode are skipped, never fatal.
             if rel.ends_with(".md") && rel != "index.md" && rel != "log.md" {
                 if let Ok(text) = std::str::from_utf8(&data) {
-                    let (fm, body) = frontmatter::split(text);
-                    let id = rel.trim_end_matches(".md").to_string();
-                    let label = fm
-                        .title()
-                        .map(str::to_string)
-                        .or_else(|| {
-                            std::path::Path::new(&rel)
-                                .file_stem()
-                                .map(|s| s.to_string_lossy().into_owned())
-                        })
-                        .unwrap_or_else(|| id.clone());
-                    concepts.push(VizConcept {
-                        id,
-                        label,
-                        page_type: fm.page_type().unwrap_or("untyped").to_string(),
-                        description: fm.scalar("description").map(str::to_string),
-                        tags: fm.list("tags"),
-                        // 20-R1: neutralize render-time XSS vectors
-                        // before the body enters the bundle JSON.
-                        body: sanitize_viz_body(body),
-                    });
+                    // 20-R5: strip exactly one `.md` (viz.js resolveTarget
+                    // parity); an entry whose id would be empty is skipped.
+                    if let Some(id) = rel.strip_suffix(".md").filter(|s| !s.is_empty()) {
+                        let (fm, body) = frontmatter::split(text);
+                        let label = fm
+                            .title()
+                            .map(str::to_string)
+                            .or_else(|| {
+                                std::path::Path::new(&rel)
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().into_owned())
+                            })
+                            .unwrap_or_else(|| id.to_string());
+                        concepts.push(VizConcept {
+                            id: id.to_string(),
+                            label,
+                            page_type: fm.page_type().unwrap_or("untyped").to_string(),
+                            description: fm.scalar("description").map(str::to_string),
+                            tags: fm.list("tags"),
+                            // 20-R1: neutralize render-time XSS vectors
+                            // before the body enters the bundle JSON.
+                            body: sanitize_viz_body(body),
+                        });
+                    }
                 }
             }
             zip.start_file(rel, options)?;
@@ -1039,6 +1042,19 @@ mod tests {
         assert!(
             viz.contains("blocked:alert"),
             "link not neutralized to blocked:"
+        );
+    }
+
+    /// 20-R5 regression: the id must strip exactly one `.md` suffix, matching
+    /// viz.js `resolveTarget` (`slice(0, -3)`), not every trailing `.md`.
+    #[test]
+    fn viz_id_strips_single_md_suffix() {
+        let d = tmpdir("viz-id-md");
+        page(&d, "a.md.md", &typed("A"));
+        let viz = String::from_utf8(zip_entry(&build_bundle_zip(&d).unwrap(), "viz.html")).unwrap();
+        assert!(
+            viz.contains("\"id\":\"a.md\""),
+            "a.md.md must yield id `a.md` (single strip, viz.js parity)"
         );
     }
 
