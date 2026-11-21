@@ -1,0 +1,51 @@
+# Phase 21: ui-polish - Discussion Log
+
+> **Audit trail only.** Do not use as input to planning, research, or execution agents.
+> Decisions are captured in CONTEXT.md — this log preserves the alternatives considered.
+
+**Date:** 2026-11-21
+**Phase:** 21-ui-polish
+**Areas discussed:** OKF badge details (selected); Looks and Vault Edit left to Claude's discretion
+
+---
+
+## OKF badge details (UI-01, #16)
+
+### Question 1 — What does the click reveal?
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| File list + breakdown (Recommended) | Scan stores non-conformant file paths (cap ~200) plus version, N/M, index.md/log.md, scan date | ✓ |
+| Aggregate breakdown only | No scan change; no per-file list | |
+
+**User's choice:** File list + breakdown.
+**Notes:** Directly answers #16's "show a list".
+
+### Question 2 — Interaction style
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Inline `<details>` under the badge (Recommended) | Same pattern as account menu; zero new CSS | ✓ |
+| Centered scrollable modal | More visible; conflicts with no-new-CSS rule | |
+
+**User's choice:** Inline `<details>`.
+
+### Question 3 — Placement
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Home cards + vault page (Recommended) | Same component wherever the badge exists | ✓ |
+| Vault page only | Home cards keep static badge | |
+
+**User's choice:** Home cards + vault page.
+
+---
+
+## Claude's Discretion
+
+- **Looks (UI-02, #17):** entry in the mdBook book menu before "About", mdBook palette, localStorage persistence under mdBook's theme keys; no server-side per-reader storage this phase.
+- **Vault Edit alignment (UI-03, #13):** minimal layout fix (field-wide wrapping), no form restructure.
+
+## Deferred Ideas
+
+- Server-side per-reader theme preference (`user_prefs` column) — own phase if ever needed.
