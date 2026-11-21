@@ -148,8 +148,8 @@
 **Requirements:** UI-01, UI-02, UI-03 (issues #16, #17, #13)
 **Depends on:** Phase 18 (OKF badge exists)
 **Success criteria:**
-1. Clicking the OKF badge on a vault page reveals per-concept pass/fail detail with reasons (unfulfilled checks listed, "not an OKF bundle" explains why).
-2. The account menu shows "Looks" before "About"; picking a scheme restyles app chrome and served books from the mdBook palette and persists per reader across sessions.
+1. Clicking the OKF badge on a vault card (home lists — the only place the badge renders today; served book pages carry no badge — 21-01 scope decision, amended 2026-11-21) reveals per-concept pass/fail detail with reasons (unfulfilled checks listed, "not an OKF bundle" explains why).
+2. The mdBook book menu shows a "Looks" entry before "About"; picking a scheme restyles served books from the mdBook palette and persists per reader across sessions (localStorage under mdBook's theme key — per locked D-05, amended 2026-11-21; app-chrome restyling deferred as it would need new CSS + server prefs).
 3. Vault Edit page: Theme selector sits below the "allow…" line and above the Save button.
 4. `scripts/check.sh` green; existing suite green (baseline 611 passed).
 

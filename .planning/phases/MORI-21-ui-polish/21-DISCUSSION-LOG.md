@@ -56,3 +56,10 @@ Mode: timed out, defaults applied. The plan-phase clarify gate (research? / UI-S
 - Research: skipped (config `workflow.research: false` + phases 19–20 precedent).
 - UI-SPEC: skipped — phase adds only small controls to existing server-rendered pages; D-02/D-06 lock "zero new CSS, reuse existing classes".
 - D-05 / D-06: locked as written (Claude-recommended, override possible).
+
+## Plan-Checker Corrections (2026-11-21)
+
+Plan-checker returned 0 blockers / 4 warnings / 2 INFOs; all applied inline by the orchestrator:
+- **D-03 / ROADMAP criterion 1 amended**: badge exists only on home vault cards (`vault_row` call sites server.rs:641/:660); served book pages render no badge — plan scope ruled a faithful code reading, wording corrected instead of expanding scope.
+- **ROADMAP criterion 2 amended**: "Looks" lives in the mdBook book menu (locked D-05), not the account menu; app-chrome restyling explicitly deferred (would need new CSS + server prefs).
+- **21-01 fixes**: `okf_stats` test helper (server.rs:10333) added to Task 2 (compile-breaking struct literal); vacuous artifact gate `<details>` → `<summary class="menu-btn"`; `MAX_EXPORT_ENTRIES` anchor corrected to okf.rs:131-137.
