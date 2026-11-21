@@ -15,6 +15,7 @@
 - ✅ **v1.2 Team Access** — Phases 15–17 — shipped 2026-11-06 (`v1.3.0`, live on holldemo) → full phase details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md)
 - ✅ **v1.3 OKF Bundle Support** — Phase 18 (+18.1) — shipped 2026-11-06 (released as `v1.4.0`; issue #11 closed) → full phase details: [milestones/v1.3-ROADMAP.md](milestones/v1.3-ROADMAP.md)
 - ✅ **v1.4 Statistics & Observability** — Phases 19–20 — shipped 2026-11-20 (issue #10 closed) → full phase details: [milestones/v1.4-ROADMAP.md](milestones/v1.4-ROADMAP.md)
+- 🚧 **v1.5 Offline Reading & Polish** — Phases 21–25 — STARTED 2026-11-20 (absorbs GitHub issues #12–#19)
 
 ## Phases
 
@@ -44,6 +45,11 @@
 - [x] **Phase 18.1: tech-debt-cleanup** - fmt_date fix + phase-18 LOW test gaps (v1.3) (completed 2026-11-06)
 - [x] **Phase 19: statistics-observability** (completed 2026-11-18) - access logging on all surfaces (web/API/MCP), top viewed pages, MCP request↔response activity, top search keywords (issue #10)
 - [x] **Phase 20: okf-ecosystem-quick-wins** (completed 2026-11-20) - docs vault passes okflint + OKForest, conformance badge in README, viz.html shipped in bundle export
+- [ ] **Phase 21: ui-polish** - OKF badge click → conformance details (#16), "Looks" color schemes (#17), Vault Edit menu realign (#13)
+- [ ] **Phase 22: vault-ops** - per-vault auto-refresh schedule (#12), dead-link report at Refresh (#14)
+- [ ] **Phase 23: offline-visited-cache** - service-worker cache of visited reading pages/assets, non-reading routes never cached (#15A)
+- [ ] **Phase 24: offline-full-download** - save/download control: complete second-brain snapshot with progress, states, removal (#15B)
+- [ ] **Phase 25: docs-refresh-okf03** - docs vault covers v1.1–v1.5 features, OKF 0.3 packaging at 0/0 bar (#18), README current (#19)
 
 <details>
 <summary>✅ v1.0 (Phases 00–11) — SHIPPED 2026-10-25 (v1.0.0; hotfixes v1.0.1–v1.0.3)</summary>
@@ -122,8 +128,77 @@
 | 18. okf-bundle-support (+18.1) | v1.3 | 6/6 + 1/1 | Complete | 2026-11-06 |
 | 19. statistics-observability | v1.4 | 4/4 | Complete    | 2026-11-18 |
 | 20. okf-ecosystem-quick-wins | v1.4 | 6/6 | Complete    | 2026-11-20 |
+| 21. ui-polish | v1.5 | 0/? | Not started | — |
+| 22. vault-ops | v1.5 | 0/? | Not started | — |
+| 23. offline-visited-cache | v1.5 | 0/? | Not started | — |
+| 24. offline-full-download | v1.5 | 0/? | Not started | — |
+| 25. docs-refresh-okf03 | v1.5 | 0/? | Not started | — |
 
-**Next milestone candidates:** release v1.5.0 for phases 19–20 (Cargo.toml still says 1.4.0 — collides with the 2026-11-06 `v1.4.0` tag, bump required); OKF-F01 trust-aware rendering (needs Impeccable pass); G1-G3 composed E2E tests from the v1.2 audit; write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
+**Next milestone candidates:** OKF-F01 trust-aware rendering (needs Impeccable pass); G1-G3 composed E2E tests from the v1.2 audit; write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
+
+---
+
+## Milestone v1.5: Offline Reading & Polish (Phases 21–25)
+
+**Goal:** Readers can consult their second brains offline, vaults stay fresh on their own, the UI answers the questions users actually click on, and the docs/README catch up — absorbing all open GitHub issues #12–#19.
+
+### Phase 21: ui-polish
+
+**Goal:** The three UI friction points users reported are gone.
+**Requirements:** UI-01, UI-02, UI-03 (issues #16, #17, #13)
+**Depends on:** Phase 18 (OKF badge exists)
+**Success criteria:**
+1. Clicking the OKF badge on a vault page reveals per-concept pass/fail detail with reasons (unfulfilled checks listed, "not an OKF bundle" explains why).
+2. The account menu shows "Looks" before "About"; picking a scheme restyles app chrome and served books from the mdBook palette and persists per reader across sessions.
+3. Vault Edit page: Theme selector sits below the "allow…" line and above the Save button.
+4. `scripts/check.sh` green; existing suite green (baseline 611 passed).
+
+### Phase 22: vault-ops
+
+**Goal:** Vaults refresh themselves and tell the owner when links are broken.
+**Requirements:** OPS-01, OPS-02 (issues #12, #14)
+**Depends on:** Phase 13 (vault_changes convention)
+**Success criteria:**
+1. Owner sets auto-refresh (value + minutes/hours/days/weeks) on a vault → it syncs and rebuilds on schedule without manual action; each run appears in the wiki-changes log like a manual Refresh.
+2. A failing auto-refresh (bad upstream) is logged best-effort, never wedges the vault, and recovers on the next scheduled run.
+3. Refresh on a vault containing malformed URLs (B3Wiki `log.md` case) produces a dead-link report listing offending or missing links; the build itself still succeeds (non-blocking).
+4. Disabling auto-refresh stops scheduled runs.
+5. `scripts/check.sh` green.
+
+### Phase 23: offline-visited-cache
+
+**Goal:** Pages the reader already opened stay readable when the network drops.
+**Requirements:** OFFLINE-01, OFFLINE-03 (issue #15 part A)
+**Depends on:** Phase 09 (book chrome/assets layout)
+**Success criteria:**
+1. After reading pages online, going offline still opens those pages and their same-origin assets (CSS/JS/images/fonts) from cache; never-cached pages show a clear offline-unavailable page.
+2. Online requests always hit the server (live response wins; cache is fallback only).
+3. Opening a page fetches only that page and its assets — no crawling, no depth-1/2 prefetch of unvisited pages.
+4. No account/admin/login/reset/invitation/API/MCP/WebDAV response is ever cached or served from cache (verified by test + cache inspection).
+5. `scripts/check.sh` green.
+
+### Phase 24: offline-full-download
+
+**Goal:** One click saves the whole accessible second brain for offline consultation.
+**Requirements:** OFFLINE-02, OFFLINE-04 (issue #15 part B)
+**Depends on:** Phase 23 (offline infrastructure)
+**Success criteria:**
+1. A compact save/download control in the book top chrome downloads the complete accessible book with progress and the four states (not downloaded / downloading / available offline / failed); accessible name "Enregistrer ce second brain pour une consultation hors ligne".
+2. The saved snapshot renders faithfully offline including never-visited pages (HTML, CSS, JS, images, fonts, theme assets).
+3. Cancellation and retry work; storage/quota/interruption errors surface as failed state, never a silent partial "available offline".
+4. An explicit user action removes the snapshot; logout or a later ACL change never silently deletes it; no content leaks across vaults or readers.
+5. `scripts/check.sh` green.
+
+### Phase 25: docs-refresh-okf03
+
+**Goal:** The docs and README tell the truth about today's product, at OKF 0.3.
+**Requirements:** DOCS-01, DOCS-02 (issues #18, #19)
+**Depends on:** Phases 21–24 (document what shipped)
+**Success criteria:**
+1. Docs vault documents the v1.1–v1.5 feature set (statistics & observability, OKF export + viewer, SSO, REST API, offline reading) with a page discoverable per feature.
+2. Docs bundle passes okflint + OKForest at zero errors / zero warnings under OKF 0.3 (evidence recorded like 20-EVIDENCE.md).
+3. README shows no stale version claims; features list and OKF conformance claim match the shipped state.
+4. `scripts/check.sh` green including the validator gate at the 0.3 bar.
 
 ## Out of scope (standing)
 

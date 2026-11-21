@@ -49,4 +49,14 @@ Scope source: all open GitHub issues at milestone start — #12, #13, #14, #15, 
 
 | REQ | Phase | Status |
 |-----|-------|--------|
-| (filled by roadmap) | | |
+| OFFLINE-01 | 23 | Pending |
+| OFFLINE-02 | 24 | Pending |
+| OFFLINE-03 | 23 | Pending |
+| OFFLINE-04 | 24 | Pending |
+| OPS-01 | 22 | Pending |
+| OPS-02 | 22 | Pending |
+| UI-01 | 21 | Pending |
+| UI-02 | 21 | Pending |
+| UI-03 | 21 | Pending |
+| DOCS-01 | 25 | Pending |
+| DOCS-02 | 25 | Pending |
