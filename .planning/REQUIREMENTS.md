@@ -1,12 +1,12 @@
 # Requirements: MoriNet
 
 **Defined:** 2026-11-20
-**Milestone:** v1.5 Offline Reading & Polish
+**Milestone:** v1.6 Offline Reading & Polish
 **Core Value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site — without the user ever having to touch mdBook themselves.
 
 Scope source: all open GitHub issues at milestone start — #12, #13, #14, #15, #16, #17, #18, #19 (#10 verified delivered and closed 2026-11-20).
 
-## v1.5 Requirements
+## v1.6 Requirements
 
 ### Offline reading (issue #15)
 

@@ -14,7 +14,7 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 
 **v1.4 "Statistics & Observability" shipped 2026-11-20** (Phases 19–20, issue #10 closed): access logging on all surfaces (web/API/MCP), Top pages, MCP request↔response activity, Top search keywords, 90-day prune (STAT-01..05); docs vault passes okflint + OKForest at the 0/0 bar with evidence-backed README badge, local validator gate in `scripts/check.sh`, offline viz.html synthesized into every OKF bundle export (OKFE-01..02). 611 tests green; milestone audit PASSED (7/7 requirements, 11/11 integration, 3/3 E2E flows). Both v1.2-deferred human UATs resolved 2026-11-20 with real clients (rclone WebDAV smoke, oidc-provider real-IdP SSO smoke). Milestones v1.3 + v1.4 archived under `.planning/milestones/`. Ecosystem: listing issue opened on `fabricioctelles/skills#26` (okf.md catalog); research: `.planning/research/OKF.md` + `OKF-ECOSYSTEM.md`.
 
-## Current Milestone: v1.5 Offline Reading & Polish
+## Current Milestone: v1.6 Offline Reading & Polish
 
 **Goal:** Readers can consult their second brains offline (visited-page cache + full download), vaults stay fresh on their own (auto-refresh), the UI answers the questions users actually click on (OKF details, looks, menu alignment), and the docs/README catch up with the product — absorbing all 9 open GitHub issues (#12–#19 + #10 closure).
 

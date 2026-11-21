@@ -1,9 +1,9 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.5
+milestone: v1.6
 milestone_name: Offline Reading & Polish
 status: planning
-last_updated: "2026-11-21T21:39:37.695Z"
+last_updated: "2026-11-21T21:45:32.870Z"
 last_activity: 2026-11-21
 progress:
   total_phases: 0
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 Phase: Not started (defining requirements)
 Plan: —
 Status: Defining requirements
-Last activity: 2026-11-21 — Milestone v1.5 started
+Last activity: 2026-11-21 — Milestone v1.6 started
 
 ## Performance Metrics
 

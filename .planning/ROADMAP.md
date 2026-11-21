@@ -15,7 +15,7 @@
 - ✅ **v1.2 Team Access** — Phases 15–17 — shipped 2026-11-06 (`v1.3.0`, live on holldemo) → full phase details: [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md)
 - ✅ **v1.3 OKF Bundle Support** — Phase 18 (+18.1) — shipped 2026-11-06 (released as `v1.4.0`; issue #11 closed) → full phase details: [milestones/v1.3-ROADMAP.md](milestones/v1.3-ROADMAP.md)
 - ✅ **v1.4 Statistics & Observability** — Phases 19–20 — shipped 2026-11-20 (issue #10 closed) → full phase details: [milestones/v1.4-ROADMAP.md](milestones/v1.4-ROADMAP.md)
-- 🚧 **v1.5 Offline Reading & Polish** — Phases 21–25 — STARTED 2026-11-20 (absorbs GitHub issues #12–#19)
+- 🚧 **v1.6 Offline Reading & Polish** — Phases 21–25 — STARTED 2026-11-20 (absorbs GitHub issues #12–#19; released as 1.6.0 — milestone numbers now track release numbers, v1.5 being already used by the 1.5.0 release)
 
 ## Phases
 
@@ -128,17 +128,17 @@
 | 18. okf-bundle-support (+18.1) | v1.3 | 6/6 + 1/1 | Complete | 2026-11-06 |
 | 19. statistics-observability | v1.4 | 4/4 | Complete    | 2026-11-18 |
 | 20. okf-ecosystem-quick-wins | v1.4 | 6/6 | Complete    | 2026-11-20 |
-| 21. ui-polish | v1.5 | 0/? | Not started | — |
-| 22. vault-ops | v1.5 | 0/? | Not started | — |
-| 23. offline-visited-cache | v1.5 | 0/? | Not started | — |
-| 24. offline-full-download | v1.5 | 0/? | Not started | — |
-| 25. docs-refresh-okf03 | v1.5 | 0/? | Not started | — |
+| 21. ui-polish | v1.6 | 0/? | Not started | — |
+| 22. vault-ops | v1.6 | 0/? | Not started | — |
+| 23. offline-visited-cache | v1.6 | 0/? | Not started | — |
+| 24. offline-full-download | v1.6 | 0/? | Not started | — |
+| 25. docs-refresh-okf03 | v1.6 | 0/? | Not started | — |
 
 **Next milestone candidates:** OKF-F01 trust-aware rendering (needs Impeccable pass); G1-G3 composed E2E tests from the v1.2 audit; write endpoints (API-F01) / scoped tokens (API-F02) / webhooks (API-F03) backlog.
 
 ---
 
-## Milestone v1.5: Offline Reading & Polish (Phases 21–25)
+## Milestone v1.6: Offline Reading & Polish (Phases 21–25)
 
 **Goal:** Readers can consult their second brains offline, vaults stay fresh on their own, the UI answers the questions users actually click on, and the docs/README catch up — absorbing all open GitHub issues #12–#19.
 
