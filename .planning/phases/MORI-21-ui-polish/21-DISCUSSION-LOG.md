@@ -49,3 +49,10 @@
 ## Deferred Ideas
 
 - Server-side per-reader theme preference (`user_prefs` column) — own phase if ever needed.
+
+## Plan-Phase Gate (2026-11-21)
+
+Mode: timed out, defaults applied. The plan-phase clarify gate (research? / UI-SPEC? / lock D-05+D-06?) returned unanswered; recommended defaults applied and marked visibly in CONTEXT.md:
+- Research: skipped (config `workflow.research: false` + phases 19–20 precedent).
+- UI-SPEC: skipped — phase adds only small controls to existing server-rendered pages; D-02/D-06 lock "zero new CSS, reuse existing classes".
+- D-05 / D-06: locked as written (Claude-recommended, override possible).

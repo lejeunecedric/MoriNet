@@ -29,6 +29,7 @@ Requirements: UI-01 (badge click → conformance detail), UI-02 ("Looks" before 
 
 ### Claude's Discretion
 - UI-02 and UI-03 implementation details above were not user-selected (user chose to discuss only the OKF badge); the decisions above are Claude's recommended approach, consistent with the issue texts and prior locked decisions.
+- D-05 and D-06 **locked as Claude-recommended defaults on 2026-11-21** (plan-phase gate timed out — override possible): Looks picker via mdBook book menu + localStorage; minimal Vault Edit layout realignment. Phase research and UI-SPEC likewise skipped per project precedent (phases 19–20 shipped without either).
 
 </decisions>
 
