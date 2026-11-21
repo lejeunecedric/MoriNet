@@ -13,7 +13,7 @@ MoriNet hosts one or more **llm-wiki / Obsidian vaults** — plain markdown with
 - 📚 **llm-wiki / Obsidian conversion**: wikilinks, frontmatter, and auto-generated `SUMMARY.md` — no `book.toml` hand-editing
 - 📂 **Multi-vault** with groups, per-group quotas, and personal vaults — load your own from GitHub **or upload a local folder** from the browser
 - 🎛️ **Per-vault display options**: keep/hide sidebar page numbers, mdBook theme select (light/navy/rust/coal/ayu)
-- 📈 **Per-vault statistics** including a **Wiki changes** log: what each Refresh added/modified/removed
+- 📈 **Per-vault statistics**: top viewed pages, MCP activity (requests left, answers right), top search keywords, and a **Wiki changes** log of what each Refresh added/modified/removed
 - 🔒 **Locked accounts** (e.g. a public demo login) can read but never add or modify vaults
 - 🔐 **Email + password auth** (HttpOnly signed cookies), `admin` / `reader` roles, invitations and password reset by email
 - 📡 **WebDAV** access — put a note, it goes live
@@ -52,7 +52,7 @@ MoriNet is an OKF-native host:
 - 📦 **Bundle export** — "Export OKF bundle" streams a zip of the vault source, files byte-identical, synthesizing a root `index.md` with `okf_version: "0.2"` when absent.
 - 🤖 **Agent-ready metadata** — `/api/v1` note list/read accept `?meta=1` to return parsed frontmatter (`type`, `tags`, `status`, derived trust tier), and MCP `list_notes` / `search_notes` accept optional `type` / `tags` filters — agents consume your vault as a knowledge graph, not a pile of raw files.
 
-The built-in docs vault passes **okflint** and **OKForest CLI** with zero errors and zero warnings; validation of the public demo vault is in progress (evidence: `.planning/phases/MORI-20-okf-ecosystem-quick-wins/20-EVIDENCE.md`). This certifies MoriNet's own content, not arbitrary user vaults.
+The built-in docs vault passes **okflint** and **OKForest CLI** with zero errors and zero warnings; validation of the public demo vault is in progress (evidence: `.planning/milestones/v1.4-phases/MORI-20-okf-ecosystem-quick-wins/20-EVIDENCE.md`). This certifies MoriNet's own content, not arbitrary user vaults.
 
 The human-facing mdBook rendering is untouched: the converter still strips frontmatter from the rendered pages.
 
@@ -103,7 +103,9 @@ morinet serve --config ./config.toml
 
 ## Status
 
-**v1.4.0 stable.** v1.3 "OKF Bundle Support" shipped: OKF conformance detection with a vault-page badge, one-click "Export OKF bundle" (zip, byte-identical sources), and concept metadata on `/api/v1` (`?meta=1`) plus `type`/`tags` filters on MCP `list_notes`/`search_notes` — see [OKF bundle support](#okf-bundle-support).
+**v1.5.0 stable.** Release 1.5.0 ships **Statistics & Observability**: every vault read is counted on all surfaces (web, REST API, MCP), and the Statistics page answers "what did people read, ask, and find?" — top viewed pages, MCP request↔response activity, top search keywords, 90-day retention. Plus OKF ecosystem wins: the built-in docs vault passes **okflint** and **OKForest** with zero errors/warnings, and every OKF bundle export now ships the offline `viz.html` graph viewer.
+
+Earlier: v1.4.0 shipped "OKF Bundle Support": OKF conformance detection with a vault-page badge, one-click "Export OKF bundle" (zip, byte-identical sources), and concept metadata on `/api/v1` (`?meta=1`) plus `type`/`tags` filters on MCP `list_notes`/`search_notes` — see [OKF bundle support](#okf-bundle-support).
 
 Earlier: v1.2 "Team Access" shipped: conflict-safe co-editing (strong ETags, conditional WebDAV writes, upload conflict list + force-overwrite audit), a read-only REST API on `/api/v1` (Bearer API tokens, cursor pagination, search, ETag/304, per-token rate limiting), and generic OIDC SSO (auth-code + PKCE against any compliant IdP, verified-email linking, domain-gated reader auto-provisioning, replace-on-login group sync) — fully coexisting with password login, bootstrap admin always available as safety net.
 

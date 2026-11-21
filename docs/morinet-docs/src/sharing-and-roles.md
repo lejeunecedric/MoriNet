@@ -89,11 +89,14 @@ Both apply at serve time to the vault's pages — no rebuild needed.
 
 ## Statistics & wiki changes
 
-Every owner (and admin) sees a **Statistics** page per vault: access hits per
-day, top pages, and a **Wiki changes** section listing what each Refresh
-actually changed — files added, modified or removed, newest events first.
-Change logging is best-effort telemetry: it never affects the Refresh itself,
-and entries are kept for 90 days.
+Every owner (and admin) sees a **Statistics** page per vault, scoped by a
+selectable date range: access hits per day, **top pages**, **MCP activity**
+(each request — tool, arguments, actor — paired with its outcome: status,
+latency, response excerpt), **top search keywords** (from MCP and API
+searches), and a **Wiki changes** section listing what each Refresh actually
+changed — files added, modified or removed, newest events first. Logging is
+best-effort telemetry: it never affects the request path or the Refresh
+itself, and entries are kept for 90 days.
 
 ## Instance-wide vaults
 
