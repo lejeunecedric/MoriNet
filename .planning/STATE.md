@@ -2,11 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: Offline Reading & Polish
-status: planning
-last_updated: "2026-11-21T21:45:32.870Z"
-last_activity: 2026-11-21
+status: Defining requirements
+stopped_at: Phase 21 context gathered
+last_updated: "2026-11-21T21:57:35.156Z"
+last_activity: 2026-11-21 — Milestone v1.6 started
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -95,9 +96,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-11-18T23:25:29.275Z
-Stopped at: Phase 20 context gathered
-Resume file: .planning/phases/MORI-20-okf-ecosystem-quick-wins/20-CONTEXT.md
+Last session: 2026-11-21T21:57:35.147Z
+Stopped at: Phase 21 context gathered
+Resume file: .planning/phases/MORI-21-ui-polish/21-CONTEXT.md
 
 ## Useful links
 
