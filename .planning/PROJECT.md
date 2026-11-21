@@ -14,9 +14,22 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 
 **v1.4 "Statistics & Observability" shipped 2026-11-20** (Phases 19–20, issue #10 closed): access logging on all surfaces (web/API/MCP), Top pages, MCP request↔response activity, Top search keywords, 90-day prune (STAT-01..05); docs vault passes okflint + OKForest at the 0/0 bar with evidence-backed README badge, local validator gate in `scripts/check.sh`, offline viz.html synthesized into every OKF bundle export (OKFE-01..02). 611 tests green; milestone audit PASSED (7/7 requirements, 11/11 integration, 3/3 E2E flows). Both v1.2-deferred human UATs resolved 2026-11-20 with real clients (rclone WebDAV smoke, oidc-provider real-IdP SSO smoke). Milestones v1.3 + v1.4 archived under `.planning/milestones/`. Ecosystem: listing issue opened on `fabricioctelles/skills#26` (okf.md catalog); research: `.planning/research/OKF.md` + `OKF-ECOSYSTEM.md`.
 
+## Current Milestone: v1.5 Offline Reading & Polish
+
+**Goal:** Readers can consult their second brains offline (visited-page cache + full download), vaults stay fresh on their own (auto-refresh), the UI answers the questions users actually click on (OKF details, looks, menu alignment), and the docs/README catch up with the product — absorbing all 9 open GitHub issues (#12–#19 + #10 closure).
+
+**Target features:**
+- Offline reading (#15): service-worker cache of visited pages/assets + explicit full second-brain download with progress and states
+- Vault auto-refresh (#12): per-vault interval (value + minutes/hours/days/weeks) in the Vault Edit menu
+- Dead-link check at Refresh (#14): flag malformed/broken URLs (e.g. log.md links) instead of silent build
+- OKF badge click → conformance details list (#16)
+- "Looks" color-scheme picker in the account menu (#17), Vault Edit menu realignment (#13)
+- Docs bundle refresh + OKF 0.3 packaging (#18), README features/version update (#19)
+
+**Key context:** issue #10 (statistics) was delivered by Phase 19 / v1.5.0 but never closed on GitHub — close at milestone start. Product wording: "second brain" (product), "vault" (technical), "wiki" (generic). OKF 0.3 is a spec-version bump over the v0.2 conformance shipped in Phase 20 — validate against the ecosystem validators.
+
 ## Next Milestone Goals
 
-- **Release first**: ship phases 19–20 — Cargo.toml still says `1.4.0` which collides with the 2026-11-06 `v1.4.0` tag (that release predates Phase 19); bump to `1.5.0` via `scripts/release.sh` + deploy to holldemo
 - OKF-F01 trust-aware rendering (needs Impeccable pass); demo-vault conformance fixes are upstream operator work (b3wiki/progwiki fix lists in 20-EVIDENCE.md)
 - G1-G3 composed E2E tests from the v1.2 audit
 - Backlog: API-F01 write endpoints, API-F02 scoped tokens, API-F03 webhooks
