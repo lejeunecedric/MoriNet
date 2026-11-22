@@ -527,6 +527,13 @@ async fn logout(State(state): State<SharedState>) -> Response {
 /// (T-18-03): unparseable `okf_json` renders nothing; only typed integers
 /// and the html-escaped version reach HTML (T-18-06). Zero new CSS — reuses
 /// the `.menu-btn` pill + `<small>` precedent (D-05).
+///
+/// Phase 21 (UI-01, D-02/D-04): the pill is a clickable in-flow `<details>`
+/// summary (NOT `class="menu"` — those classes are absolutely positioned
+/// for the header, 21-PATTERNS §3). The panel shows version, concepts/total,
+/// index.md/log.md presence, scan date, and the capped escaped
+/// non-conformant list; the not-a-bundle arm lists the failing reasons.
+/// Data comes from the STORED scan only (D-01) — never a re-scan here.
 fn okf_badge_html(json: Option<&str>) -> String {
     let Some(j) = json else {
         return String::new();
@@ -534,13 +541,58 @@ fn okf_badge_html(json: Option<&str>) -> String {
     let Ok(stats) = serde_json::from_str::<crate::okf::OkfStats>(j) else {
         return String::new();
     };
-    match stats.version {
-        None => r#"<small class="menu-btn">not an OKF bundle</small>"#.to_string(),
+    // Shared tail (D-04): scan date + capped non-conformant file list.
+    // Every path passes html_escape (T-21-01: stored-XSS gate).
+    let mut detail = format!(
+        "<small>scanned {}</small>",
+        epoch_secs_to_utc_date(stats.scanned_at)
+    );
+    if !stats.non_conformant.is_empty() {
+        detail.push_str("<small>non-conformant files</small><ul>");
+        for p in &stats.non_conformant {
+            detail.push_str(&format!("<li>{}</li>", html_escape(p)));
+        }
+        if stats.misses_overflow > 0 {
+            detail.push_str(&format!("<li>+{} more</li>", stats.misses_overflow));
+        }
+        detail.push_str("</ul>");
+    }
+    match stats.version.as_deref() {
+        // D-04: clickable pill explaining WHY it is not a bundle.
+        None => {
+            let mut reasons = String::new();
+            if stats.concepts == 0 {
+                reasons.push_str(&format!("<li>no concepts (0/{})</li>", stats.total));
+            } else if stats.total > 0 && stats.concepts * 100 < stats.total * 80 {
+                reasons.push_str(&format!(
+                    "<li>below the 80 % concept ratio ({}/{})</li>",
+                    stats.concepts, stats.total
+                ));
+            }
+            if !stats.has_index {
+                reasons.push_str("<li>missing index.md</li>");
+            }
+            if !stats.has_log {
+                reasons.push_str("<li>missing log.md</li>");
+            }
+            format!(
+                "<details><summary class=\"menu-btn\">not an OKF bundle</summary>\
+                 <ul>{reasons}</ul>{detail}</details>"
+            )
+        }
         Some(v) => format!(
-            r#"<small class="menu-btn">OKF v{v} — {}/{total} concepts</small>"#,
-            stats.concepts,
-            v = html_escape(&v),
-            total = stats.total,
+            "<details><summary class=\"menu-btn\">OKF v{v} — {c}/{t} concepts</summary>\
+             <small>version {v} · {c}/{t} concepts · index.md: {idx} · log.md: {log}</small>\
+             {detail}</details>",
+            v = html_escape(v),
+            c = stats.concepts,
+            t = stats.total,
+            idx = if stats.has_index {
+                "present"
+            } else {
+                "missing"
+            },
+            log = if stats.has_log { "present" } else { "missing" },
         ),
     }
 }
@@ -10469,19 +10521,61 @@ mod tests {
         let json = serde_json::to_string(&okf_stats(Some("0.2"), 42, 45)).unwrap();
         let html = okf_badge_html(Some(&json));
         assert!(html.contains("OKF v0.2 — 42/45 concepts"), "{html}");
-        assert!(html.contains(r#"class="menu-btn""#), "{html}");
+        assert!(html.contains(r#"<summary class="menu-btn">"#), "{html}");
+        assert!(html.contains("<details"), "{html}");
     }
 
     #[test]
     fn okf_badge_html_not_a_bundle() {
         let json = serde_json::to_string(&okf_stats(None, 0, 3)).unwrap();
-        assert!(okf_badge_html(Some(&json)).contains("not an OKF bundle"));
+        let html = okf_badge_html(Some(&json));
+        assert!(html.contains("not an OKF bundle"), "{html}");
+        assert!(html.contains(r#"<summary class="menu-btn">"#), "{html}");
     }
 
     #[test]
     fn okf_badge_html_unparseable_is_empty() {
         // T-18-03: hostile/corrupted okf_json renders nothing, never HTML.
         assert_eq!(okf_badge_html(Some("garbage")), "");
+    }
+
+    // Phase 21 (UI-01 / D-02, D-04): the badge is a clickable <details>.
+    #[test]
+    fn okf_badge_html_escapes_nonconformant_paths() {
+        // T-21-01: stored-XSS gate — attacker-controlled filenames escape.
+        let mut s = okf_stats(Some("0.2"), 4, 5);
+        s.non_conformant = vec!["a/<script>x</script>.md".to_string()];
+        let html = okf_badge_html(Some(&serde_json::to_string(&s).unwrap()));
+        assert!(html.contains("&lt;script&gt;"), "{html}");
+        assert!(!html.contains("<script>"), "{html}");
+    }
+
+    #[test]
+    fn okf_badge_html_overflow_shows_plus_n_more() {
+        let mut s = okf_stats(Some("0.2"), 4, 300);
+        s.non_conformant = vec!["u.md".to_string(); 200];
+        s.misses_overflow = 5;
+        let html = okf_badge_html(Some(&serde_json::to_string(&s).unwrap()));
+        assert!(html.contains("+5 more"), "{html}");
+    }
+
+    #[test]
+    fn okf_badge_html_not_bundle_explains_reasons() {
+        let mut s = okf_stats(None, 0, 3);
+        s.has_index = false;
+        let html = okf_badge_html(Some(&serde_json::to_string(&s).unwrap()));
+        assert!(html.contains("missing index.md"), "{html}");
+        assert!(html.contains("no concepts (0/3)"), "{html}");
+        assert!(html.contains("<summary class=\"menu-btn\">"), "{html}");
+    }
+
+    #[test]
+    fn okf_badge_html_old_json_renders() {
+        // D-01 backward-compat: pre-phase rows (no new keys) still render.
+        let old = r#"{"version":"0.2","concepts":4,"total":4,"has_index":true,"has_log":true,"scanned_at":1763000000}"#;
+        let html = okf_badge_html(Some(old));
+        assert!(html.contains("OKF v0.2 — 4/4 concepts"), "{html}");
+        assert!(html.contains("<details"), "{html}");
     }
 
     #[test]
