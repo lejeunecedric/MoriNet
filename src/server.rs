@@ -4942,7 +4942,9 @@ mod tests {
         let i_reshare = body
             .find("id=\"ev-reshare\"")
             .expect("ev-reshare checkbox missing");
-        let i_keep = body.find("id=\"ev-keep\"").expect("ev-keep checkbox missing");
+        let i_keep = body
+            .find("id=\"ev-keep\"")
+            .expect("ev-keep checkbox missing");
         let i_theme = body
             .find(theme_div)
             .unwrap_or_else(|| panic!("theme field must carry field-wide: {body}"));
