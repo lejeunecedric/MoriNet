@@ -5026,14 +5026,15 @@ mod tests {
         let headers: HeaderMap = HeaderMap::from_iter([(COOKIE, cookie.parse().unwrap())]);
         let res = req(app.clone(), "GET", "/vault/demo/", headers.clone(), None).await;
         assert_eq!(res.status(), StatusCode::OK);
-        // 65536 (not 8192): the served page inlines MORINET_JS chrome, which
-        // grew past 8 KiB when the Looks picker (21-02) shipped.
-        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        // 1 MiB (not the old 65536): the served page inlines MORINET_JS
+        // chrome, which keeps growing with each UI phase — keep a generous
+        // fixed headroom so chrome growth never flakes this test.
+        let body = to_bytes(res.into_body(), 1 << 20).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("MoriNet demo vault"));
 
         let res = req(app, "GET", "/vault/demo/notes.html", headers, None).await;
         assert_eq!(res.status(), StatusCode::OK);
-        let body = to_bytes(res.into_body(), 65536).await.unwrap();
+        let body = to_bytes(res.into_body(), 1 << 20).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("notes page"));
     }
 
