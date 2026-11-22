@@ -521,4 +521,24 @@ mod tests {
             "the numbers must be hidden"
         );
     }
+
+    // Plan 21-02 (UI-02 / D-05): the "Looks" picker must ship inside the
+    // embedded MORINET_JS bytes so BOTH delivery paths carry it — converted
+    // vaults get theme/morinet.js at build (convert.rs), native vaults get
+    // the same bytes inlined at serve time (inject_vault_chrome).
+    #[test]
+    fn morinet_js_ships_looks_picker() {
+        assert!(
+            MORINET_JS.contains("mdbook-theme"),
+            "the picker must write mdBook's own localStorage key"
+        );
+        assert!(
+            MORINET_JS.contains("morinet-looks-light"),
+            "the picker must render palette buttons with morinet-* ids"
+        );
+        assert!(
+            MORINET_JS.contains("mdbook-theme-list"),
+            "the picker must anchor on mdBook's theme popup"
+        );
+    }
 }
