@@ -21,6 +21,18 @@ const V02_KEYS: [&str; 5] = ["generated", "verified", "sources", "status", "stal
 /// `MAX_EXPORT_ENTRIES` explicit-bound convention.
 pub const MAX_MISSES: usize = 200;
 
+/// Phase 21 review: cap on the *length* (in chars) of each recorded
+/// non-conformant path. [`MAX_MISSES`] caps the count, this caps the size,
+/// so a hostile vault of very long paths cannot bloat one `okf_json` row
+/// with hundreds of KB. Truncation is char-safe ([`clip_miss_path`]).
+pub const MAX_MISS_PATH_CHARS: usize = 200;
+
+/// Char-safe truncation of a recorded miss path to [`MAX_MISS_PATH_CHARS`]
+/// (`chars().take`, never byte slicing — a slice could split a codepoint).
+fn clip_miss_path(rel: &str) -> String {
+    rel.chars().take(MAX_MISS_PATH_CHARS).collect()
+}
+
 /// Result of an OKF conformance scan over one vault source directory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OkfStats {
@@ -35,7 +47,8 @@ pub struct OkfStats {
     /// Epoch seconds at scan time.
     pub scanned_at: u64,
     /// Phase 21 (D-01): relative paths of readable `.md` files whose
-    /// frontmatter lacks a non-empty `type`, capped at [`MAX_MISSES`].
+    /// frontmatter lacks a non-empty `type`, capped at [`MAX_MISSES`] and
+    /// each path clipped to [`MAX_MISS_PATH_CHARS`] chars.
     /// `#[serde(default)]` keeps pre-phase `okf_json` rows deserializing.
     #[serde(default)]
     pub non_conformant: Vec<String>,
@@ -86,8 +99,9 @@ pub fn scan_conformance(dir: &std::path::Path) -> anyhow::Result<OkfStats> {
                 v02 = true;
             }
         } else if non_conformant.len() < MAX_MISSES {
-            // Phase 21 (D-01): untyped readable file — record the miss.
-            non_conformant.push(rel);
+            // Phase 21 (D-01): untyped readable file — record the miss,
+            // char-safely clipped so long paths cannot bloat okf_json.
+            non_conformant.push(clip_miss_path(&rel));
         } else {
             misses_overflow += 1;
         }
@@ -771,6 +785,18 @@ mod tests {
             s.non_conformant[0].chars().count()
         );
         assert!(s.non_conformant[0].starts_with('é'));
+    }
+
+    // Same review finding, unit level: a 5000-char path is stored clipped
+    // to exactly MAX_MISS_PATH_CHARS chars, split at a codepoint boundary.
+    #[test]
+    fn clip_miss_path_truncates_5000_char_path_char_safely() {
+        let long: String = "é".repeat(5000);
+        let clipped = clip_miss_path(&long);
+        assert_eq!(clipped.chars().count(), MAX_MISS_PATH_CHARS);
+        assert!(clipped.chars().all(|c| c == 'é'));
+        // Short paths pass through untouched.
+        assert_eq!(clip_miss_path("sub/u2.md"), "sub/u2.md");
     }
 
     #[test]
