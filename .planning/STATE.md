@@ -4,8 +4,8 @@ milestone: v1.6
 milestone_name: Offline Reading & Polish
 status: executing
 stopped_at: Phase 21 context gathered
-last_updated: "2026-11-21T22:20:04.054Z"
-last_activity: 2026-11-21 -- Phase 21 planning complete
+last_updated: "2026-11-22T08:58:37.597Z"
+last_activity: 2026-11-22 -- Phase 21 execution started
 progress:
   total_phases: 5
   completed_phases: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
-**Current focus:** Milestone complete
+**Current focus:** Phase 21 — ui-polish
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Ready to execute
-Last activity: 2026-11-21 -- Phase 21 planning complete
+Phase: 21 (ui-polish) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 21
+Last activity: 2026-11-22 -- Phase 21 execution started
 
 ## Performance Metrics
 
