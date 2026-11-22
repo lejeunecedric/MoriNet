@@ -16,6 +16,11 @@ use crate::obsidian::frontmatter::{self, Frontmatter};
 /// opaque per D-04.
 const V02_KEYS: [&str; 5] = ["generated", "verified", "sources", "status", "stale_after"];
 
+/// Phase 21 (D-01): cap on recorded non-conformant paths so a hostile deep
+/// vault cannot grow `okf_json` without bound (T-21-02). Mirrors the
+/// `MAX_EXPORT_ENTRIES` explicit-bound convention.
+pub const MAX_MISSES: usize = 200;
+
 /// Result of an OKF conformance scan over one vault source directory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OkfStats {
@@ -29,6 +34,14 @@ pub struct OkfStats {
     pub has_log: bool,
     /// Epoch seconds at scan time.
     pub scanned_at: u64,
+    /// Phase 21 (D-01): relative paths of readable `.md` files whose
+    /// frontmatter lacks a non-empty `type`, capped at [`MAX_MISSES`].
+    /// `#[serde(default)]` keeps pre-phase `okf_json` rows deserializing.
+    #[serde(default)]
+    pub non_conformant: Vec<String>,
+    /// Phase 21 (D-01): non-conformant files beyond the [`MAX_MISSES`] cap.
+    #[serde(default)]
+    pub misses_overflow: usize,
 }
 
 fn unix_now() -> u64 {
@@ -51,6 +64,8 @@ pub fn scan_conformance(dir: &std::path::Path) -> anyhow::Result<OkfStats> {
     let mut has_index = false;
     let mut has_log = false;
     let mut v02 = false;
+    let mut non_conformant: Vec<String> = Vec::new();
+    let mut misses_overflow = 0usize;
     for rel in crate::mcp::list_md_files(dir) {
         if rel == "index.md" {
             has_index = true;
@@ -70,6 +85,11 @@ pub fn scan_conformance(dir: &std::path::Path) -> anyhow::Result<OkfStats> {
             if V02_KEYS.iter().any(|k| fm.has(k)) {
                 v02 = true;
             }
+        } else if non_conformant.len() < MAX_MISSES {
+            // Phase 21 (D-01): untyped readable file — record the miss.
+            non_conformant.push(rel);
+        } else {
+            misses_overflow += 1;
         }
     }
     let version = if total > 0 && concepts * 100 >= total * 80 {
@@ -84,6 +104,8 @@ pub fn scan_conformance(dir: &std::path::Path) -> anyhow::Result<OkfStats> {
         has_index,
         has_log,
         scanned_at: unix_now(),
+        non_conformant,
+        misses_overflow,
     })
 }
 
@@ -692,6 +714,43 @@ mod tests {
         assert_eq!(s.version.as_deref(), Some("0.1"));
         assert!(s.has_index);
         assert!(s.has_log);
+    }
+
+    // Phase 21 (UI-01 / D-01): the scan records non-conformant paths.
+    #[test]
+    fn scan_records_non_conformant_paths() {
+        let d = tmpdir("nonconf");
+        page(&d, "a.md", &typed("A"));
+        page(&d, "sub/b.md", &typed("B"));
+        page(&d, "u1.md", "# untyped one\n");
+        page(&d, "sub/u2.md", "# untyped two\n");
+        let s = scan_conformance(&d).unwrap();
+        let mut got = s.non_conformant.clone();
+        got.sort();
+        assert_eq!(got, vec!["sub/u2.md".to_string(), "u1.md".to_string()]);
+        assert_eq!(s.misses_overflow, 0);
+    }
+
+    #[test]
+    fn scan_misses_capped_at_max_with_overflow() {
+        let d = tmpdir("cap");
+        for i in 0..(MAX_MISSES + 5) {
+            page(&d, &format!("u{i}.md"), "# untyped\n");
+        }
+        let s = scan_conformance(&d).unwrap();
+        assert_eq!(s.non_conformant.len(), MAX_MISSES);
+        assert_eq!(s.misses_overflow, 5);
+        assert_eq!(s.total, MAX_MISSES + 5);
+    }
+
+    #[test]
+    fn old_okfstats_json_without_new_fields_deserializes() {
+        // Verbatim pre-phase-21 okf_json shape (six keys only, D-01 compat).
+        let old = r#"{"version":"0.2","concepts":4,"total":4,"has_index":true,"has_log":true,"scanned_at":1763000000}"#;
+        let s: OkfStats = serde_json::from_str(old).unwrap();
+        assert_eq!(s.version.as_deref(), Some("0.2"));
+        assert!(s.non_conformant.is_empty());
+        assert_eq!(s.misses_overflow, 0);
     }
 
     #[test]

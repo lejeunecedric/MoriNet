@@ -10338,6 +10338,8 @@ mod tests {
             has_index: true,
             has_log: false,
             scanned_at: 1762400000,
+            non_conformant: Vec::new(),
+            misses_overflow: 0,
         }
     }
 
