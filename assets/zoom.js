@@ -93,7 +93,12 @@
         ["ayu", "Ayu", "morinet-looks-ayu"]
     ];
     function pick(palette) {
-        return function () {
+        return function (ev) {
+            // mdBook 0.5.4's popup-level click listener also fires for these
+            // buttons (className "theme" inside #mdbook-theme-list) and would
+            // call set_theme('morinet-looks-*'), clobbering mdbook-theme with
+            // an invalid value. Stop the event before writing our own value.
+            if (ev) { ev.preventDefault(); ev.stopPropagation(); }
             try { localStorage.setItem('mdbook-theme', palette); } catch (e) {}
             // Reload is the zero-coupling way to make book.js apply the
             // theme — we never call into book.js internals (21-PATTERNS §5).
