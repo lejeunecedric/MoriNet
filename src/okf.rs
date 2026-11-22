@@ -743,6 +743,36 @@ mod tests {
         assert_eq!(s.total, MAX_MISSES + 5);
     }
 
+    // Review 21 LOW: MAX_MISSES caps the *count* of recorded paths, not
+    // their length — a hostile vault with very long paths could push
+    // hundreds of KB into a single okf_json row. Each recorded path must be
+    // truncated to 200 chars, char-safely (multibyte segments here: a byte
+    // slice would panic mid-codepoint).
+    #[test]
+    fn scan_truncates_overlong_miss_paths() {
+        let d = tmpdir("longmiss");
+        // 15 segments of 100 chars (200 UTF-8 bytes each — under the
+        // 255-byte per-name limit) => a ~1500-char relative path (kept
+        // under the 4096-byte PATH_MAX so the file can be created).
+        let seg = "é".repeat(100);
+        let mut rel = String::new();
+        for _ in 0..15 {
+            rel.push_str(&seg);
+            rel.push('/');
+        }
+        rel.push_str("u.md");
+        assert!(rel.chars().count() > 1500);
+        page(&d, &rel, "# untyped\n");
+        let s = scan_conformance(&d).unwrap();
+        assert_eq!(s.non_conformant.len(), 1);
+        assert!(
+            s.non_conformant[0].chars().count() <= 200,
+            "recorded path must be truncated to 200 chars, got {}",
+            s.non_conformant[0].chars().count()
+        );
+        assert!(s.non_conformant[0].starts_with('é'));
+    }
+
     #[test]
     fn old_okfstats_json_without_new_fields_deserializes() {
         // Verbatim pre-phase-21 okf_json shape (six keys only, D-01 compat).
