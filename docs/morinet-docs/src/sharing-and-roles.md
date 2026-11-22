@@ -87,6 +87,12 @@ The owner can tune how a vault renders from its **Edit** page:
 
 Both apply at serve time to the vault's pages — no rebuild needed.
 
+Visitors to a served book can override that default for themselves: the book
+menu's theme popup has a **Looks** section with the mdBook palette (light,
+navy, rust, coal, ayu). The choice is remembered in the visitor's own browser
+and wins over the vault's default theme until they change it — it never
+affects what other readers see.
+
 ## Statistics & wiki changes
 
 Every owner (and admin) sees a **Statistics** page per vault, scoped by a
@@ -97,6 +103,13 @@ searches), and a **Wiki changes** section listing what each Refresh actually
 changed — files added, modified or removed, newest events first. Logging is
 best-effort telemetry: it never affects the request path or the Refresh
 itself, and entries are kept for 90 days.
+
+Each vault card also carries an **OKF badge** built from the last Refresh's
+conformance scan. Clicking the badge expands the detail: version, concepts
+ratio, `index.md`/`log.md` presence, scan date, and the list of
+non-conformant files (capped, with "+N more" when the list is longer). The
+"not an OKF bundle" pill is clickable too and explains which checks failed —
+no concepts, a concept ratio below 80 %, or a missing `index.md`/`log.md`.
 
 ## Instance-wide vaults
 
