@@ -249,6 +249,23 @@ mod tests {
         }
     }
 
+    /// Coverage lock (Phase 21 UI-01/UI-02 docs): the shipped sharing-and-roles
+    /// prose must keep describing the two behaviors users click on — the
+    /// clickable OKF badge detail and the Looks palette picker. Prose shipped
+    /// at 987c7fa; this test locks it so future doc refreshes cannot silently
+    /// drop the claims (GREEN-on-write by design, not a RED→GREEN fix).
+    #[test]
+    fn sharing_docs_describe_badge_detail_and_looks_picker() {
+        assert!(
+            SHARING_AND_ROLES_MD.contains("Clicking the badge expands"),
+            "docs must describe the clickable OKF badge detail (UI-01, #16)"
+        );
+        assert!(
+            SHARING_AND_ROLES_MD.contains("**Looks**"),
+            "docs must describe the Looks palette picker (UI-02, #17)"
+        );
+    }
+
     #[tokio::test]
     async fn seed_is_idempotent_and_preserves_edits() {
         let dir = temp_dir_for("seed_is_idempotent_and_preserves_edits");
