@@ -541,4 +541,27 @@ mod tests {
             "the picker must anchor on mdBook's theme popup"
         );
     }
+
+    // Review 21 HIGH: the injected buttons carry className "theme" inside
+    // #mdbook-theme-list, so mdBook 0.5.4's popup-level click listener also
+    // fires on the bubble and would call set_theme('morinet-looks-*'),
+    // clobbering localStorage['mdbook-theme'] with an invalid value. The
+    // pick handler must stop the event BEFORE writing the real palette.
+    #[test]
+    fn morinet_js_looks_picker_stops_event_propagation() {
+        let pick = MORINET_JS
+            .find("function pick(")
+            .expect("picker must define a pick handler factory");
+        let body = &MORINET_JS[pick..];
+        let stop = body
+            .find("stopPropagation")
+            .expect("pick handler must call e.stopPropagation() so mdBook's popup listener never sees the click");
+        let write = body
+            .find("setItem('mdbook-theme'")
+            .expect("pick handler must write mdBook's own localStorage key");
+        assert!(
+            stop < write,
+            "stopPropagation must run before the localStorage write"
+        );
+    }
 }
