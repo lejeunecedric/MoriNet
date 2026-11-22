@@ -128,7 +128,7 @@
 | 18. okf-bundle-support (+18.1) | v1.3 | 6/6 + 1/1 | Complete | 2026-11-06 |
 | 19. statistics-observability | v1.4 | 4/4 | Complete    | 2026-11-18 |
 | 20. okf-ecosystem-quick-wins | v1.4 | 6/6 | Complete    | 2026-11-20 |
-| 21. ui-polish | v1.6 | 1/3 | In Progress|  |
+| 21. ui-polish | v1.6 | 2/3 | In Progress|  |
 | 22. vault-ops | v1.6 | 0/? | Not started | — |
 | 23. offline-visited-cache | v1.6 | 0/? | Not started | — |
 | 24. offline-full-download | v1.6 | 0/? | Not started | — |
