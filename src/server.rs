@@ -4899,6 +4899,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edit_page_theme_field_sits_below_checkboxes_above_save() {
+        // UI-03 / D-06 (issue #13): on a converted vault's Edit page the Theme
+        // field must sit BELOW the "allow…" checkbox line and directly ABOVE
+        // Save. The mechanism is `field-wide` (flex: 1 1 20rem, style.css:256)
+        // forcing the Theme field onto its own flex row; assert the rendered
+        // source order ev-reshare < ev-keep < theme-field < Save.
+        let (app, state) = test_router().await;
+        state
+            .store
+            .create_user("order@example.com", "pw", "reader")
+            .await
+            .unwrap();
+        let g = state.store.create_group("free").await.unwrap();
+        state.store.set_group_limit(g, Some(2)).await.unwrap();
+        state
+            .store
+            .add_group_member(g, "order@example.com")
+            .await
+            .unwrap();
+        let url = wiki_repo("orderwiki-edit");
+        let cookie = login_as(&app, "order@example.com", "pw").await;
+        let res = req(
+            app.clone(),
+            "POST",
+            "/vaults/create",
+            form_headers(&cookie),
+            Some(Body::from(format!("name=OrderWiki&url={url}"))),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let res = req(
+            app,
+            "GET",
+            "/vault/orderwiki/edit",
+            cookie_hdr(&cookie),
+            None,
+        )
+        .await;
+        let body = body_text(res).await;
+        let theme_div = "class=\"field field-wide\"><label for=\"ev-theme\"";
+        let i_reshare = body
+            .find("id=\"ev-reshare\"")
+            .expect("ev-reshare checkbox missing");
+        let i_keep = body.find("id=\"ev-keep\"").expect("ev-keep checkbox missing");
+        let i_theme = body
+            .find(theme_div)
+            .unwrap_or_else(|| panic!("theme field must carry field-wide: {body}"));
+        let i_save = body.find(">Save</button>").expect("Save button missing");
+        assert!(
+            i_reshare < i_keep && i_keep < i_theme && i_theme < i_save,
+            "expected ev-reshare < ev-keep < ev-theme < Save, got {i_reshare} < {i_keep} < {i_theme} < {i_save}"
+        );
+    }
+
+    #[tokio::test]
     async fn edit_submit_persists_display_options() {
         let (app, state) = test_router().await;
         seed_edit_fixture(&state).await;
