@@ -63,6 +63,7 @@ Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-use
 - ✓ Generic OIDC SSO coexisting with password auth (IdP in config, auto-provisioning, group claim mapping) — SSO-01..06 (v1.2, Phase 17)
 - ✓ Statistics & observability: access logging all surfaces, top pages, MCP request↔response activity, top keywords, 90-day retention — STAT-01..05 (v1.4, Phase 19, 2026-11-18)
 - ✓ OKF ecosystem quick wins: docs vault passes okflint + OKForest 0/0 (evidence-backed README conformance badge, demo validation pending-operator), offline viz.html synthesized into bundle export at root — OKFE-01..02 (Phase 20, 2026-11-20)
+- ✓ UI polish trio: interactive OKF badge (click → pass/fail concepts + capped non-conformant list, #16), "Looks" palette picker in the mdBook theme popup persisted via `mdbook-theme` localStorage (#17), Vault Edit Theme select on its own row below checkboxes above Save (#13) — UI-01..03 (v1.6, Phase 21, 2026-11-22)
 
 ### Active
 
@@ -129,4 +130,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-20 — v1.4 milestone archived (v1.3 archived retroactively); next: release v1.5.0, then /gsd-new-milestone.*
+*Last updated: 2026-11-22 — Phase 21 ui-polish complete (UI-01..03 validated); next: Phase 22 vault-ops (#12, #14).*

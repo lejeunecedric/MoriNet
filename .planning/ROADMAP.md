@@ -45,7 +45,7 @@
 - [x] **Phase 18.1: tech-debt-cleanup** - fmt_date fix + phase-18 LOW test gaps (v1.3) (completed 2026-11-06)
 - [x] **Phase 19: statistics-observability** (completed 2026-11-18) - access logging on all surfaces (web/API/MCP), top viewed pages, MCP request↔response activity, top search keywords (issue #10)
 - [x] **Phase 20: okf-ecosystem-quick-wins** (completed 2026-11-20) - docs vault passes okflint + OKForest, conformance badge in README, viz.html shipped in bundle export
-- [ ] **Phase 21: ui-polish** - OKF badge click → conformance details (#16), "Looks" color schemes (#17), Vault Edit menu realign (#13)
+- [x] **Phase 21: ui-polish** (completed 2026-11-22) - OKF badge click → conformance details (#16), "Looks" color schemes (#17), Vault Edit menu realign (#13)
 - [ ] **Phase 22: vault-ops** - per-vault auto-refresh schedule (#12), dead-link report at Refresh (#14)
 - [ ] **Phase 23: offline-visited-cache** - service-worker cache of visited reading pages/assets, non-reading routes never cached (#15A)
 - [ ] **Phase 24: offline-full-download** - save/download control: complete second-brain snapshot with progress, states, removal (#15B)
@@ -128,7 +128,7 @@
 | 18. okf-bundle-support (+18.1) | v1.3 | 6/6 + 1/1 | Complete | 2026-11-06 |
 | 19. statistics-observability | v1.4 | 4/4 | Complete    | 2026-11-18 |
 | 20. okf-ecosystem-quick-wins | v1.4 | 6/6 | Complete    | 2026-11-20 |
-| 21. ui-polish | v1.6 | 3/3 | Complete   | 2026-11-22 |
+| 21. ui-polish | v1.6 | 3/3 | Complete    | 2026-11-22 |
 | 22. vault-ops | v1.6 | 0/? | Not started | — |
 | 23. offline-visited-cache | v1.6 | 0/? | Not started | — |
 | 24. offline-full-download | v1.6 | 0/? | Not started | — |

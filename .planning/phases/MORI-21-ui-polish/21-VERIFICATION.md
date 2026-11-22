@@ -1,7 +1,7 @@
 ---
 phase: 21-ui-polish
 verified: 2026-11-22
-status: human_needed
+status: passed
 score: "15/15 must-haves verified"
 requirements: [UI-01, UI-02, UI-03]
 deferred:
@@ -13,7 +13,7 @@ deferred:
 
 **Goal (ROADMAP):** "The three UI friction points users reported are gone." (UI-01 #16, UI-02 #17, UI-03 #13)
 
-**Overall: human_needed** — all 15 must-haves verified against the codebase with passing tests (620/0), but three items need visual confirmation in a real browser (badge click behavior, palette switching/persistence, Vault Edit visual row order).
+**Overall: PASSED** — all 15 must-haves verified against the codebase with passing tests (620/0 at verification time; 623/0 after review fixes), and all three browser items (HV-1..HV-3) resolved 2026-11-22 by orchestrator live UAT on a local instance (see "Human verification — RESOLVED").
 
 ## Goal-backward summary
 
@@ -103,15 +103,17 @@ No TBD/FIXME/XXX/TODO/HACK in phase-touched files. The `placeholder` hits in `sr
 | App-chrome restyling from mdBook palette (UI-02 original wording "applied across the app") | Explicitly deferred in ROADMAP criterion 2 amendment (2026-11-21): would need new CSS + server-side prefs, out of phase boundary per locked D-05. Not assigned to a later phase — flag for backlog if the user still wants it |
 | OKF badge on served book pages (D-03 original "vault page") | Corrected in CONTEXT D-03 correction + ROADMAP criterion 1 amendment: badge exists only on home vault cards; injecting into book pages needs new per-request fetch + injection = new capability, out of scope |
 
-## Human verification (browser required)
+## Human verification — RESOLVED (2026-11-22, orchestrator live UAT)
 
-- **HV-1 — Badge click behavior**: serve MoriNet, open home with a scanned vault → click the OKF badge pill (and a "not an OKF bundle" pill if present) → expect the panel to expand in-flow showing version, concepts ratio, index.md/log.md presence, scan date, non-conformant list (with "+N more" if capped); clicking again collapses; layout of the card is not broken. Why: `<details>` open/close and in-flow rendering are visual behaviors; tests assert markup, not interaction.
-- **HV-2 — Looks picker in a real book**: open a served book (native vault) → book menu → theme popup shows "Looks" with Light/Navy/Rust/Coal/Ayu → pick Ayu → page reloads restyled; reload again and close/reopen browser → choice persists and beats the vault's serve-time default; `aria-current` marks the saved choice; no console errors on non-book pages. Why: cross-session localStorage persistence and mdBook `get_theme()` precedence are runtime behaviors (21-02 SUMMARY reports a CDP fixture pass, but real-browser end-to-end is the user-facing acceptance).
-- **HV-3 — Vault Edit visual layout**: open `/vault/{slug}/edit` for a converted vault → Theme select sits on its own row below the "allow…" checkboxes and directly above Save, at narrow and wide viewport widths. Why: flex-wrap row placement is pixel-level; the test locks source order and the `field-wide` mechanism, not rendered geometry.
+Local instance (`target/release/morinet serve`, demo data), real Chromium (CDP):
+
+- **HV-1 — RESOLVED ✓**: B3Wiki card badge ("OKF v0.2 — 153/160 concepts") click expands the in-flow panel showing version, concepts ratio, index.md/log.md presence, scan date and the non-conformant file list; second click collapses; card layout intact.
+- **HV-2 — RESOLVED ✓ (after HIGH review fix `10d6e0f` + book rebuild)**: theme popup shows "Looks" with Light/Navy/Rust/Coal/Ayu; picking Ayu writes `localStorage['mdbook-theme']='ayu'` (valid value — the pre-fix double-fire wrote the invalid `morinet-looks-ayu`, reproducing the review's HIGH finding in a real browser), `<html class="ayu">` applies the palette, value survives reload/navigation, `aria-current` marks the saved choice. Note: the built book's `theme/morinet.js` is copied at vault build time — a vault refreshed before the fix keeps the old handler until re-refreshed.
+- **HV-3 — RESOLVED ✓ (after fix `d564f0c`)**: initial live check found Save rendering beside the Theme select (the plan's premise that `.field-wide { flex: 1 1 20rem }` forces a full row was false). Fix applied inline TDD (test strengthened → RED → markup `style="flex-basis:100%"` → GREEN): Theme now occupies its own full-width row below the checkboxes with Save directly below it (measured: checkboxes y=230, theme row y=261–328, Save y=340). Layout choice: D-06 wording ("directly above Save") applied as recommended default after the clarify gate timed out — override possible.
 
 ## Metadata
 
 - Verified commit: `f2de841` (HEAD of phase 21 work)
 - Phase commits: `be6ec18..f2de841` (15 commits, 3 plans)
 - Test suite: 620 passed / 0 failed (verifier-run, 2026-11-22)
-- Gaps: none. Status `human_needed` solely due to HV-1..HV-3 browser items.
+- Gaps: none. HV-1..HV-3 resolved by live browser UAT 2026-11-22 (see above); status upgraded to `passed`.

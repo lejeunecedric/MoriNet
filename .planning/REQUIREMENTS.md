@@ -22,9 +22,9 @@ Scope source: all open GitHub issues at milestone start — #12, #13, #14, #15, 
 
 ### UI polish (issues #13, #16, #17)
 
-- [ ] **UI-01**: Clicking the OKF badge on a vault page opens the conformance detail: which concepts pass/fail and why (not-conformant reasons, unfulfilled checks), instead of a static label.
-- [ ] **UI-02**: The account menu gains a "Looks" entry before "About" letting the reader pick a color scheme matching the mdBook theme palette, persisted per reader and applied across the app and served books.
-- [ ] **UI-03**: The Vault Edit page menu is realigned: the Theme selector sits below the "allow…" line and above the Save button.
+- [x] **UI-01**: Clicking the OKF badge on a vault page opens the conformance detail: which concepts pass/fail and why (not-conformant reasons, unfulfilled checks), instead of a static label.
+- [x] **UI-02**: The account menu gains a "Looks" entry before "About" letting the reader pick a color scheme matching the mdBook theme palette, persisted per reader and applied across the app and served books.
+- [x] **UI-03**: The Vault Edit page menu is realigned: the Theme selector sits below the "allow…" line and above the Save button.
 
 ### Docs & ecosystem (issues #18, #19)
 
@@ -55,8 +55,8 @@ Scope source: all open GitHub issues at milestone start — #12, #13, #14, #15, 
 | OFFLINE-04 | 24 | Pending |
 | OPS-01 | 22 | Pending |
 | OPS-02 | 22 | Pending |
-| UI-01 | 21 | Pending |
-| UI-02 | 21 | Pending |
-| UI-03 | 21 | Pending |
+| UI-01 | 21 | Complete |
+| UI-02 | 21 | Complete |
+| UI-03 | 21 | Complete |
 | DOCS-01 | 25 | Pending |
 | DOCS-02 | 25 | Pending |

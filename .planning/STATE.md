@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: Offline Reading & Polish
-status: executing
-stopped_at: Phase 21 context gathered
-last_updated: "2026-11-22T08:58:37.597Z"
-last_activity: 2026-11-22 -- Phase 21 execution started
+status: ready_to_plan
+stopped_at: Phase 21 complete (3/3) — ready to discuss Phase 22
+last_updated: 2026-11-22T09:49:42.808Z
+last_activity: 2026-11-22 -- Phase 21 complete (3/3 plans, verification passed, live UAT 3/3)
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 0
+  completed_plans: 3
   percent: 0
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** Load an Obsidian/llm-wiki vault and serve it instantly as a navigable, multi-user, secured mdBook site.
-**Current focus:** Phase 21 — ui-polish
+**Current focus:** Phase 22 — vault ops
 
 ## Current Position
 
-Phase: 21 (ui-polish) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 21
-Last activity: 2026-11-22 -- Phase 21 execution started
+Phase: 22
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-11-22
 
 ## Performance Metrics
 
@@ -49,6 +49,7 @@ Last activity: 2026-11-22 -- Phase 21 execution started
 | 18. okf-bundle-support | — | Complete (v1.3) |
 | 19. statistics-observability | — | Complete (v1.4, 2026-11-18) |
 | 20. okf-ecosystem-quick-wins | 6/6 | Complete (2026-11-20) — validators 0/0 + badge + viz.html in export; 611 tests green; review 5 findings fixed; verifier 5/5 |
+| 21. ui-polish | 3/3 | Complete (2026-11-22) — interactive OKF badge + Looks picker + Vault Edit realign; 623 tests green; review HIGH fixed (mdbook-theme double-fire); live browser UAT 3/3 |
 
 ## Quick Tasks Completed
 
@@ -96,9 +97,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-11-21T21:57:35.147Z
-Stopped at: Phase 21 context gathered
-Resume file: .planning/phases/MORI-21-ui-polish/21-CONTEXT.md
+Last session: 2026-11-22
+Stopped at: Phase 21 complete — ready to discuss Phase 22 (vault-ops)
+Resume file: —
 
 ## Useful links
 
