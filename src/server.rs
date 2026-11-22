@@ -2562,7 +2562,7 @@ async fn vault_edit_page(
     let theme_field = if converted {
         let sel = |v: &str| if theme == v { " selected" } else { "" };
         format!(
-            r#"<div class="field"><label for="ev-theme">Theme</label><select id="ev-theme" name="theme"><option value=""{t_auto}>auto</option><option value="light"{t_light}>light</option><option value="navy"{t_navy}>navy</option><option value="rust"{t_rust}>rust</option><option value="coal"{t_coal}>coal</option><option value="ayu"{t_ayu}>ayu</option></select></div>"#,
+            r#"<div class="field field-wide"><label for="ev-theme">Theme</label><select id="ev-theme" name="theme"><option value=""{t_auto}>auto</option><option value="light"{t_light}>light</option><option value="navy"{t_navy}>navy</option><option value="rust"{t_rust}>rust</option><option value="coal"{t_coal}>coal</option><option value="ayu"{t_ayu}>ayu</option></select></div>"#,
             t_auto = sel(""),
             t_light = sel("light"),
             t_navy = sel("navy"),
