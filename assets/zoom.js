@@ -99,10 +99,13 @@
             // call set_theme('morinet-looks-*'), clobbering mdbook-theme with
             // an invalid value. Stop the event before writing our own value.
             if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-            try { localStorage.setItem('mdbook-theme', palette); } catch (e) {}
+            var saved = false;
+            try { localStorage.setItem('mdbook-theme', palette); saved = true; } catch (e) {}
             // Reload is the zero-coupling way to make book.js apply the
             // theme — we never call into book.js internals (21-PATTERNS §5).
-            window.location.reload();
+            // Only reload when the write landed: reloading after a failed
+            // write would just spin the visitor on the old theme.
+            if (saved) window.location.reload();
         };
     }
     function findAboutAnchor() {
