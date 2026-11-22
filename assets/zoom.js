@@ -126,6 +126,9 @@
         var frag = document.createDocumentFragment();
         var head = document.createElement("li");
         head.textContent = "Looks";
+        // mdBook's own popup items carry role="none" on the <li> inside
+        // ul[role="menu"]; match that so the menu's a11y tree stays clean.
+        head.setAttribute("role", "none");
         frag.appendChild(head);
         for (var i = 0; i < PALETTES.length; i++) {
             var li = document.createElement("li");
